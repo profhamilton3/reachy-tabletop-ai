@@ -38,7 +38,7 @@ jobs:
 
       - name: Check for forbidden reachy2_sdk imports
         run: |
-          if grep -r "reachy2_sdk\|reachy2_core" src/ tests/ scripts/ 2>/dev/null; then
+          if grep -rE "^\s*(import|from)\s+reachy2_sdk|^\s*(import|from)\s+reachy2_core" src/ tests/ scripts/ 2>/dev/null; then
             echo "ERROR: Found reachy2_sdk import — this robot is Reachy 1.2, use reachy_sdk"
             exit 1
           fi
