@@ -1,4 +1,4 @@
-from reachy_ai.motion.safety import GateResult, Pose3D, gate_check
+from reachy_ai.motion.safety import Pose3D, gate_check
 
 
 def _valid_pose() -> Pose3D:

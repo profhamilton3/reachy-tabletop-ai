@@ -6,11 +6,11 @@ Tests that all modules import and wire together without errors.
 import logging
 import sys
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(name)s  %(message)s")
-
 from reachy_ai.motion.safety import Pose3D, gate_check
 from reachy_ai.planner.schema import Plan
 from reachy_ai.reachy_client import ReachyClient
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(name)s  %(message)s")
 
 
 def main():

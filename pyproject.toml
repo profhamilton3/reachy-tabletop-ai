@@ -46,5 +46,8 @@ markers = [
     "hardware_motion: requires REACHY_IP and REACHY_ENABLE_MOTION=true",
 ]
 
+[tool.ruff]
+line-length = 120
+
 [tool.ruff.lint]
 select = ["E", "F", "I"]
