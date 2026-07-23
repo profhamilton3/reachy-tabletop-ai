@@ -30,7 +30,11 @@ def main():
         safety_notes=["object appears light", "inside reachable zone"],
         brief_reason="Sponge-like object matches erasing task.",
     )
-    print(f"\nPlanner output:\n  target: {plan.target_description}\n  action: {plan.task_type} → {plan.destination}\n  confidence: {plan.confidence}")
+    print(
+        f"\nPlanner output:\n  target: {plan.target_description}"
+        f"\n  action: {plan.task_type} → {plan.destination}"
+        f"\n  confidence: {plan.confidence}"
+    )
 
     # Safety gate
     target_pose = Pose3D(x=0.5, y=0.05, z=0.08)
