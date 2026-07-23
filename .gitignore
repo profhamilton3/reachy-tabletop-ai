@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Environment / secrets
+.env
+.env.*
+*.env
+
+# Robot credentials / network
+reachy_ip.txt
+robot_config.json
+
+# Data (large files — store externally)
+data/episodes/
+data/bags/
+*.hdf5
+*.h5
+*.bag
+*.mcap
+
+# Calibration outputs (generated — commit only the template)
+data/calibration/*.json
+!data/calibration/stereo_params_template.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/

@@ -1,0 +1,18 @@
+{
+  "_note": "Copy to stereo_params.json and fill in after running scripts/run_stereo_calibration.py",
+  "baseline_m": null,
+  "image_width": 1920,
+  "image_height": 1080,
+  "camera_left": {
+    "fx": null, "fy": null, "cx": null, "cy": null,
+    "distortion": [null, null, null, null, null]
+  },
+  "camera_right": {
+    "fx": null, "fy": null, "cx": null, "cy": null,
+    "distortion": [null, null, null, null, null]
+  },
+  "R": null,
+  "T": null,
+  "calibrated_at": null,
+  "rms_error_px": null
+}

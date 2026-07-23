@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check src/ tests/ scripts/
+
+      - name: Type check (mypy)
+        run: mypy src/reachy_ai --ignore-missing-imports
+        continue-on-error: true
+
+      - name: Run Tier 1 tests (no hardware)
+        run: pytest tests/ -m "not hardware and not hardware_motion" -v
+
+      - name: Check for forbidden reachy2_sdk imports
+        run: |
+          if grep -r "reachy2_sdk\|reachy2_core" src/ tests/ scripts/ 2>/dev/null; then
+            echo "ERROR: Found reachy2_sdk import — this robot is Reachy 1.2, use reachy_sdk"
+            exit 1
+          fi
+          echo "OK: no reachy2_sdk imports found"

@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "reachy-ai"
+version = "0.1.0"
+description = "Zero-shot tabletop task assistant for Reachy 1.2"
+requires-python = ">=3.10"
+dependencies = [
+    "reachy-sdk",
+    "opencv-python>=4.9",
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "pydantic>=2.7",
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+    "h5py>=3.11",
+    "anthropic>=0.28",
+    "Pillow>=10.3",
+]
+
+[project.optional-dependencies]
+coral = [
+    "pycoral",
+    "tflite-runtime",
+]
+audio = [
+    "pyaudio>=0.2.14",
+    "sounddevice>=0.4.7",
+]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "hardware: requires physical Reachy connected (REACHY_IP set)",
+    "hardware_motion: requires REACHY_IP and REACHY_ENABLE_MOTION=true",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
