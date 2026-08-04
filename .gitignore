@@ -37,3 +37,4 @@ Thumbs.db
 # IDE
 .vscode/settings.json
 .idea/
+.ipynb_checkpoints/
