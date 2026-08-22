@@ -26,6 +26,10 @@ data/bags/
 *.bag
 *.mcap
 
+# Large binary model files — distribute externally, not via git
+*.caffemodel
+*.prototxt
+
 # Calibration outputs (generated — commit only the template)
 data/calibration/*.json
 !data/calibration/stereo_params_template.json
