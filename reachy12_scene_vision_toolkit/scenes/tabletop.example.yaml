@@ -1,0 +1,129 @@
+schema_version: "1.0"
+name: tabletop-calibration
+# All units are SI. Poses are relative to frame_id.
+frame_id: pedestal
+seed: 42
+description: >-
+  Small deterministic tabletop scene for RViz markers, stereo camera geometry,
+  and the first MuJoCo rendering tests.
+
+world:
+  gravity: [0.0, 0.0, -9.81]
+  background_rgba: [0.08, 0.10, 0.14, 1.0]
+  floor:
+    enabled: true
+    z: 0.0
+    size: [4.0, 4.0]
+    material:
+      rgba: [0.35, 0.35, 0.35, 1.0]
+    friction: [0.8, 0.01, 0.001]
+  lights:
+    - id: key_light
+      kind: directional
+      pose:
+        position: [1.0, -1.0, 2.5]
+        rpy: [0.0, 0.65, 2.35]
+      color: [1.0, 0.96, 0.90, 1.0]
+      intensity: 1.2
+      cast_shadows: true
+    - id: fill_light
+      kind: point
+      pose:
+        position: [-0.8, 0.7, 1.8]
+        orientation_wxyz: [1.0, 0.0, 0.0, 0.0]
+      color: [0.75, 0.85, 1.0, 1.0]
+      intensity: 0.5
+      cast_shadows: false
+
+cameras:
+  left:
+    width: 640
+    height: 480
+    fovy_radians: 0.78
+    near: 0.02
+    far: 10.0
+    jpeg_quality: 85
+    fps: 15
+  right:
+    width: 640
+    height: 480
+    fovy_radians: 0.78
+    near: 0.02
+    far: 10.0
+    jpeg_quality: 85
+    fps: 15
+
+objects:
+  - id: table_top
+    geometry:
+      kind: box
+      size: [0.90, 0.65, 0.04]
+    pose:
+      position: [0.55, 0.0, 0.72]
+      orientation_wxyz: [1.0, 0.0, 0.0, 0.0]
+    material:
+      rgba: [0.42, 0.25, 0.12, 1.0]
+      roughness: 0.7
+    physics:
+      dynamic: false
+      collision: true
+      friction: [0.9, 0.02, 0.001]
+    semantic_class: furniture.table
+    tags: [fixture, tabletop]
+
+  - id: red_cube
+    geometry:
+      kind: box
+      size: [0.06, 0.06, 0.06]
+    pose:
+      position: [0.48, -0.12, 0.77]
+      rpy: [0.0, 0.0, 0.15]
+    material:
+      rgba: [0.90, 0.08, 0.06, 1.0]
+      roughness: 0.5
+    physics:
+      dynamic: true
+      collision: true
+      mass: 0.12
+      friction: [0.8, 0.01, 0.001]
+      restitution: 0.05
+    tracked: true
+    semantic_class: block.red
+    tags: [manipulation-target]
+
+  - id: blue_cylinder
+    geometry:
+      kind: cylinder
+      radius: 0.035
+      length: 0.10
+    pose:
+      position: [0.60, 0.12, 0.79]
+      orientation_wxyz: [1.0, 0.0, 0.0, 0.0]
+    material:
+      rgba: [0.05, 0.25, 0.90, 1.0]
+      roughness: 0.45
+    physics:
+      dynamic: true
+      collision: true
+      mass: 0.10
+      friction: [0.75, 0.01, 0.001]
+      restitution: 0.03
+    tracked: true
+    semantic_class: cylinder.blue
+
+  - id: calibration_board
+    geometry:
+      kind: box
+      size: [0.30, 0.01, 0.22]
+    pose:
+      position: [0.85, 0.0, 0.93]
+      rpy: [0.0, 0.0, 1.57079632679]
+    material:
+      # Replace with a checked calibration texture in the fidelity phase.
+      rgba: [0.95, 0.95, 0.95, 1.0]
+      roughness: 0.8
+    physics:
+      dynamic: false
+      collision: false
+    semantic_class: calibration.target
+    tags: [geometry-test]

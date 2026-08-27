@@ -1,0 +1,47 @@
+# Target shape after the remote-backend roadmap lands.
+# This file does not run against the reviewed baseline unchanged.
+services:
+  reachy-sim:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: reachy-1-2-sim:scene-vision
+    container_name: reachy-1-2-sim
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:8888:8888"   # JupyterLab
+      - "127.0.0.1:6080:6080"   # noVNC / RViz
+      - "127.0.0.1:50051:50051" # Reachy v1 SDK gRPC
+      - "127.0.0.1:8080:8080"   # stereo camera/status page
+    volumes:
+      - ../notebooks:/notebooks
+      - ../scenes:/opt/reachy_sim/scenes:ro
+    environment:
+      DISPLAY: ":1"
+      REACHY_SIM_BACKEND: "mujoco-remote"
+      REACHY_SIM_SCENE: "/opt/reachy_sim/scenes/tabletop.example.yaml"
+      REACHY_SIM_MUJOCO_URL: "ws://host.docker.internal:8765"
+      REACHY_SIM_CAMERA_FPS: "15"
+      REACHY_SIM_CAMERA_WIDTH: "640"
+      REACHY_SIM_CAMERA_HEIGHT: "480"
+      REACHY_SIM_REMOTE_DEADLINE_MS: "1000"
+      REACHY_SIM_ALLOW_FIXTURE_FALLBACK: "false"
+    # Docker Desktop provides host.docker.internal. This entry also helps some
+    # Linux Docker setups; verify behavior before relying on it cross-platform.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+# Launch the preferred renderer natively on the Mac, outside Compose, for example:
+#
+#   cd native_mujoco
+#   python3 -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r requirements.lock
+#   mjpython -m reachy12_mujoco.server \
+#       --host 127.0.0.1 \
+#       --port 8765 \
+#       --scene ../scenes/tabletop.example.yaml \
+#       --stats

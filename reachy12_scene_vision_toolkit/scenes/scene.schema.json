@@ -1,0 +1,510 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iitg.example/reachy12/scene.schema.json",
+  "title": "Reachy 1.2 simulator scene",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "name",
+    "world",
+    "objects"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "frame_id": {
+      "type": "string",
+      "default": "pedestal",
+      "pattern": "^[A-Za-z][A-Za-z0-9_/.-]*$"
+    },
+    "world": {
+      "$ref": "#/$defs/world"
+    },
+    "cameras": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "left": {
+          "$ref": "#/$defs/cameraOverride"
+        },
+        "right": {
+          "$ref": "#/$defs/cameraOverride"
+        }
+      }
+    },
+    "objects": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/$defs/object"
+      }
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number"
+      }
+    },
+    "positiveVec3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      }
+    },
+    "rgba": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      }
+    },
+    "quaternion": {
+      "description": "Unit quaternion in [w, x, y, z] order; unit norm is enforced by custom validation.",
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "number"
+      }
+    },
+    "pose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "position"
+      ],
+      "properties": {
+        "position": {
+          "$ref": "#/$defs/vec3"
+        },
+        "orientation_wxyz": {
+          "$ref": "#/$defs/quaternion"
+        },
+        "rpy": {
+          "description": "Roll, pitch, yaw in radians. Do not provide together with orientation_wxyz.",
+          "$ref": "#/$defs/vec3"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "orientation_wxyz"
+          ],
+          "not": {
+            "required": [
+              "rpy"
+            ]
+          }
+        },
+        {
+          "required": [
+            "rpy"
+          ],
+          "not": {
+            "required": [
+              "orientation_wxyz"
+            ]
+          }
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "orientation_wxyz"
+                ]
+              },
+              {
+                "required": [
+                  "rpy"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "material": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rgba": {
+          "$ref": "#/$defs/rgba"
+        },
+        "texture": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metallic": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "roughness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "primitiveGeometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "box",
+            "sphere",
+            "cylinder",
+            "capsule",
+            "plane"
+          ]
+        },
+        "size": {
+          "$ref": "#/$defs/positiveVec3"
+        },
+        "radius": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "length": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "box"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "size"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "sphere"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "radius"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "cylinder",
+                  "capsule"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "radius",
+              "length"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "plane"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "size"
+            ]
+          }
+        }
+      ]
+    },
+    "meshGeometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "path"
+      ],
+      "properties": {
+        "kind": {
+          "const": "mesh"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!.*\\.\\./)(?!https?://).+"
+        },
+        "scale": {
+          "$ref": "#/$defs/positiveVec3"
+        }
+      }
+    },
+    "geometry": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/primitiveGeometry"
+        },
+        {
+          "$ref": "#/$defs/meshGeometry"
+        }
+      ]
+    },
+    "physics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dynamic": {
+          "type": "boolean",
+          "default": false
+        },
+        "collision": {
+          "type": "boolean",
+          "default": true
+        },
+        "mass": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "friction": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "restitution": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "geometry",
+        "pose"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,63}$"
+        },
+        "geometry": {
+          "$ref": "#/$defs/geometry"
+        },
+        "pose": {
+          "$ref": "#/$defs/pose"
+        },
+        "material": {
+          "$ref": "#/$defs/material"
+        },
+        "physics": {
+          "$ref": "#/$defs/physics"
+        },
+        "tracked": {
+          "type": "boolean",
+          "default": false
+        },
+        "semantic_class": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "tags": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
+      }
+    },
+    "light": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "pose"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,63}$"
+        },
+        "kind": {
+          "enum": [
+            "directional",
+            "point",
+            "spot"
+          ]
+        },
+        "pose": {
+          "$ref": "#/$defs/pose"
+        },
+        "color": {
+          "$ref": "#/$defs/rgba"
+        },
+        "intensity": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cast_shadows": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "world": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gravity"
+      ],
+      "properties": {
+        "gravity": {
+          "$ref": "#/$defs/vec3"
+        },
+        "background_rgba": {
+          "$ref": "#/$defs/rgba"
+        },
+        "floor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "z": {
+              "type": "number",
+              "default": 0
+            },
+            "size": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "material": {
+              "$ref": "#/$defs/material"
+            },
+            "friction": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "lights": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/light"
+          }
+        }
+      }
+    },
+    "cameraOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 4096
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 4096
+        },
+        "fovy_radians": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 3.141592653589793
+        },
+        "near": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "far": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "jpeg_quality": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "fps": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 120
+        }
+      }
+    }
+  }
+}
