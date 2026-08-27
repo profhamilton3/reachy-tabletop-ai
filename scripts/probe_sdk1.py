@@ -10,11 +10,11 @@ Usage:
     REACHY_IP=10.22.129.133 python scripts/probe_sdk1.py
 """
 
+import argparse
+import math
 import os
 import sys
 import time
-import math
-import argparse
 from typing import Optional
 
 # ── SDK import guard ──────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ def _fmt(val, fmt=".3f"):
 
 def probe_connection(host: str, port: int) -> Optional[ReachySDK]:
     print(f"\n{'='*60}")
-    print(f"  Reachy 1.2 SDK Probe")
+    print("  Reachy 1.2 SDK Probe")
     print(f"  Host: {host}:{port}")
     print(f"{'='*60}\n")
 
@@ -196,7 +196,6 @@ def probe_compliant_toggle(reachy: ReachySDK):
         try:
             reachy.turn_on(part)
             time.sleep(0.2)
-            arm = getattr(reachy, part.replace("r_arm", "r_arm"), None)
             # Sample one joint
             sample_joint = None
             if part == "r_arm" and reachy.r_arm:
