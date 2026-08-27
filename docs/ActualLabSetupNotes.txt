@@ -1,0 +1,14 @@
+Pick And Place Scene update:
+
+Table distance from table 8 inches
+table surface area / LxW  18 inches x 18 inches
+
+3x3 tic-tac-toe grid on table 5x5 inches area on the inside of each square.
+ 1 inch black-tap boarders form the pattern for the table top. 
+Actual images taken with reachy cameras are located in: 
+~/IITG-Reachy-Project/tests/Pictures/
+
+reachy sits on a railing system that form an opening 9inches by 19 inches on both sides. Reachy arms easily fit in the default position by his side. Reachy usually rests his arm on the table by default. We will train reachy to start from both positions.
+
+
+We need to update our pick and place scene and the physics for the pick-and-place scene. when we have verified the scenes and physics we can then work on the other scripts and notebooks.
