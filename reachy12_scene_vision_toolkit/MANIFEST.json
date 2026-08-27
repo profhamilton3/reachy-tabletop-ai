@@ -1,0 +1,63 @@
+{
+  "toolkit_version": "0.1-draft",
+  "created_date": "2026-08-11",
+  "reviewed_archive": {
+    "name": "reachy-1-2-sim.zip",
+    "sha256": "af64f429e1afa75d8f98000642a15dd6f1eb6a6dcf2ae65ba6d9877f65382c1a",
+    "git_commit": "a0f02d745ce6c90e0d6e947dcdb50de82cc8e0b9"
+  },
+  "files": {
+    "AGENT_PROMPTS.md": {
+      "sha256": "ae4d8a61b07df2ccac1c7b36b93ba2434ff59412249f82495e16876a69983d5d",
+      "bytes": 5885
+    },
+    "CLAUDE.md": {
+      "sha256": "453d5e30eeb8fd868e43850dd1a56684c20685107f85de23332e87c822d9682c",
+      "bytes": 10826
+    },
+    "FEASIBILITY_STUDY.md": {
+      "sha256": "55c2ed7342dc0456578e92518529f0a50b3f196365333a7ee24d6ec559240ffb",
+      "bytes": 20574
+    },
+    "README.md": {
+      "sha256": "4406d219a19af14f2392e823a5967259efaa8fae7f77c96f0ffa86c05837ca7a",
+      "bytes": 3218
+    },
+    "ROADMAP.md": {
+      "sha256": "003399a901f684f41a2373906d73b1f19067a779a52d00e53225e570827682b4",
+      "bytes": 11687
+    },
+    "compose/docker-compose.mujoco-hybrid.example.yml": {
+      "sha256": "5cc6a46c970786379bb1431df2623338dd0a217dce72fbf1da425a8ce63b50c3",
+      "bytes": 1661
+    },
+    "contracts/backend_protocol.py": {
+      "sha256": "e76a4d06d2eebed1a8978cb28b5c31c23a7e8cb5797e7a8a0604b69e07c420d5",
+      "bytes": 3559
+    },
+    "contracts/remote_protocol.md": {
+      "sha256": "5d2e362e8856c095f50c3c7fdb66a59e7462b6ebe6829960029aed85a18a2edb",
+      "bytes": 3626
+    },
+    "docs/ACCEPTANCE_TEST_PLAN.md": {
+      "sha256": "ef0b14552bedee3e11b77ebb244dea6edb3e680634d6b7f6bfcb95714c0c3d48",
+      "bytes": 5599
+    },
+    "docs/RESEARCH_LINKS.md": {
+      "sha256": "a3feca7b1756fbdea51fbf0a821dd4adc1880099e13caa53927e4cd05674dc47",
+      "bytes": 3684
+    },
+    "docs/adr/0001-hybrid-native-mujoco.md": {
+      "sha256": "c42d4446e81dec06c2f5610c518201d62b34a4c70050bacdddbaa3b55edeed3a",
+      "bytes": 4500
+    },
+    "scenes/scene.schema.json": {
+      "sha256": "e2ebb4a9ec3b49dd6b56156e6ef4a11038396ebe73c63219dd8165177273fb10",
+      "bytes": 10635
+    },
+    "scenes/tabletop.example.yaml": {
+      "sha256": "001c857ca5f8f4dd50a58f521c3eb870eaa3611380d1a135b122b5c30d4c0610",
+      "bytes": 2895
+    }
+  }
+}
