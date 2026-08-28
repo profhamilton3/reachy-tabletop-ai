@@ -48,11 +48,49 @@ as an independent cross-check. Both methods put the board's far edge at
 | (implied) pattern has interior borders only | There is a **full outer border**; the pattern measures 18.90 in overall |
 | "Table distance from table 8 inches" | 8 in is pedestal axis → near edge of the **taped pattern** (7.5 in), not the board edge |
 | "railing system … opening 9 inches by 19 inches on both sides" | Confirmed, orientation resolved: 9 in is **lateral**, 19 in **fore-aft**, frame extending back behind the robot |
+| (implied) rails flush with the table surface | **Wrong.** The board rests **on top of** the frame; rail tops meet its **underside** |
+| (implied) a cross rail in front of the board | **No such rail.** The board's robot-side edge overhangs open air |
 
 The railing orientation was settled by the frame's overall width. Two 19 in
 lateral openings would make the frame 47 in wide against a 27.5 in board, with
 rails hanging well past the table on both sides, which photo `…9F4E2977…` plainly
 contradicts. At 9 in lateral the frame is 27.0 in — just inside the board.
+
+## Rail height and the missing front rail — corrected 2026-08-28
+
+Two assumptions baked into the first version of `FWDCenterLabMCC.yaml` were
+wrong, and together they were putting a wall across the arm's only route to the
+board.
+
+**The board sits on top of the rails.** Photo `…91C25E33…` shows its laminate
+edge standing proud of the aluminium beneath it. The rails had been modelled
+with their tops flush with the board's *surface*, which put 25 mm of phantom
+aluminium in exactly the plane the arm has to cross. Corrected: rail tops now
+meet the board's underside. Board thickness ~1 in, operator-confirmed.
+
+**There is no cross rail in front of the board.** Photo `…73910DA6…` shows that
+edge finished with a wooden trim strip overhanging open air above the skirt; the
+only aluminium nearby runs perpendicular, away from the camera. The operator
+confirms nothing there blocks the path in or out of the arm pocket. A
+`rig_rail_front` had been modelled at x ∈ [0.114, 0.152] — squarely across the
+route, and the single largest obstruction in the scene. Removed.
+
+Measured effect on the arm's clearance during the swing from the pocket onto the
+board, worst point per segment:
+
+| segment | before | after |
+|---|---|---|
+| fold → first swing | 3.0 mm | 26.8 mm |
+| swing 1 → 2 | 1.4 mm | 23.4 mm |
+| swing 2 → 3 | 1.4 mm | 25.9 mm |
+| swing 3 → hover | 0.3 mm | 4.8 mm |
+
+The one tight spot left is the **elbow crossing the board's robot-side edge**,
+and it is gated on the last unmeasured number below rather than on the rig.
+
+A side effect worth noting: lowering the rails moved the **back** rail into the
+path of the backward extension, which went from 19.7 mm of clearance to 1.8 mm.
+The route's backward reach has to be re-tuned against the new height.
 
 ## Still unmeasured
 
@@ -63,10 +101,22 @@ These need a tape measure; photographs cannot supply them.
   torso, and the reach cross-check (which matches Siva's physical check of the
   two unreachable cells) pins the torso at 0.26 m above the board. Those three
   cannot all be right — most likely this rig's head mount is non-stock.
-- **Rig frame rail height above the board, and its outer footprint.** The frame
-  is in the sim as a collision obstacle, but its profile size and footprint are
-  assumed; only the opening dimensions are pinned down.
+- **Rig rail profile size and the frame's outer footprint.** Still assumed at
+  1.5 in square. The rails' *height* is now resolved (tops at the board's
+  underside), as is the absence of a blocking front member.
 - **Board depth on the robot side.** White board on a white glossy floor gives no
-  edge signal. It is currently bounded, not measured: it must clear the frame's
-  front rail and still carry the tape pattern.
+  edge signal, and removing the phantom front rail removed its lower bound too —
+  so this is now a genuinely open number, not a bounded one. All it has to do is
+  carry the tape pattern, whose near edge is at x = 0.1905; it sits at 0.1600 in
+  the scene.
+
+  **This is the highest-value measurement outstanding.** It is the only tight
+  spot left on the arm's route: the elbow crosses this edge at z = 0.770 with a
+  35 mm collision radius, so at x = 0.160 it interferes by 5 mm, and at x = 0.190
+  it clears by 20 mm. Tape from the pedestal axis to the board's near edge.
+- **Where the opening's 19 in comes from.** With no front cross member, the
+  pocket's fore-aft extent runs from the back rail to the board's near edge —
+  ~20.8 in, not the 19 in the notes record. Either a front member sits further
+  forward than the photos show, or the board's near edge is closer to the robot
+  than 0.160. The measurement above resolves this too.
 - **Table surface friction**, currently inherited from the demo scene.
