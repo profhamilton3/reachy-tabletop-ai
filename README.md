@@ -1,5 +1,7 @@
 # Reachy 1.2 Tabletop AI Assistant
 
+[![CI](https://github.com/profhamilton3/reachy-tabletop-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/profhamilton3/reachy-tabletop-ai/actions/workflows/ci.yml)
+
 Zero-shot tabletop task assistant for the **Reachy 1.2** robot (IITG / FWD Center).
 
 > **Hardware note:** This project uses a Reachy 1.2 (2021/2023). Use `reachy_sdk`, **not** `reachy2_sdk`.
