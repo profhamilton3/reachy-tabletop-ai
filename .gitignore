@@ -42,3 +42,7 @@ Thumbs.db
 .vscode/settings.json
 .idea/
 .ipynb_checkpoints/
+
+# Outgoing correspondence drafts — personal/collaborator content, not project record
+docs/*_email_body.txt
+docs/siva_email*.txt
