@@ -1,0 +1,77 @@
+{
+  "stem": "000034",
+  "camera": "left_camera",
+  "width": 480,
+  "height": 640,
+  "zoom_level": "inter",
+  "fov_y_deg": 61.054,
+  "distorted": true,
+  "neck_pitch_deg": 40.928,
+  "neck_yaw_deg": 9.928,
+  "neck_roll_deg": 3.473,
+  "object_poses": {
+    "red_cube": [
+      0.43264,
+      0.01547,
+      0.77
+    ],
+    "blue_cylinder": [
+      0.27893,
+      -0.01448,
+      0.79
+    ],
+    "soda_can": [
+      0.28179,
+      0.17119,
+      0.7975
+    ],
+    "foam_block": [
+      0.43614,
+      0.15612,
+      0.765
+    ]
+  },
+  "boxes": [
+    {
+      "object_id": "red_cube",
+      "semantic_class": "cube",
+      "class_index": 1,
+      "x_min": 246,
+      "y_min": 384,
+      "x_max": 324,
+      "y_max": 451,
+      "pixel_count": 3683
+    },
+    {
+      "object_id": "blue_cylinder",
+      "semantic_class": "cylinder",
+      "class_index": 2,
+      "x_min": 139,
+      "y_min": 421,
+      "x_max": 251,
+      "y_max": 497,
+      "pixel_count": 6967
+    },
+    {
+      "object_id": "soda_can",
+      "semantic_class": "can",
+      "class_index": 0,
+      "x_min": 141,
+      "y_min": 225,
+      "x_max": 252,
+      "y_max": 316,
+      "pixel_count": 6702
+    },
+    {
+      "object_id": "foam_block",
+      "semantic_class": "foam",
+      "class_index": 3,
+      "x_min": 240,
+      "y_min": 271,
+      "x_max": 313,
+      "y_max": 348,
+      "pixel_count": 3805
+    }
+  ],
+  "orientation": "portrait (rotated -90 from render)"
+}
