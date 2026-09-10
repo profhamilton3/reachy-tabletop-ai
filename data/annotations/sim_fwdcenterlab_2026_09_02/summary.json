@@ -1,0 +1,35 @@
+{
+  "detection": {
+    "frames": 300,
+    "resolution": [
+      480,
+      640
+    ],
+    "classes": [
+      "can",
+      "cube",
+      "cylinder",
+      "foam"
+    ],
+    "boxes_per_class": {
+      "can": 300,
+      "cube": 300,
+      "cylinder": 300,
+      "foam": 300
+    },
+    "seed": 2026,
+    "empty_frames": 0
+  },
+  "classification": {
+    "cube": 80,
+    "cylinder": 80,
+    "can": 80,
+    "foam": 80,
+    "empty": 80
+  },
+  "scene": "FWDCenterLabSiva.yaml",
+  "exposure": 0.4,
+  "zoom": "inter",
+  "orientation": "480x640 portrait",
+  "generator": "native_mujoco/cli/generate_dataset.py"
+}
