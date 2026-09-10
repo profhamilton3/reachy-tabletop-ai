@@ -143,8 +143,39 @@ Reachy 2's fixed cameras.
 - **Foveated attention**: wide FOV for scene survey, narrow FOV for selected target
 - **Gaze-controlled zoom**: command zoom level based on head/arm pose + detected object size
 
-**Action:** Measure stereo baseline (distance between cameras). Calibrate intrinsics +
-extrinsics with a checkerboard. OpenCV `StereoSGBM` or RAFT-Stereo as depth backend.
+**Action:** ~~Measure stereo baseline (distance between cameras). Calibrate intrinsics +
+extrinsics with a checkerboard.~~ **Intrinsics and baseline done, 2026-08-27.** OpenCV
+`StereoSGBM` or RAFT-Stereo as depth backend still outstanding.
+
+No checkerboard was needed: the taped 3×3 board on the table is itself a calibration
+target (nine 5 in cells on a 6 in pitch = 36 metric points per view). 20 stereo pairs
+from `tests/Pictures/` solved at 0.97 / 0.84 px reprojection RMS.
+
+| | Left | Right |
+|---|---|---|
+| fx, fy | 407.0, 408.4 | 398.8, 400.9 |
+| cx, cy | 253.6, 296.4 | 225.6, 331.1 |
+| k1, k2 | −0.3163, 0.1027 | −0.3895, 0.1838 |
+| FOV (long × short image axis) | 76.2° × 61.1° | 77.2° × 62.1° |
+| Stereo baseline | ~80 mm (URDF says 72.5 mm — confirm on the robot before trusting depth) | |
+
+Two things this surfaced that matter downstream:
+
+- **The 65°–125° range above is real and the FOV is not a constant.** Our diagonal
+  measures 88.9°, mid-range, so these frames were shot at an intermediate zoom.
+  Any depth pipeline must record the zoom level with the frames, and any
+  calibration is only valid for the zoom it was taken at. There is no published
+  FOV figure to fall back on: Pollen fit their own motorised lens, and the
+  Kurokesu C1 Pro ships without one.
+- **Barrel distortion is heavy** (`k1 ≈ −0.32 / −0.39`). Straight lines bow
+  visibly. Rectify before any geometric reasoning, and pick one convention —
+  undistorting the real feed is cheaper than distorting simulator renders.
+
+Caveat on frame format: the captures are 480×640, i.e. a rotated 640×480 (4:3),
+while Pollen's SDK docs show 1280×720 (16:9). Something in the capture path
+crops, resizes or rotates. Pin that down before matching a model's input to it —
+if the 4:3 frame is a crop of a 16:9 sensor, the full sensor sees wider than
+76.2°. Full numbers and method: `docs/LAB_EVIDENCE.md`.
 
 ### 6. Dynamixel Servo Telemetry (All Axes)
 Every servo has a unique ID (mapped in wiring diagram). Dynamixel protocol exposes per-servo:
@@ -245,11 +276,29 @@ reachy.head.look_at(x=1, y=0, z=0, duration=1.0)
 ```
 
 ### Simulation note
-The Reachy 2 Docker simulator is **not compatible** with Reachy 1.2. For offline
-development, use:
+The Reachy 2 Docker simulator is **not compatible** with Reachy 1.2 — that part still
+holds. But the premise that no v1.2 simulator exists is **out of date**: we built one.
+
+`reachy-1-2-sim` (github.com/profhamilton3/reachy-1-2-sim) is a working v1.2 simulator
+that keeps `from reachy_sdk import ReachySDK` and port 50051 intact. Native MuJoCo runs
+on macOS arm64 for physics and stereo rendering; a Docker container carries the v1 gRPC
+services, ROS 2, RViz and JupyterLab, bridged over a versioned WebSocket. A `kinematic`
+backend remains as a fast, dependency-free fallback for CI.
+
+`scenes/FWDCenterLabMCC.yaml` there is the FWD Center lab reproduced from measurement,
+not from convenience values: the real board, the 19 in taped grid with nine addressable
+cells, and the 80/20 rig frame the arm hangs through. See `docs/LAB_EVIDENCE.md` for
+provenance.
+
+The offline options below remain useful and are not superseded:
 - Recorded real camera frames (fixture images)
 - Mock `ReachySDK` class that logs calls instead of connecting
 - ROS 2 bag replay if a ROS 2 bag was captured from the physical robot
+
+One caveat before trusting simulated vision: the simulator's cameras are not yet
+faithful. They render 53.1° landscape and rectilinear, where the real ones measure
+76.2° on the long axis with heavy barrel — and the head shell currently occludes them.
+Physics, kinematics and scene geometry are trustworthy; camera images are not, yet.
 
 ---
 
@@ -781,8 +830,8 @@ Python 3.10
 | Risk | Mitigation |
 |---|---|
 | `reachy2_sdk` imports in old code | Audit all imports; `grep -r reachy2_sdk src/` in CI |
-| No compatible simulator for v1.2 | Use mock ReachySDK + fixture images for all offline testing |
-| Stereo depth less accurate than ToF | Calibrate carefully; use SGBM + confidence mask; validate with ruler |
+| ~~No compatible simulator for v1.2~~ **Resolved** | `reachy-1-2-sim` provides v1 SDK + gRPC, MuJoCo physics, RViz and stereo render. Mock SDK + fixture images remain the CI path. Simulated *camera images* are still not faithful — see Simulation note |
+| Stereo depth less accurate than ToF | Intrinsics now calibrated (see §5); use SGBM + confidence mask; validate with ruler. Record the zoom level with every capture — FOV is not fixed |
 | Coral model not compatible | Use pycoral-compatible TFLite (.tflite); quantize to int8 |
 | SDK 1 API differs from roadmap | Siva's probe script is authoritative; update docs as we confirm |
 | Camera device indices change on reboot | Use udev rules to fix camera device paths by USB port |
@@ -790,7 +839,7 @@ Python 3.10
 | ReSpeaker driver version conflicts | Pin exact driver version in pyproject.toml |
 | LeRobot format not yet for v1.2 | Write custom episode recorder; target HF-compatible HDF5 |
 | VLM latency degrades UX | Gate VLM behind "thinking…" spinner; never block fast safety loop |
-| Only one arm available | Constrain table layout to right-arm reachable zone; document clearly |
+| Only one arm available | Done: reach mapped over the 3×3 grid. `cell_r3c1` and `cell_r3c2` are outside the right arm's 65 cm sphere — confirmed by Siva on the robot and by the simulator. Tasks must draw from the other seven cells |
 
 ---
 
