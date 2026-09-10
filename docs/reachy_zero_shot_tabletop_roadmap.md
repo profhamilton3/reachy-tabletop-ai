@@ -1,5 +1,28 @@
 # IITG Reachy Project Roadmap: Real-Time AI Integration for an Untrained Task
 
+> ## ⚠️ SUPERSEDED — written for Reachy 2, not the robot we have
+>
+> This is the **original** roadmap. It was written before Siva's email of 2026-07-09
+> established that the physical robot is a **Reachy 1.2**, not a Reachy 2.
+>
+> **The live roadmap is [`reachy_1_2_updated_roadmap.md`](reachy_1_2_updated_roadmap.md).**
+> Use that one for anything you intend to build.
+>
+> Kept because the conceptual work is still sound and was carried forward: the
+> zero-shot task framing, the two-loop architecture (fast local perception, event-level
+> cloud reasoning), the JSON planner contract, the safety gate, and the evaluation
+> protocol. What does **not** carry over is every hardware and API assumption:
+>
+> - `reachy2_sdk` — wrong package. This robot uses `reachy_sdk`, and CI rejects the other.
+> - A ToF depth module and a fixed torso RGB-D camera — **this robot has neither.**
+>   Depth must come from the head stereo pair, which is why calibrating it mattered.
+> - A mobile base — not part of this kit.
+> - "Camera access is not available yet in simulation" — no longer true. `reachy-1-2-sim`
+>   renders stereo from MuJoCo, though the cameras are not yet calibrated-faithful.
+>
+> Real hardware, confirmed: one 7-DoF right arm, dual 1080p motorised-zoom head cameras
+> (65°–125°), Google Coral TPU, ReSpeaker array. See the updated roadmap's inventory.
+
 **Project concept:** Zero-shot tabletop task assistant for Reachy 2 with one arm and vision support  
 **Prepared for:** IITG Reachy / FWD Center  
 **Robot context:** Reachy 2 robot, one arm, vision support, microphones available but audio treated as an optional upgrade  
