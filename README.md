@@ -54,6 +54,12 @@ the viewer never enables motion or changes camera/head settings.
 See [Stereo View setup and handoff](docs/STEREO_VIEW.md) for ports, diagnostics, and the
 existing physical-robot examples used by this implementation.
 
+To analyze a captured right-eye image with the existing tabletop detector,
+install the optional workstation runtime with `pip install -e '.[analysis]'`.
+Then use **Capture pair → Analyze captured pair**. **Show raw image** toggles
+the original image back; **Pair + analysis details** downloads the frame/model
+identity and predictions. No training, motion, or per-frame inference is started.
+
 ### Existing robot smoke test
 
 ```bash
