@@ -42,7 +42,25 @@
     #analysis-panel { margin-top: 18px; padding: 18px; background: #16213e;
       border: 1px solid #2b3a63; border-radius: 8px; }
     #analysis-panel h2 { margin-bottom: 10px; }
-    #analysis-results { font-size: 12px; line-height: 1.9; padding-left: 20px; }
+    #analysis-results { font-size: 12px; line-height: 1.9; padding-left: 0; list-style: none;
+      display: flex; flex-wrap: wrap; gap: 8px 20px; }
+    #depth-panel { margin-top: 18px; padding: 22px; background: #101d32;
+      border: 1px solid #34636a; border-radius: 8px; }
+    .depth-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .depth-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(260px, 1fr); gap: 24px; margin-top: 18px; }
+    .depth-map { width: 100%; border-radius: 6px; background: #0c1423; display: block; }
+    .legend { height: 7px; margin: 12px 0 6px; border-radius: 4px;
+      background: linear-gradient(90deg, #7a0403, #f6c141, #5de67a, #2aa6e8, #30123b); }
+    .legend-labels { display: flex; justify-content: space-between; }
+    select { width: 100%; margin: 8px 0 14px; padding: 11px; color: #e0e0e0; background: #16213e;
+      border: 1px solid #43638a; border-radius: 5px; font: inherit; font-size: 12px; }
+    #position-distance { font-size: 32px; color: #80cbc4; margin: 8px 0; letter-spacing: -.04em; }
+    .xyz { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0; }
+    .xyz div { padding: 13px 10px; background: #16213e; border-radius: 5px; font-size: 16px; }
+    .xyz span { display: block; color: #9aa6c1; font-size: 11px; margin-bottom: 6px; }
+    #depth-button { background: #15534f; border-color: #478f86; }
+    #position-note { color: #ffce89; line-height: 1.7; font-size: 12px; }
+    @media (max-width: 860px) { .depth-grid { grid-template-columns: 1fr; } }
     details { margin-top: 22px; border-top: 1px solid #2b3a63; padding-top: 18px; }
     summary { cursor: pointer; color: #90caf9; font-size: 12px; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #aab5cb; font-size: 11px; line-height: 1.6; }
@@ -75,6 +93,7 @@
     <div><div id="view-mode">Live preview</div><div class="subtle" id="pair-info">Independent live feeds · capture a pair to inspect fixed images</div></div>
     <div class="actions"><button id="capture" disabled>Capture pair</button><button id="resume" hidden>Return to live</button>
       <button id="analyze" hidden>Analyze captured pair</button><button id="toggle-overlay" hidden>Show raw image</button>
+      <button id="depth-button" hidden>Measure in 3D</button>
       <a class="download" id="metadata" hidden download="stereo-pair.json">Pair details</a></div>
   </section>
   <p id="notice" role="status" aria-live="polite">Connecting to camera service…</p>
@@ -84,9 +103,31 @@
     <ul id="analysis-results"></ul>
     <details><summary>Model &amp; source image</summary><pre id="analysis-provenance"></pre></details>
   </section>
+  <section id="depth-panel" hidden aria-label="3D stereo analysis">
+    <div class="depth-heading"><h2>3D STEREO ANALYSIS</h2><span class="badge" id="depth-profile">Saved calibration</span></div>
+    <p class="subtle" id="depth-status" role="status" aria-live="polite"></p>
+    <div class="depth-grid" id="depth-content" hidden>
+      <div>
+        <img class="depth-map" id="depth-image" alt="Rectified right-eye depth map. Dark areas have no measurement.">
+        <div class="legend"></div><div class="subtle legend-labels"><span>Near · 0.15 m</span><span>Far · 3.00 m</span></div>
+        <p class="subtle">Right-eye depth view · straightened for stereo matching.<br>Dark = unmeasured. Numbers correspond to the detections.</p>
+      </div>
+      <div>
+        <label class="subtle" for="depth-selection">INSPECT A DETECTION</label>
+        <select id="depth-selection"></select>
+        <div class="subtle">Distance from right camera</div><div id="position-distance">—</div>
+        <div class="xyz"><div><span>X · right</span><b id="position-x">—</b></div>
+          <div><span>Y · down</span><b id="position-y">—</b></div><div><span>Z · forward</span><b id="position-z">—</b></div></div>
+        <div class="subtle">Camera coordinates in metres · median visible surface, not an object centre.</div>
+        <p id="position-note"></p><p id="torso-position" class="subtle"></p>
+      </div>
+    </div>
+    <details id="depth-details" hidden><summary>Geometry &amp; measurement details</summary><pre id="depth-provenance"></pre></details>
+  </section>
   <details><summary>Connection &amp; camera diagnostics</summary>
     <p class="subtle">Age measures time since this application observed a new SDK frame, not exposure time.
-      Head and lens readbacks are collected at connection. Snapshot pairs are held in memory; the four most recent are retained.</p>
+      Lens readbacks are collected at connection; neck readbacks are observed with each capture.
+      Snapshot pairs are held in memory; the four most recent are retained.</p>
     <pre id="diagnostics">Waiting for status…</pre>
   </details>
   <footer class="subtle">Workstation viewer · camera, head, and neck settings remain under the existing robot controls.</footer>
@@ -100,6 +141,7 @@
   let snapshotURLs = [];
   let activePair = null, rawURLs = {}, analysisURL = null, analysisRequest = null;
   let viewGeneration = 0, showingOverlay = false, analyzing = false;
+  let activeAnalysis = null, depthResult = null, depthRequest = null, depthURL = null, measuring = false;
   const failed = {left: false, right: false};
   const retries = {};
 
@@ -111,7 +153,9 @@
     }
   }
   function paint() {
-    $('analyze').disabled = analyzing || !status?.detector?.available;
+    $('analyze').disabled = analyzing || measuring || !status?.detector?.available;
+    $('depth-button').disabled = measuring || analyzing || !activeAnalysis || !status?.depth?.available;
+    $('depth-button').title = status?.depth?.reason || 'Measure this fixed stereo pair using its saved geometry';
     $('analyze').title = status?.detector?.reason || 'Analyze the captured right-eye image';
     if (frozen) return;
     const offline = !lastStatus || Date.now() - lastStatus > 3000;
@@ -245,6 +289,7 @@
       const image = new Image(); image.src = pendingURL; await image.decode();
       // A response arriving after Return to live must never replace newer pixels.
       if (!frozen || viewGeneration !== generation || activePair !== pair) return;
+      activeAnalysis = result;
       if (analysisURL) URL.revokeObjectURL(analysisURL);
       analysisURL = pendingURL; pendingURL = null;
       showingOverlay = true;
@@ -257,7 +302,7 @@
         'No detections above the 30% confidence threshold. The raw pair remains available.';
       for (const detection of result.detections) {
         const item = document.createElement('li');
-        item.textContent = `${detection.label} — ${(detection.confidence * 100).toFixed(1)}%`;
+        item.textContent = `${result.detections.indexOf(detection) + 1}. ${detection.label} — ${(detection.confidence * 100).toFixed(1)}%`;
         $('analysis-results').appendChild(item);
       }
       $('analysis-provenance').textContent = JSON.stringify({pair_id: result.pair_id,
@@ -269,6 +314,9 @@
         {type: 'application/json'}));
       $('metadata').href = detailURL;
       $('metadata').textContent = 'Pair + analysis details';
+      if (depthResult) saveDetails();
+      $('depth-button').hidden = false;
+      if (!status?.depth?.available) $('notice').textContent = status?.depth?.reason || '3D profile unavailable';
     } catch (error) {
       if (frozen && viewGeneration === generation) {
         $('analysis-summary').textContent = error.name === 'AbortError' ?
@@ -282,6 +330,75 @@
       }
     }
   };
+  function saveDetails() {
+    if (detailURL) URL.revokeObjectURL(detailURL);
+    detailURL = URL.createObjectURL(new Blob([JSON.stringify({pair: activePair,
+      analysis: activeAnalysis, depth: depthResult}, null, 2)], {type: 'application/json'}));
+    $('metadata').href = detailURL;
+    $('metadata').textContent = 'Download analysis';
+  }
+  function showPosition() {
+    const item = depthResult?.measurements[Number($('depth-selection').value)];
+    const valid = item?.status === 'measured';
+    $('position-distance').textContent = valid ? item.distance_m.toFixed(3) + ' m' : '3D unavailable';
+    ['x', 'y', 'z'].forEach((axis, i) => {
+      $('position-' + axis).textContent = valid ? item.xyz_camera_m[i].toFixed(3) : '—';
+    });
+    $('position-note').textContent = valid ?
+      `${Math.round(item.coverage * 100)}% matched coverage · ${item.samples} pixels · depth spread ${(item.depth_iqr_m * 100).toFixed(1)} cm (middle 50%).` :
+      (item?.reason || 'No object detections. The stereo depth map is still available.');
+    $('torso-position').textContent = item?.xyz_torso_m ?
+      `URDF torso estimate · X forward ${item.xyz_torso_m[0].toFixed(3)}, Y left ${item.xyz_torso_m[1].toFixed(3)}, Z up ${item.xyz_torso_m[2].toFixed(3)} m. Uses the neck readback observed with this pair.` :
+      'Torso coordinates unavailable for this capture; camera coordinates are independent of neck pose.';
+  }
+  $('depth-selection').onchange = showPosition;
+  $('depth-button').onclick = async () => {
+    if (!frozen || !activePair || !activeAnalysis || measuring) return;
+    const pair = activePair, generation = viewGeneration, controller = new AbortController();
+    depthRequest = controller; measuring = true; paint();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    $('depth-panel').hidden = false;
+    $('depth-status').textContent = 'Matching the two captured images and measuring visible surfaces…';
+    let pendingURL = null;
+    try {
+      const response = await fetch(`/api/stereo/pairs/${pair.pair_id}/depth`, {method: 'POST', signal: controller.signal});
+      const result = await response.json();
+      if (!response.ok) throw Error(result.detail || '3D analysis unavailable');
+      if (result.pair_id !== pair.pair_id || eyes.some(e => result.frame_ids[e] !== pair.eyes[e].frame_id)) {
+        throw Error('3D result does not belong to this captured pair.');
+      }
+      const responseImage = await fetch(result.image_url, {signal: controller.signal});
+      if (!responseImage.ok) throw Error('Pair expired. Return to live and capture again.');
+      pendingURL = URL.createObjectURL(await responseImage.blob());
+      const image = new Image(); image.src = pendingURL; await image.decode();
+      if (!frozen || generation !== viewGeneration || activePair !== pair) return;
+      if (depthURL) URL.revokeObjectURL(depthURL);
+      depthURL = pendingURL; pendingURL = null; depthResult = result;
+      $('depth-image').src = depthURL;
+      $('depth-content').hidden = false; $('depth-details').hidden = false;
+      $('depth-profile').textContent = result.source === 'sim' ? 'URDF geometry · ' + result.profile.lens : 'Saved physical calibration';
+      $('depth-status').textContent = `${Math.round(result.valid_fraction * 100)}% of the stereo view measured · ${result.elapsed_ms} ms. Keep the scene still; exposure synchronization is unknown.`;
+      $('depth-selection').replaceChildren();
+      for (const item of result.measurements) {
+        const option = document.createElement('option'); option.value = item.detection_index;
+        option.textContent = `${item.detection_index + 1}. ${item.label} · ${item.status === 'measured' ? item.distance_m.toFixed(2) + ' m' : 'unmeasured'}`;
+        $('depth-selection').appendChild(option);
+      }
+      $('depth-selection').disabled = !result.measurements.length;
+      const firstMeasured = result.measurements.find(m => m.status === 'measured');
+      if (firstMeasured) $('depth-selection').value = firstMeasured.detection_index;
+      $('depth-provenance').textContent = JSON.stringify(result, null, 2);
+      showPosition(); saveDetails();
+      $('notice').textContent = '3D measurements belong to this fixed stereo pair. Raw images remain available.';
+    } catch (error) {
+      if (frozen && generation === viewGeneration) $('depth-status').textContent = error.name === 'AbortError' ?
+        '3D analysis timed out. Retry this capture or return to live.' : error.message;
+    } finally {
+      clearTimeout(timeout);
+      if (pendingURL) URL.revokeObjectURL(pendingURL);
+      if (depthRequest === controller) { depthRequest = null; measuring = false; paint(); }
+    }
+  };
   $('toggle-overlay').onclick = () => {
     if (!frozen || !analysisURL) return;
     showingOverlay = !showingOverlay;
@@ -292,6 +409,13 @@
   $('resume').onclick = () => {
     viewGeneration += 1;
     if (analysisRequest) analysisRequest.abort();
+    if (depthRequest) depthRequest.abort();
+    depthRequest = null; measuring = false; depthResult = null; activeAnalysis = null;
+    if (depthURL) URL.revokeObjectURL(depthURL);
+    depthURL = null;
+    $('depth-image').removeAttribute('src');
+    $('depth-button').hidden = true; $('depth-panel').hidden = true;
+    $('depth-content').hidden = true; $('depth-details').hidden = true;
     analysisRequest = null; analyzing = false;
     activePair = null;
     frozen = false;

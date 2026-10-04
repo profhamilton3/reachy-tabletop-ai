@@ -1,4 +1,4 @@
-# Stereo View — phase one
+# Stereo View — capture, detection, and 3D analysis
 
 One workstation-hosted, read-only page for physical Reachy 1.2 and the simulator.
 The dark colors, side-by-side eyes, and compact status follow the simulator's
@@ -24,7 +24,7 @@ reachy-stereo --source robot --robot-host <reachy-address>
 ```
 
 Open http://localhost:8081. Exit with Ctrl+C. There is no NUC installation,
-Coral dependency, inference call, calibration run, or robot service restart.
+Coral dependency, calibration run, or robot service restart.
 `REACHY_ENABLE_MOTION` is irrelevant to this camera-only application: it mounts
 no motion routes and issues no control commands even if that variable is true.
 
@@ -61,7 +61,8 @@ Do not change the NUC environment to solve a workstation packaging problem.
 - Diagnostics contain SDK version, dimensions, BGR encoding, sampled frame IDs,
   queue drops, connection-time zoom/focus reads, and head/neck present versus
   goal positions and compliance. Unsupported reads are explicitly unavailable.
-  Head readbacks are connection-time snapshots, not live telemetry.
+  The initial head readback remains in diagnostics. A separate read-only worker
+  now observes neck angles every 200 ms and retains their timing with captures.
 
 ## Architecture and recovery
 
@@ -91,7 +92,7 @@ are observed, never changed automatically.
 - `scripts/CollectImages.ipynb`: successful physical SDK connection and camera
   collection loop.
 - `scripts/TestModel.ipynb`: successful physical camera loop feeding inference
-  and JPEG preview; inference is intentionally not part of this release.
+  and JPEG preview; its camera path is reused here.
 - `scripts/SampleCode-ObjectDetection-2023.ipynb`: saved camera shape and INTER
   zoom readback.
 - `tests/Testing the head.ipynb`, `tests/Taking Pictures.ipynb`: existing head,
@@ -200,8 +201,9 @@ require the NUC's Coral, call a cloud model, or retrain anything.
 **Pair + analysis details** includes the source/session/pair/frame IDs, model
 SHA-256 and export identity, thresholds, and available camera context. Camera
 settings are explicitly the connection-time reads, not a fresh measurement at
-capture; calibration identity is unavailable until supplied by a future source
-integration. No calibrated depth, 3D position, or grasp validity is implied.
+capture. The configured analysis profile is now retained with the pair; 3D
+measurements appear only after **Measure in 3D**. Detection alone does not
+imply a 3D position or grasp validity.
 
 Analysis is cached with its retained pair. Only one model invocation runs at a
 time; another request receives a short busy response. Expired pairs return 410,
@@ -216,3 +218,102 @@ class-aware suppression, raw-image preservation, correct pair identity,
 unavailable inference, and pair expiry during analysis. A single invocation on
 an existing recorded physical image verified that the real model loads and
 returns predictions; it is not an accuracy benchmark or a new physical trial.
+
+## 3D analysis
+
+Use **Capture pair → Analyze captured pair → Measure in 3D**. The page adds a
+right-eye depth map and a detection selector, showing distance, camera XYZ,
+matched coverage, and depth spread. Numbered markers correspond to the
+detection labels. Dark pixels have no measurement. The fixed colour scale
+covers 0.15–3.00 m; changing detections does not rerun inference or stereo.
+**Download analysis** includes the original pair, detector result, geometry
+identity, both frame IDs, measurements, and observed neck context.
+
+### Existing calibration and chosen geometry
+
+This increment consumes the completed work; it never invokes a calibration
+solver. Per the project decision on 2026-10-03, the simulator uses the URDF
+geometry represented in its scene, rather than substituting physical
+neck/shoulder measurements. Historical measurement questions in older notes
+are not new prerequisites for this deliverable.
+
+The simulator profile is a versioned copy of the existing companion source:
+
+- `scenes/calibration_measured_2026_08_27.yaml`: measured lens parameters.
+- `native_mujoco/calibration.py`: rendering uses `fy` for both pinhole axes.
+- `native_mujoco/distortion.py`: optional radial warp uses the measured
+  `fx`/`fy`. The depth rectification map explicitly composes these two stages.
+- `native_mujoco/model/reachy_1_2.xml`: URDF camera spacing 0.0725 m, camera
+  positions, corrected image axes, and the fixed 0.174 rad neck-origin pitch.
+
+The active local simulator uses `--distortion`, so the workstation default is
+`--sim-lens distorted`. For a simulator launched without distortion, use:
+
+```sh
+reachy-stereo --source sim --sim-lens pinhole
+```
+
+These settings select the already-established profile; they do not configure
+or modify the simulator. The profile assumes the measured lens profile at
+640×480. It is explicitly configured, not negotiated through the v1 SDK.
+The viewer does not automatically recognize a different simulator calibration
+or a fixture-camera backend. Use the matching rendered scene/profile for
+metric analysis. Mismatched dimensions return a clear unavailable response
+instead of rescaling or rotating images silently.
+
+For the physical robot, `--stereo-calibration PATH` (or
+`REACHY_STEREO_CALIBRATION`) selects an existing NPZ; the default is
+`scripts/stereo_calibration.npz`. It reads `mtx_l`, `dist_l`, `mtx_r`, `dist_r`,
+`R`, and `T` without refitting or replacing them with values from prose notes.
+Units follow `run_stereo_calibration.ipynb`: metres. The existing archive's
+stored-image size is 480×640; an archive may explicitly supply `image_size`
+as `[width, height]`. The original physical optical frame is retained. Its
+camera-to-torso mapping is not silently borrowed from the landscape renderer;
+physical mode currently reports camera coordinates only. The simulator's
+neck/shoulder transform remains the chosen URDF model.
+
+### Meaning and limits of the result
+
+Stereo uses OpenCV SGBM on rectified captured pixels and checks correspondence
+in both directions within one pixel. Object measurements use the median of
+valid points within the inner 60% of the detector box, requiring at least 24
+samples and 15% coverage. A depth IQR above max(8 cm, 20% of depth) is treated
+as mixed surfaces. Too few matches, mixed depths, and the model's `empty`
+class produce **3D unavailable**, not invented object positions.
+
+Camera XYZ refers to the original right optical frame: X right, Y down,
+Z forward, in metres. Distance is the length of that vector. This is a
+visible-surface estimate, not a segmented object centre or a grasp target.
+The reported interquartile spread describes the matched samples; it is not
+a calibrated accuracy/confidence interval.
+
+In simulator mode, a neck readback within 250 ms of capture and both observed
+frames enables the additional **URDF torso estimate**: X forward, Y left,
+Z up. It uses present positions, not goals. The pose is frozen with the pair,
+never substituted from a later live frame. Neck reads run independently of
+optional lens-status calls that may block in the SDK. Missing/stale neck
+telemetry omits torso coordinates while retaining camera measurements.
+
+Depth is computed on request, cached with the retained pair, and discarded
+on pair eviction. Source images are never annotated in place. Pair expiry
+during processing returns 410. Returning to live aborts browser requests and
+prevents late results from replacing the next capture. Exposure synchronization
+is still unavailable: use a stationary scene. No motion routes are added.
+
+### Bounded implementation checks
+
+The offline checks cover a known-disparity plane (metric scale and right-camera
+origin), URDF axis/pitch conversion, untextured input, dimension mismatch,
+cached pair identity, eviction during analysis, and preservation of raw pixels.
+A brief browser check on the existing distorted simulator produced a depth map
+and object measurements, including camera and URDF torso coordinates. This is
+an integration check, not a physical accuracy benchmark or a calibration run.
+
+Implementation check (2026-10-03): 23 offline tests passed in under one second
+after dependencies loaded. Scoped Python lint, page JavaScript syntax, and
+whitespace checks passed. The browser check used the already-running
+`FWDCenterLabSivaPool.yaml` simulator with the measured profile and distortion,
+without restarting it. About 41% of that captured image had accepted matches;
+one detected cylinder's surface was about 0.46 m from the right camera. The
+detector selector, raw-image toggle, and URDF torso readout worked. Those
+numbers describe that capture, not a general accuracy or speed guarantee.
