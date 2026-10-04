@@ -99,32 +99,42 @@ def _sdk_worker(settings: StereoSettings, messages, stop):
                 return
             stop.wait(1 / settings.fps)
 
-    def diagnostics():
+    def lens_diagnostics(eye):
         # These are optional reads, off the frame path. A stuck read cannot
         # prevent viewing; the containing process is disposable on shutdown.
-        for eye in EYES:
-            values = {}
-            for name in ("zoom_level", "zoom", "focus"):
-                try:
-                    value = getattr(getattr(robot, f"{eye}_camera"), name)
-                    values[name] = getattr(value, "name", value)
-                except Exception as exc:
-                    values[name] = None
-                    values[f"{name}_error"] = type(exc).__name__
-                publish({"kind": "diagnostics", "section": eye, "values": dict(values)})
-        head = {}
-        for name in ("neck_roll", "neck_pitch", "neck_yaw"):
+        values = {}
+        for name in ("zoom_level", "zoom", "focus"):
             try:
-                joint = getattr(robot.head.joints, name)
-                head[name] = {"present_deg": float(joint.present_position),
-                              "goal_deg": float(joint.goal_position), "compliant": bool(joint.compliant)}
+                value = getattr(getattr(robot, f"{eye}_camera"), name)
+                values[name] = getattr(value, "name", value)
             except Exception as exc:
-                head[name] = {"error": type(exc).__name__}
-        publish({"kind": "diagnostics", "section": "head_at_connection", "values": head})
+                values[name] = None
+                values[f"{name}_error"] = type(exc).__name__
+            publish({"kind": "diagnostics", "section": eye, "values": dict(values)})
+
+    def head_diagnostics():
+        # Lens reads can block in the SDK. Keep pose readbacks independent.
+        first = True
+        while not stop.is_set():
+            head = {}
+            read_started = time.monotonic_ns()
+            for name in ("neck_roll", "neck_pitch", "neck_yaw"):
+                try:
+                    joint = getattr(robot.head.joints, name)
+                    head[name] = {"present_deg": float(joint.present_position),
+                                  "goal_deg": float(joint.goal_position), "compliant": bool(joint.compliant)}
+                except Exception as exc:
+                    head[name] = {"error": type(exc).__name__}
+            if first:
+                publish({"kind": "diagnostics", "section": "head_at_connection", "values": head})
+                first = False
+            publish({"kind": "head", "values": head, "observed_ns": read_started})
+            stop.wait(.2)
 
     for eye in EYES:
         threading.Thread(target=read_eye, args=(eye,), daemon=True).start()
-    threading.Thread(target=diagnostics, daemon=True).start()
+        threading.Thread(target=lens_diagnostics, args=(eye,), daemon=True).start()
+    threading.Thread(target=head_diagnostics, daemon=True).start()
     stop.wait()
 
 
@@ -157,6 +167,7 @@ class StereoService:
         self.rates: dict[str, float] = {}
         self.dropped = {eye: 0 for eye in EYES}
         self.state = "connecting"
+        self.head = None
 
     def start(self):
         self.thread = threading.Thread(target=self._run, name="stereo-acquisition", daemon=True)
@@ -174,6 +185,7 @@ class StereoService:
             self.diagnostics.clear()
             self.errors.clear()
             self.rates.clear()
+            self.head = None
             self.dropped = {eye: 0 for eye in EYES}
 
     def _run(self):
@@ -218,6 +230,8 @@ class StereoService:
             elif kind == "diagnostics":
                 self.diagnostics[message["section"]] = message["values"]
                 LOG.info("SDK readback %s: %s", message["section"], message["values"])
+            elif kind == "head":
+                self.head = {"joints": message["values"], "observed_ns": message["observed_ns"]}
             elif kind == "error":
                 self.errors[message.get("eye", "connection")] = message["error"]
                 LOG.warning("SDK %s: %s", message.get("eye", "connection"), message["error"])
@@ -295,6 +309,12 @@ class StereoService:
                                          "settings_at_connection": copy.deepcopy(
                                              {e: self.diagnostics.get(e) for e in EYES})},
                       "frames": dict(self.frames)}
+            # Freeze observed readbacks with the pair; never use later live head angles.
+            if self.head:
+                age_ms = (time.monotonic_ns() - self.head["observed_ns"]) / 1e6
+                skew_ms = max(abs(f.observed_ns - self.head["observed_ns"]) / 1e6 for f in self.frames.values())
+                record["head_context"] = {**copy.deepcopy(self.head), "age_at_capture_ms": round(age_ms, 1),
+                                          "frame_skew_ms": round(skew_ms, 1)}
             self.snapshots[pair_id] = record
             while len(self.snapshots) > 4:
                 self.snapshots.popitem(last=False)
@@ -302,7 +322,7 @@ class StereoService:
 
     @staticmethod
     def snapshot_metadata(record):
-        return {**{k: v for k, v in record.items() if k not in ("frames", "analysis")},
+        return {**{k: v for k, v in record.items() if k not in ("frames", "analysis", "depth", "depth_image")},
                 "eyes": {e: {**f.metadata(), "url": f"/api/stereo/pairs/{record['pair_id']}/{e}.jpg"}
                          for e, f in record["frames"].items()}}
 
@@ -323,6 +343,10 @@ def main():
     parser.add_argument("--preview-width", type=int, default=640)
     parser.add_argument("--detector-model", default=os.environ.get("REACHY_DETECTOR_MODEL"),
                         help="Existing tabletop TFLite detector; defaults to tests/best.tflite in this checkout")
+    parser.add_argument("--sim-lens", choices=("distorted", "pinhole"), default="distorted",
+                        help="Match the simulator's --distortion setting (default: distorted)")
+    parser.add_argument("--stereo-calibration", default=os.environ.get("REACHY_STEREO_CALIBRATION"),
+                        help="Physical source's existing NPZ calibration; default scripts/stereo_calibration.npz")
     args = parser.parse_args()
     if args.source == "robot" and not args.robot_host:
         parser.error("Robot mode requires --robot-host or REACHY_IP")
@@ -333,7 +357,8 @@ def main():
         fps=args.fps, preview_width=args.preview_width,
     )
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    uvicorn.run(create_app(settings, detector_model=args.detector_model), host=args.bind, port=args.port,
+    uvicorn.run(create_app(settings, detector_model=args.detector_model, sim_lens=args.sim_lens,
+                           stereo_calibration=args.stereo_calibration), host=args.bind, port=args.port,
                 access_log=False, timeout_graceful_shutdown=3)
 
 

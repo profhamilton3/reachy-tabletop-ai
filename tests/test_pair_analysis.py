@@ -58,7 +58,7 @@ def test_analysis_retains_captured_pixels_and_raw_view(monkeypatch):
         assert result["frame_id"] == original.frame_id
         assert result["session_id"] == pair["session_id"]
         assert detector.seen is original.pixels
-        assert result["camera_context"]["calibration_id"] is None
+        assert result["camera_context"]["calibration_id"] == pair["camera_context"]["calibration_id"]
         assert client.get(result["overlay_url"]).status_code == 200
         assert client.get(result["raw_url"]).content == raw_before
         assert not np.any(original.pixels)
