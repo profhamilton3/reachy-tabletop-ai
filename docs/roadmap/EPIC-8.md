@@ -856,6 +856,23 @@ At least one button and one hinge control have promoted recipes that pass all st
 
 **Work item:** `R12-808`
 
+### Status as shipped (amended 2026-10-08, reachy-1-2-sim#28)
+
+**Re-scoped.** `R12-808` shipped as the **adaptive sampler**, not this UI: reachy-1-2-sim PR #13, commit `995ea68` (`src/reachy_ai/search/samplers.py`, `runner.py`, `cli.py`; tests `test_search_adaptive_sampler.py`). The browser research UI below was **not built**; it is future scope (§13).
+
+The reachy-1-2-sim **command panel** (`web/`, served by `web/camera_server.py`) is a different thing: it runs typed commands as live simulator abilities. It covers only these capabilities from the list below, and only for live execution, never for studies:
+
+| Capability (below) | Where it exists today |
+|---|---|
+| select task/control/object | panel: a typed command picks the ability and object (live execution, not a study) |
+| start bounded study / cancel study | **CLI only**: `python -m reachy_ai.search.cli run` / `resume`; the panel's Stop cancels a motion, not a study |
+| view backend/model/scene identity | panel `/status` (backend, frame age, `frames_stale`) and the SimLink scene revision; experience identity in `web/panel_provenance.py` |
+| view trial counts and status; view best valid candidate | **CLI only**: `cli show`, `cli report` (`src/reachy_ai/search/report.py`, R12-807) |
+| compare baseline vs candidate | **CLI only**: `cli compare` |
+| replay selected trial; inspect failure/contact explanation | not built |
+| request promotion validation; approve/reject promotion | not built as a UI. Promoted recipes are **retrieved** by the panel planner (`web/panel_recipes.py`, reachy-1-2-sim #90); the panel never starts a search |
+| export evidence bundle | partial, CLI: `cli export` (best-recipe export, R12-809 below) |
+
 ### Proposed capabilities
 
 ```text
@@ -894,6 +911,10 @@ A researcher can start, stop, resume, inspect, replay, validate, and promote a s
 ## PR 8.9 — Hybrid compatibility benchmark and research release bundle
 
 **Work item:** `R12-809`
+
+### Status as shipped (amended 2026-10-08, reachy-1-2-sim#28)
+
+**Re-scoped.** `R12-809` shipped as the **best-recipe export** (`cli export`): reachy-1-2-sim PR #14, commit `e1521f2` (`src/reachy_ai/search/cli.py`, `runner.py`; tests `test_search_export.py`). It closes the search-to-execution loop for one recipe. The hybrid compatibility benchmark and the versioned release bundle described below were **not built**, and the Epic 8 exit gate below has **not** been met.
 
 ### Scope
 
@@ -1046,7 +1067,9 @@ The following are intentionally outside initial Epic 8:
 - sim-to-real calibration and transfer;
 - automatic physical-robot execution;
 - multi-agent or language-model motion planning;
-- Gazebo adapter.
+- Gazebo adapter;
+- **browser research UI** (amended 2026-10-08, reachy-1-2-sim#28): the PR 8.8 capabilities not shipped — starting, cancelling and resuming studies, trial replay, failure/contact inspection, and promotion review from a browser. Today's substitutes are the `reachy_ai.search` CLI (`run`, `resume`, `show`, `report`, `compare`, `export`) and the command panel's live-execution views. When built, it keeps PR 8.8's requirements (typed localhost-only API, no shell or file paths from browser input, no hardware endpoint, cooperative cancellation);
+- **hybrid compatibility benchmark and release bundle** (the unshipped PR 8.9 scope, same amendment).
 
 These may be proposed only after Epic 8 produces deterministic episodes, trustworthy metrics, compatible experience identity, and promoted baseline recipes.
 
