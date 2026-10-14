@@ -171,7 +171,9 @@
       $(eye + '-veil').textContent = state === 'stale' ? 'Last image is stale' :
         (offline ? 'Camera service unavailable' : 'Waiting for ' + eye + ' camera…');
       $(eye + '-metrics').textContent = data?.frame ?
-        `${data.frame.width} × ${data.frame.height} · ${live ? data.sampled_fps : '—'} fps · observed age ${Math.round(data.observed_age_ms)} ms` : 'No frame received';
+        `${data.frame.width} × ${data.frame.height} · ${live ? data.sampled_fps : '—'} fps · observed age ${Math.round(data.observed_age_ms)} ms` +
+        (data.queue_drops || data.superseded ? ` · queue drops ${data.queue_drops} · skipped ${data.superseded}` : '') :
+        'No frame received';
     }
     $('capture').disabled = busy || offline || !status?.can_capture;
   }

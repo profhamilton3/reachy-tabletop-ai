@@ -68,8 +68,13 @@ Do not change the NUC environment to solve a workstation packaging problem.
 
 `stereo.py` creates one ReachySDK connection in a disposable child process,
 using the same `left_camera` / `right_camera` and `last_frame` pattern as the
-working notebooks. Its two camera readers share a bounded four-message queue.
-The web service holds the latest immutable BGR frames and encodes each preview
+working notebooks. Its two camera readers and the head readback share a bounded
+four-message observation queue. When it is full the oldest message is
+discarded, so the queue always holds the newest. Ready, error and diagnostics
+messages use a separate unbounded control queue, so a failure report is never
+dropped. The web service takes everything already delivered at once, applies
+only the newest frame per eye and the newest head readback, then the control
+messages. It holds the latest immutable BGR frames and encodes each preview
 once, independent of viewer count. A later perception consumer can use those
 same frames instead of decoding browser output.
 
@@ -82,9 +87,12 @@ attempt gets a new session identity. A missing eye can therefore cause both
 preview streams to briefly reconnect; the other eye remains viewable before
 that timeout.
 
-The worker polls once per preview interval; queue-drop counts cover local queue
-delivery gaps, not frames intentionally skipped between SDK reads or camera-side
-loss. Receive/capture timestamps remain unknown. Settings such as current zoom
+The worker polls once per preview interval. `/api/stereo/status` reports, per
+eye, `queue_drops` (discarded in the worker because the queue was full) and
+`superseded` (delivered, then skipped because a newer frame of the same eye
+arrived in the same batch), and the head equivalents under `delivery`. The page
+shows them when nonzero. Neither count covers frames skipped between SDK reads
+or camera-side loss. Receive/capture timestamps remain unknown. Settings such as current zoom
 are observed, never changed automatically.
 
 ## Existing evidence and reuse

@@ -25,6 +25,7 @@ import numpy as np
 
 LOG = logging.getLogger(__name__)
 EYES = ("left", "right")
+OBSERVATION_QUEUE = 4  # frames and head readbacks in flight; the newest are kept
 
 
 @dataclass(frozen=True)
@@ -48,15 +49,57 @@ class StereoSettings:
             raise ValueError("Require positive skew and 0 < stale interval < restart interval")
 
 
-def _sdk_worker(settings: StereoSettings, messages, stop):
-    """Reuse the notebooks' ReachySDK + last_frame path, once per application."""
+def _source(message):
+    """The observation stream a frame or head message belongs to."""
+    return message.get("eye") or message["kind"]
+
+
+class _LatestObservations:
+    """Producer side of the bounded observation queue: when it is full, discard
+    the OLDEST message so the queue always holds the newest. Counts discards per
+    source and stamps the running counts on every message it sends."""
+
+    def __init__(self, messages, discard_wait=0.1):
+        self.messages = messages
+        self.discard_wait = discard_wait
+        self.lock = threading.Lock()
+        self.dropped: dict[str, int] = {}
+
+    def publish(self, message):
+        with self.lock:
+            message["dropped"] = dict(self.dropped)
+            try:
+                self.messages.put_nowait(message)
+                return
+            except queue.Full:
+                pass
+            try:
+                # Bounded wait: an mp.Queue reports full before its feeder thread
+                # has flushed the oldest item. Only reached while the consumer stalls.
+                old = self.messages.get(timeout=self.discard_wait)
+                self.dropped[_source(old)] = self.dropped.get(_source(old), 0) + 1
+            except queue.Empty:
+                pass  # The consumer took it meanwhile.
+            message["dropped"] = dict(self.dropped)
+            try:
+                self.messages.put_nowait(message)
+            except queue.Full:
+                self.dropped[_source(message)] = self.dropped.get(_source(message), 0) + 1
+
+
+def _sdk_worker(settings: StereoSettings, messages, control, stop):
+    """Reuse the notebooks' ReachySDK + last_frame path, once per application.
+
+    Frames and head readbacks go to the bounded `messages` queue, newest kept.
+    Ready, error and diagnostics messages go to `control`, which is unbounded:
+    they are few, and a failure report must never be dropped.
+    """
     # Ctrl+C belongs to the web-server parent, which disposes this worker.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    observe = _LatestObservations(messages).publish  # A slow consumer must never block SDK acquisition.
+
     def publish(message):
-        try:
-            messages.put_nowait(message)
-        except queue.Full:
-            pass  # A slow consumer must never block SDK acquisition.
+        control.put_nowait(message)
 
     # The SDK reports lost streams through background-thread exceptions.
     # Keep the useful failure type without dumping gRPC endpoint addresses.
@@ -92,7 +135,7 @@ def _sdk_worker(settings: StereoSettings, messages, stop):
                 if frame is not previous and frame is not None and frame.size:
                     previous = frame
                     sequence += 1
-                    publish({"kind": "frame", "eye": eye, "sequence": sequence,
+                    observe({"kind": "frame", "eye": eye, "sequence": sequence,
                              "observed_ns": time.monotonic_ns(), "pixels": frame.copy()})
             except Exception as exc:
                 publish({"kind": "error", "eye": eye, "error": type(exc).__name__})
@@ -128,7 +171,7 @@ def _sdk_worker(settings: StereoSettings, messages, stop):
             if first:
                 publish({"kind": "diagnostics", "section": "head_at_connection", "values": head})
                 first = False
-            publish({"kind": "head", "values": head, "observed_ns": read_started})
+            observe({"kind": "head", "values": head, "observed_ns": read_started})
             stop.wait(.2)
 
     for eye in EYES:
@@ -165,7 +208,8 @@ class StereoService:
         self.diagnostics: dict[str, Any] = {}
         self.errors: dict[str, str] = {}
         self.rates: dict[str, float] = {}
-        self.dropped = {eye: 0 for eye in EYES}
+        self.dropped: dict[str, int] = {}     # lost to a full queue, counted by the SDK process
+        self.superseded: dict[str, int] = {}  # delivered, skipped for a newer one of the same source
         self.state = "connecting"
         self.head = None
 
@@ -186,23 +230,23 @@ class StereoService:
             self.errors.clear()
             self.rates.clear()
             self.head = None
-            self.dropped = {eye: 0 for eye in EYES}
+            self.dropped = {}
+            self.superseded = {}
 
     def _run(self):
         context = mp.get_context("spawn")
         while not self.stop_event.is_set():
             self._new_session()
-            messages = context.Queue(maxsize=4)
+            messages = context.Queue(maxsize=OBSERVATION_QUEUE)
+            control = context.Queue()
             worker_stop = context.Event()
-            worker = context.Process(target=_sdk_worker, args=(self.settings, messages, worker_stop), daemon=True)
+            worker = context.Process(target=_sdk_worker, args=(self.settings, messages, control, worker_stop),
+                                     daemon=True)
             worker.start()
             started = time.monotonic()
             try:
                 while not self.stop_event.is_set():
-                    try:
-                        self._accept(messages.get(timeout=0.2))
-                    except queue.Empty:
-                        pass
+                    self._drain(messages, control)
                     with self.lock:
                         ages = [(time.monotonic_ns() - self.frames[e].observed_ns) / 1e9
                                 if e in self.frames else time.monotonic() - started for e in EYES]
@@ -215,15 +259,49 @@ class StereoService:
                 if worker.is_alive():
                     worker.terminate()
                     worker.join(timeout=1)
+                self._drain_control(control)  # e.g. the error that ended the worker
                 messages.close()
+                control.close()
                 with self.lock:
                     self.state = "reconnecting"
                     self.frames.clear()
             self.stop_event.wait(2)
 
+    def _drain(self, messages, control, timeout=0.2):
+        """Apply everything already delivered: the newest frame per eye and the
+        newest head readback, then control messages in order. Control goes last
+        so an older frame from the same batch cannot clear a newer error."""
+        batch = []
+        try:
+            batch.append(messages.get(timeout=timeout))
+            while True:
+                batch.append(messages.get_nowait())
+        except queue.Empty:
+            pass
+        newest: dict[str, dict] = {}
+        for message in batch:
+            source = _source(message)
+            if source in newest:
+                with self.lock:
+                    self.superseded[source] = self.superseded.get(source, 0) + 1
+            newest[source] = message
+        for message in newest.values():
+            self._accept(message)
+        self._drain_control(control)
+
+    def _drain_control(self, control):
+        while True:
+            try:
+                self._accept(control.get_nowait())
+            except queue.Empty:
+                return
+
     def _accept(self, message):
         kind = message["kind"]
         with self.lock:
+            for source, count in message.get("dropped", {}).items():
+                # Running totals from the SDK process; messages may apply out of order.
+                self.dropped[source] = max(self.dropped.get(source, 0), count)
             if kind == "ready":
                 self.diagnostics["sdk_version"] = message["sdk_version"]
                 LOG.info("SDK connected; source=%s version=%s", self.settings.source, message["sdk_version"])
@@ -254,7 +332,6 @@ class StereoService:
                 if previous:
                     elapsed = (message["observed_ns"] - previous.observed_ns) / 1e9
                     self.rates[eye] = 1 / elapsed if elapsed > 0 else 0
-                    self.dropped[eye] += max(0, message["sequence"] - previous.sequence - 1)
                 else:
                     LOG.info("%s camera: %sx%s BGR; source timestamps unavailable", eye, width, height)
                 self.frames[eye] = EyeFrame(
@@ -275,7 +352,8 @@ class StereoService:
                              if frame else ("disconnected" if eye in self.errors else self.state),
                              "observed_age_ms": round(age, 1) if age is not None else None,
                              "sampled_fps": round(self.rates.get(eye, 0), 1),
-                             "queue_drops": self.dropped[eye], "error": self.errors.get(eye),
+                             "queue_drops": self.dropped.get(eye, 0),
+                             "superseded": self.superseded.get(eye, 0), "error": self.errors.get(eye),
                              "frame": frame.metadata() if frame else None}
                 if frame is None and eyes[eye]["state"] == "live":
                     eyes[eye]["state"] = "connecting"
@@ -288,6 +366,9 @@ class StereoService:
                     "motion_controls": False, "recording": False, "eyes": eyes,
                     "observation_skew_ms": round(skew, 1) if skew is not None else None,
                     "can_capture": can_capture, "diagnostics": dict(self.diagnostics),
+                    "delivery": {"observation_queue": OBSERVATION_QUEUE, "policy": "newest kept",
+                                 "head_queue_drops": self.dropped.get("head", 0),
+                                 "head_superseded": self.superseded.get("head", 0)},
                     "connection_error": self.errors.get("connection"),
                     "timing": "Local SDK frame observation; capture timestamps and exposure sync unavailable",
                     "calibration_id": None, "simulator_backend": None,
