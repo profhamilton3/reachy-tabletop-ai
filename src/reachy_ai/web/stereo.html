@@ -39,6 +39,10 @@
     :focus-visible { outline: 2px solid #80cbc4; outline-offset: 3px; }
     #notice { min-height: 24px; margin: 14px 0; color: #ffb74d; font-size: 12px; line-height: 1.6; }
     #pair-info { overflow-wrap: anywhere; }
+    #analysis-panel { margin-top: 18px; padding: 18px; background: #16213e;
+      border: 1px solid #2b3a63; border-radius: 8px; }
+    #analysis-panel h2 { margin-bottom: 10px; }
+    #analysis-results { font-size: 12px; line-height: 1.9; padding-left: 20px; }
     details { margin-top: 22px; border-top: 1px solid #2b3a63; padding-top: 18px; }
     summary { cursor: pointer; color: #90caf9; font-size: 12px; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #aab5cb; font-size: 11px; line-height: 1.6; }
@@ -70,9 +74,16 @@
   <section class="toolbar" aria-label="View controls">
     <div><div id="view-mode">Live preview</div><div class="subtle" id="pair-info">Independent live feeds · capture a pair to inspect fixed images</div></div>
     <div class="actions"><button id="capture" disabled>Capture pair</button><button id="resume" hidden>Return to live</button>
+      <button id="analyze" hidden>Analyze captured pair</button><button id="toggle-overlay" hidden>Show raw image</button>
       <a class="download" id="metadata" hidden download="stereo-pair.json">Pair details</a></div>
   </section>
   <p id="notice" role="status" aria-live="polite">Connecting to camera service…</p>
+  <section id="analysis-panel" hidden aria-label="Captured-pair analysis">
+    <h2>RIGHT-EYE ANALYSIS</h2>
+    <div id="analysis-summary" class="subtle" role="status" aria-live="polite"></div>
+    <ul id="analysis-results"></ul>
+    <details><summary>Model &amp; source image</summary><pre id="analysis-provenance"></pre></details>
+  </section>
   <details><summary>Connection &amp; camera diagnostics</summary>
     <p class="subtle">Age measures time since this application observed a new SDK frame, not exposure time.
       Head and lens readbacks are collected at connection. Snapshot pairs are held in memory; the four most recent are retained.</p>
@@ -87,6 +98,8 @@
   let frozen = false, busy = false, session = null, detailURL = null, status = null;
   let lastStatus = 0;
   let snapshotURLs = [];
+  let activePair = null, rawURLs = {}, analysisURL = null, analysisRequest = null;
+  let viewGeneration = 0, showingOverlay = false, analyzing = false;
   const failed = {left: false, right: false};
   const retries = {};
 
@@ -98,6 +111,8 @@
     }
   }
   function paint() {
+    $('analyze').disabled = analyzing || !status?.detector?.available;
+    $('analyze').title = status?.detector?.reason || 'Analyze the captured right-eye image';
     if (frozen) return;
     const offline = !lastStatus || Date.now() - lastStatus > 3000;
     for (const eye of eyes) {
@@ -174,9 +189,12 @@
       const failure = loaded.find(result => result.status === 'rejected');
       if (failure) throw failure.reason;
       frozen = true;
+      viewGeneration += 1;
+      activePair = pair;
       snapshotURLs = pendingURLs;
       for (const eye of eyes) {
         clearTimeout(retries[eye]);
+        rawURLs[eye] = pair.eyes[eye].displayURL;
         $(eye + '-image').src = pair.eyes[eye].displayURL;
         delete pair.eyes[eye].displayURL;
         $(eye + '-veil').hidden = true;
@@ -188,6 +206,11 @@
       $('pair-info').textContent = pair.source.toUpperCase() + ' · Pair ' + pair.pair_id;
       $('notice').textContent = `Observation skew: ${pair.observation_skew_ms.toFixed(1)} ms. Exposure synchronization is unknown.`;
       $('capture').hidden = true; $('resume').hidden = false; $('metadata').hidden = false;
+      $('analyze').hidden = false;
+      if (!status?.detector?.available) {
+        $('analysis-panel').hidden = false;
+        $('analysis-summary').textContent = status?.detector?.reason || 'Detector unavailable';
+      }
       if (detailURL) URL.revokeObjectURL(detailURL);
       detailURL = URL.createObjectURL(new Blob([JSON.stringify(pair, null, 2)], {type: 'application/json'}));
       $('metadata').href = detailURL;
@@ -197,14 +220,93 @@
     }
     finally { busy = false; paint(); }
   };
+  $('analyze').onclick = async () => {
+    if (!frozen || !activePair || analyzing) return;
+    const pair = activePair, generation = viewGeneration;
+    const controller = new AbortController();
+    analysisRequest = controller;
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    analyzing = true; paint();
+    $('analysis-panel').hidden = false;
+    $('analysis-summary').textContent = 'Analyzing the captured right-eye image…';
+    $('analysis-results').replaceChildren();
+    let pendingURL = null;
+    try {
+      const response = await fetch(`/api/stereo/pairs/${pair.pair_id}/analysis`,
+        {method: 'POST', signal: controller.signal});
+      const result = await response.json();
+      if (!response.ok) throw Error(result.detail || 'Analysis unavailable');
+      if (result.pair_id !== pair.pair_id || result.frame_id !== pair.eyes.right.frame_id) {
+        throw Error('Analysis image identity does not match this capture.');
+      }
+      const overlay = await fetch(result.overlay_url, {signal: controller.signal});
+      if (!overlay.ok) throw Error('Captured pair expired. Return to live and capture again.');
+      pendingURL = URL.createObjectURL(await overlay.blob());
+      const image = new Image(); image.src = pendingURL; await image.decode();
+      // A response arriving after Return to live must never replace newer pixels.
+      if (!frozen || viewGeneration !== generation || activePair !== pair) return;
+      if (analysisURL) URL.revokeObjectURL(analysisURL);
+      analysisURL = pendingURL; pendingURL = null;
+      showingOverlay = true;
+      $('right-image').src = analysisURL;
+      $('right-state').textContent = 'Analyzed';
+      $('toggle-overlay').hidden = false;
+      $('toggle-overlay').textContent = 'Show raw image';
+      $('analysis-summary').textContent = result.detections.length ?
+        `${result.detections.length} model predictions · ${result.elapsed_ms} ms · right camera only` :
+        'No detections above the 30% confidence threshold. The raw pair remains available.';
+      for (const detection of result.detections) {
+        const item = document.createElement('li');
+        item.textContent = `${detection.label} — ${(detection.confidence * 100).toFixed(1)}%`;
+        $('analysis-results').appendChild(item);
+      }
+      $('analysis-provenance').textContent = JSON.stringify({pair_id: result.pair_id,
+        frame_id: result.frame_id, model: result.model, parameters: result.parameters,
+        camera_context: result.camera_context}, null, 2);
+      $('notice').textContent = 'Analysis is attached to this captured right-eye image. Left image remains raw.';
+      if (detailURL) URL.revokeObjectURL(detailURL);
+      detailURL = URL.createObjectURL(new Blob([JSON.stringify({pair, analysis: result}, null, 2)],
+        {type: 'application/json'}));
+      $('metadata').href = detailURL;
+      $('metadata').textContent = 'Pair + analysis details';
+    } catch (error) {
+      if (frozen && viewGeneration === generation) {
+        $('analysis-summary').textContent = error.name === 'AbortError' ?
+          'Analysis timed out. You can retry; the raw pair is unchanged.' : error.message;
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (pendingURL) URL.revokeObjectURL(pendingURL);
+      if (analysisRequest === controller) {
+        analysisRequest = null; analyzing = false; paint();
+      }
+    }
+  };
+  $('toggle-overlay').onclick = () => {
+    if (!frozen || !analysisURL) return;
+    showingOverlay = !showingOverlay;
+    $('right-image').src = showingOverlay ? analysisURL : rawURLs.right;
+    $('right-state').textContent = showingOverlay ? 'Analyzed' : 'Captured';
+    $('toggle-overlay').textContent = showingOverlay ? 'Show raw image' : 'Show detections';
+  };
   $('resume').onclick = () => {
+    viewGeneration += 1;
+    if (analysisRequest) analysisRequest.abort();
+    analysisRequest = null; analyzing = false;
+    activePair = null;
     frozen = false;
     $('view-mode').textContent = 'Live preview';
     $('pair-info').textContent = 'Independent live feeds · capture a pair to inspect fixed images';
     $('capture').hidden = false; $('resume').hidden = true; $('metadata').hidden = true;
+    $('metadata').textContent = 'Pair details';
+    $('analyze').hidden = true; $('toggle-overlay').hidden = true; $('analysis-panel').hidden = true;
+    $('analysis-results').replaceChildren(); $('analysis-provenance').textContent = '';
     connectStreams();
     for (const url of snapshotURLs) URL.revokeObjectURL(url);
     snapshotURLs = [];
+    rawURLs = {};
+    if (analysisURL) URL.revokeObjectURL(analysisURL);
+    analysisURL = null;
     paint();
   };
   setInterval(paint, 500);

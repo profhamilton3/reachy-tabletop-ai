@@ -6,6 +6,7 @@ No joint, compliance, zoom, focus, or robot-service commands are issued here.
 """
 
 import argparse
+import copy
 import logging
 import multiprocessing as mp
 import os
@@ -290,6 +291,9 @@ class StereoService:
             record = {"pair_id": pair_id, "session_id": self.session, "source": self.settings.source,
                       "pairing": "latest observed frames; not synchronized exposure",
                       "observation_skew_ms": self.status()["observation_skew_ms"],
+                      "camera_context": {"calibration_id": None,
+                                         "settings_at_connection": copy.deepcopy(
+                                             {e: self.diagnostics.get(e) for e in EYES})},
                       "frames": dict(self.frames)}
             self.snapshots[pair_id] = record
             while len(self.snapshots) > 4:
@@ -298,7 +302,7 @@ class StereoService:
 
     @staticmethod
     def snapshot_metadata(record):
-        return {**{k: v for k, v in record.items() if k != "frames"},
+        return {**{k: v for k, v in record.items() if k not in ("frames", "analysis")},
                 "eyes": {e: {**f.metadata(), "url": f"/api/stereo/pairs/{record['pair_id']}/{e}.jpg"}
                          for e, f in record["frames"].items()}}
 
@@ -317,6 +321,8 @@ def main():
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--fps", type=float, default=15)
     parser.add_argument("--preview-width", type=int, default=640)
+    parser.add_argument("--detector-model", default=os.environ.get("REACHY_DETECTOR_MODEL"),
+                        help="Existing tabletop TFLite detector; defaults to tests/best.tflite in this checkout")
     args = parser.parse_args()
     if args.source == "robot" and not args.robot_host:
         parser.error("Robot mode requires --robot-host or REACHY_IP")
@@ -327,7 +333,7 @@ def main():
         fps=args.fps, preview_width=args.preview_width,
     )
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    uvicorn.run(create_app(settings), host=args.bind, port=args.port,
+    uvicorn.run(create_app(settings, detector_model=args.detector_model), host=args.bind, port=args.port,
                 access_log=False, timeout_graceful_shutdown=3)
 
 

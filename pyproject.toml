@@ -21,6 +21,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+analysis = [
+    "ai-edge-litert>=2.2,<3",
+]
 coral = [
     "pycoral",
     "tflite-runtime",
