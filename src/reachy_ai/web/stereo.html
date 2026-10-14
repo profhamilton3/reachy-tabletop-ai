@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Reachy — Stereo View</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      background: #1a1a2e; color: #e0e0e0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { max-width: 1500px; margin: auto; padding: 32px 24px; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+    h1 { color: #90caf9; font-size: 22px; font-weight: 500; margin: 0 0 8px; }
+    .subtle { color: #9aa6c1; font-size: 12px; line-height: 1.7; }
+    .badges, .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .badge { border: 1px solid #3b4d73; border-radius: 20px; padding: 7px 12px; font-size: 11px; }
+    #source { color: #80cbc4; background: #102d38; border-color: #34636a; }
+    .cameras { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 28px; }
+    .camera { background: #16213e; border: 1px solid #2b3a63; border-radius: 8px; overflow: hidden; }
+    .camera-head { padding: 16px; display: flex; justify-content: space-between; align-items: center; }
+    h2 { font-size: 12px; letter-spacing: .12em; color: #80cbc4; margin: 0; font-weight: 500; }
+    .state { font-size: 11px; color: #ffb74d; }
+    .state.live { color: #81c784; }
+    .viewport { background: #0c1423; position: relative; min-height: 260px; aspect-ratio: 4/3;
+      display: flex; align-items: center; justify-content: center; }
+    .viewport img { width: 100%; height: 100%; object-fit: contain; position: absolute; }
+    .viewport img:not([src]) { visibility: hidden; }
+    .veil { position: absolute; inset: 0; display: grid; place-items: center; background: #0c1423b8;
+      color: #c5cee0; font-size: 13px; text-align: center; padding: 16px; }
+    .veil[hidden] { display: none; }
+    .metrics { padding: 13px 16px; min-height: 44px; font-size: 11px; color: #aab5cb; }
+    .toolbar { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px;
+      align-items: center; margin-top: 20px; padding: 18px; border: 1px solid #2b3a63; border-radius: 8px; }
+    button, .download { font: inherit; font-size: 12px; border: 1px solid #43638a; background: #0f3460;
+      color: #e0e0e0; border-radius: 5px; padding: 10px 14px; cursor: pointer; text-decoration: none; }
+    button:hover, .download:hover { border-color: #90caf9; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    :focus-visible { outline: 2px solid #80cbc4; outline-offset: 3px; }
+    #notice { min-height: 24px; margin: 14px 0; color: #ffb74d; font-size: 12px; line-height: 1.6; }
+    #pair-info { overflow-wrap: anywhere; }
+    details { margin-top: 22px; border-top: 1px solid #2b3a63; padding-top: 18px; }
+    summary { cursor: pointer; color: #90caf9; font-size: 12px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #aab5cb; font-size: 11px; line-height: 1.6; }
+    footer { margin-top: 24px; }
+    [hidden] { display: none !important; }
+    @media (max-width: 760px) { main { padding: 20px 12px; } header { align-items: start; flex-direction: column; }
+      .cameras { grid-template-columns: 1fr; } h1 { font-size: 20px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>Reachy 1.2 — Stereo View</h1><div class="subtle">Two eyes. One view of the tabletop.</div></div>
+    <div class="badges"><span class="badge" id="source">CONNECTING</span>
+      <span class="badge">READ ONLY</span><span class="badge">RECORDING OFF</span></div>
+  </header>
+  <section class="cameras" aria-label="Stereo cameras">
+    <article class="camera">
+      <div class="camera-head"><h2>LEFT CAMERA</h2><span class="state" id="left-state">Connecting</span></div>
+      <div class="viewport"><img id="left-image" alt="Left camera view"><div class="veil" id="left-veil">Waiting for left camera…</div></div>
+      <div class="metrics" id="left-metrics">No frame received</div>
+    </article>
+    <article class="camera">
+      <div class="camera-head"><h2>RIGHT CAMERA</h2><span class="state" id="right-state">Connecting</span></div>
+      <div class="viewport"><img id="right-image" alt="Right camera view"><div class="veil" id="right-veil">Waiting for right camera…</div></div>
+      <div class="metrics" id="right-metrics">No frame received</div>
+    </article>
+  </section>
+  <section class="toolbar" aria-label="View controls">
+    <div><div id="view-mode">Live preview</div><div class="subtle" id="pair-info">Independent live feeds · capture a pair to inspect fixed images</div></div>
+    <div class="actions"><button id="capture" disabled>Capture pair</button><button id="resume" hidden>Return to live</button>
+      <a class="download" id="metadata" hidden download="stereo-pair.json">Pair details</a></div>
+  </section>
+  <p id="notice" role="status" aria-live="polite">Connecting to camera service…</p>
+  <details><summary>Connection &amp; camera diagnostics</summary>
+    <p class="subtle">Age measures time since this application observed a new SDK frame, not exposure time.
+      Head and lens readbacks are collected at connection. Snapshot pairs are held in memory; the four most recent are retained.</p>
+    <pre id="diagnostics">Waiting for status…</pre>
+  </details>
+  <footer class="subtle">Workstation viewer · camera, head, and neck settings remain under the existing robot controls.</footer>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const eyes = ['left', 'right'];
+  let frozen = false, busy = false, session = null, detailURL = null, status = null;
+  let lastStatus = 0;
+  let snapshotURLs = [];
+  const failed = {left: false, right: false};
+  const retries = {};
+
+  function connectStreams() {
+    for (const eye of eyes) {
+      clearTimeout(retries[eye]);
+      failed[eye] = false;
+      $(eye + '-image').src = '/stream/' + eye + '?t=' + Date.now();
+    }
+  }
+  function paint() {
+    if (frozen) return;
+    const offline = !lastStatus || Date.now() - lastStatus > 3000;
+    for (const eye of eyes) {
+      const data = status?.eyes[eye];
+      let state = offline ? 'disconnected' : (data?.state || 'connecting');
+      if (failed[eye]) state = 'reconnecting';
+      if (state === 'live' && !$(eye + '-image').naturalWidth) state = 'connecting';
+      const live = state === 'live';
+      $(eye + '-state').textContent = state[0].toUpperCase() + state.slice(1);
+      $(eye + '-state').className = 'state' + (live ? ' live' : '');
+      $(eye + '-veil').hidden = live && !failed[eye];
+      $(eye + '-veil').textContent = state === 'stale' ? 'Last image is stale' :
+        (offline ? 'Camera service unavailable' : 'Waiting for ' + eye + ' camera…');
+      $(eye + '-metrics').textContent = data?.frame ?
+        `${data.frame.width} × ${data.frame.height} · ${live ? data.sampled_fps : '—'} fps · observed age ${Math.round(data.observed_age_ms)} ms` : 'No frame received';
+    }
+    $('capture').disabled = busy || offline || !status?.can_capture;
+  }
+  for (const eye of eyes) {
+    $(eye + '-image').onload = () => { failed[eye] = false; paint(); };
+    $(eye + '-image').onerror = () => {
+      failed[eye] = true;
+      if (frozen) {
+        $(eye + '-veil').hidden = false;
+        $(eye + '-veil').textContent = 'Pair expired or unavailable — capture a new pair';
+      } else {
+        paint();
+        clearTimeout(retries[eye]);
+        retries[eye] = setTimeout(() => {
+          if (!frozen) $(eye + '-image').src = '/stream/' + eye + '?t=' + Date.now();
+        }, 2000);
+      }
+    };
+  }
+  async function poll() {
+    try {
+      const response = await fetch('/api/stereo/status', {cache: 'no-store', signal: AbortSignal.timeout(2500)});
+      if (!response.ok) throw Error('Status unavailable');
+      status = await response.json();
+      lastStatus = Date.now();
+      $('source').textContent = status.source.toUpperCase();
+      if (session !== status.session_id && !frozen) connectStreams();
+      session = status.session_id;
+      $('diagnostics').textContent = JSON.stringify(status, null, 2);
+      if (!frozen) $('notice').textContent = status.connection_error ?
+        'Connection failed (' + status.connection_error + '). Retrying automatically.' :
+        (status.can_capture ? 'Live preview · capture a pair for fixed frame identity.' :
+          'Waiting for two fresh frames close enough in observation time to capture.');
+    } catch (_) {
+      lastStatus = 0;
+      if (!frozen) $('notice').textContent = 'Camera service unavailable. Reconnecting automatically…';
+    }
+    paint();
+    setTimeout(poll, 1000);
+  }
+  $('capture').onclick = async () => {
+    busy = true; paint();
+    const pendingURLs = [];
+    try {
+      const response = await fetch('/api/stereo/pairs', {method: 'POST', signal: AbortSignal.timeout(5000)});
+      const pair = await response.json();
+      if (!response.ok) throw Error(pair.detail || 'Capture unavailable');
+      // Load both fixed images before replacing either live image or its label.
+      const loaded = await Promise.allSettled(eyes.map(async eye => {
+        const imageResponse = await fetch(pair.eyes[eye].url, {signal: AbortSignal.timeout(5000)});
+        if (!imageResponse.ok) throw Error('Pair expired or unavailable. Please capture again.');
+        const url = URL.createObjectURL(await imageResponse.blob());
+        pendingURLs.push(url);
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+        pair.eyes[eye].displayURL = url;
+      }));
+      const failure = loaded.find(result => result.status === 'rejected');
+      if (failure) throw failure.reason;
+      frozen = true;
+      snapshotURLs = pendingURLs;
+      for (const eye of eyes) {
+        clearTimeout(retries[eye]);
+        $(eye + '-image').src = pair.eyes[eye].displayURL;
+        delete pair.eyes[eye].displayURL;
+        $(eye + '-veil').hidden = true;
+        $(eye + '-state').textContent = 'Captured';
+        $(eye + '-state').className = 'state';
+        $(eye + '-metrics').textContent = `${pair.eyes[eye].width} × ${pair.eyes[eye].height} · fixed image`;
+      }
+      $('view-mode').textContent = 'Captured pair';
+      $('pair-info').textContent = pair.source.toUpperCase() + ' · Pair ' + pair.pair_id;
+      $('notice').textContent = `Observation skew: ${pair.observation_skew_ms.toFixed(1)} ms. Exposure synchronization is unknown.`;
+      $('capture').hidden = true; $('resume').hidden = false; $('metadata').hidden = false;
+      if (detailURL) URL.revokeObjectURL(detailURL);
+      detailURL = URL.createObjectURL(new Blob([JSON.stringify(pair, null, 2)], {type: 'application/json'}));
+      $('metadata').href = detailURL;
+    } catch (error) {
+      for (const url of pendingURLs) URL.revokeObjectURL(url);
+      $('notice').textContent = error.message;
+    }
+    finally { busy = false; paint(); }
+  };
+  $('resume').onclick = () => {
+    frozen = false;
+    $('view-mode').textContent = 'Live preview';
+    $('pair-info').textContent = 'Independent live feeds · capture a pair to inspect fixed images';
+    $('capture').hidden = false; $('resume').hidden = true; $('metadata').hidden = true;
+    connectStreams();
+    for (const url of snapshotURLs) URL.revokeObjectURL(url);
+    snapshotURLs = [];
+    paint();
+  };
+  setInterval(paint, 500);
+  poll();
+})();
+</script>
+</body>
+</html>
