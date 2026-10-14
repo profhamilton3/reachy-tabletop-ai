@@ -34,6 +34,8 @@ jobs:
         continue-on-error: true
 
       - name: Run Tier 1 tests (no hardware)
+        env:
+          REQUIRE_REACHY_SDK: "1"  # test_sdk_compat must run against the pinned SDK, never skip
         run: pytest tests/ -m "not hardware and not hardware_motion" -v
 
       - name: Check for forbidden reachy2_sdk imports

@@ -15,11 +15,17 @@ class ReachyClient:
         self.host = host
         self.dry_run = dry_run
         self._reachy: Any = None
+        self.command_poll_fixed = False
 
         if not dry_run:
             from reachy_sdk import ReachySDK  # type: ignore[import]
+
+            from reachy_ai.sdk_compat import fix_command_poll
+
+            # Before the SDK is constructed: 0.7.0 leaks pending waits on every command push (#23).
+            self.command_poll_fixed = fix_command_poll()
             self._reachy = ReachySDK(host=host)
-            logger.info("Connected to Reachy 1.2 at %s", host)
+            logger.info("Connected to Reachy 1.2; reachy_sdk command-poll fix applied=%s", self.command_poll_fixed)
         else:
             logger.info("DRY-RUN mode — no robot connection (REACHY_ENABLE_MOTION not set)")
 

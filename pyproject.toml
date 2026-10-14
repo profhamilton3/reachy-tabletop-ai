@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Zero-shot tabletop task assistant for Reachy 1.2"
 requires-python = ">=3.10"
 dependencies = [
-    "reachy-sdk",
+    "reachy-sdk==0.7.0",  # sdk_compat.fix_command_poll is written against 0.7.0 (#23)
     "opencv-python>=4.9",
     "numpy>=1.26",
     "scipy>=1.13",
