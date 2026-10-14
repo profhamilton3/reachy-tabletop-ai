@@ -82,7 +82,7 @@ class StereoGeometry:
         k1, k2 = self.K
         d1, d2 = self.D
         r1, r2, p1, p2, self.Q, _, _ = cv2.stereoRectify(
-            k1, d1, k2, d2, self.size, self.R, self.T, flags=cv2.CALIB_ZERO_DISPARITY, alpha=0)
+            k1, d1, k2, d2, self.size, self.R, self.T.reshape(3, 1), flags=cv2.CALIB_ZERO_DISPARITY, alpha=0)
         if abs(p2[1, 3]) > abs(p2[0, 3]) or p2[0, 3] >= 0:
             raise DepthUnavailable("Saved profile does not describe left-to-right horizontal stereo.")
         self.rect_left = r1
