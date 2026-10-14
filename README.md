@@ -60,6 +60,13 @@ Then use **Capture pair → Analyze captured pair**. **Show raw image** toggles
 the original image back; **Pair + analysis details** downloads the frame/model
 identity and predictions. No training, motion, or per-frame inference is started.
 
+Then choose **Measure in 3D** for a depth map and selectable object distance/XYZ.
+The simulator uses the existing measured lens profile and URDF geometry, with
+`--sim-lens distorted` by default; use `--sim-lens pinhole` when the simulator
+runs without barrel distortion. Recent neck readbacks also provide URDF torso
+coordinates. Unmatched regions remain unmeasured. See the setup guide for the
+existing physical calibration archive and coordinate conventions.
+
 ### Existing robot smoke test
 
 ```bash

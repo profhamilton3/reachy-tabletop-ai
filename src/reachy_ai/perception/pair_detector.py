@@ -73,11 +73,11 @@ def draw_detections(pixels, detections):
     """Annotate a copy; source frames remain immutable."""
     image = pixels.copy()
     palette = ((128, 203, 196), (249, 202, 144), (125, 212, 129))
-    for item in detections:
+    for index, item in enumerate(detections, start=1):
         x, y, w, h = item["box_xywh"]
         color = palette[item["class_id"] % len(palette)]
         cv2.rectangle(image, (x, y), (x + w - 1, y + h - 1), color, 2)
-        label = f"{item['label']} {item['confidence']:.0%}"
+        label = f"{index}. {item['label']} {item['confidence']:.0%}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
         ty = min(image.shape[0] - 5, max(th + 5, y))
         tx = min(x, max(0, image.shape[1] - tw - 8))
