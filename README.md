@@ -76,6 +76,19 @@ python scripts/smoke_test_all.py
 
 Set `REACHY_ENABLE_MOTION=true` only when a human operator is present and the workspace is clear.
 
+### Robot notebooks
+
+The hardware notebooks in `scripts/` and `tests/` read the robot address from
+`REACHY_IP`. Export it in the shell before starting Jupyter so the kernel
+inherits it:
+
+```bash
+export REACHY_IP=<reachy-ip-address>
+jupyter lab
+```
+
+Do not type the address into a notebook cell or commit it.
+
 ## Project structure
 
 ```

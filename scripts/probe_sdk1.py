@@ -6,8 +6,8 @@ values the robot returns.  No motion is commanded.
 
 Usage:
     python scripts/probe_sdk1.py                    # connects to localhost
-    python scripts/probe_sdk1.py 10.22.129.133      # connects to robot IP
-    REACHY_IP=10.22.129.133 python scripts/probe_sdk1.py
+    python scripts/probe_sdk1.py <robot-ip>         # connects to robot IP
+    REACHY_IP=<robot-ip> python scripts/probe_sdk1.py
 """
 
 import argparse
