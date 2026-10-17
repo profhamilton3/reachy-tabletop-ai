@@ -50,6 +50,8 @@ After installing the project, run `reachy-stereo --source sim` to view an alread
 simulator, or `reachy-stereo --source robot --robot-host <reachy-address>` for the physical
 robot. Open [Stereo View](http://localhost:8081). Both modes use the Reachy v1 SDK;
 the viewer never enables motion or changes camera/head settings.
+To run it in the background, use `./StereoLauncher.sh [sim|robot] [--ip <address>]`;
+stop it with `./StereoLauncher.sh -KILL`.
 
 See [Stereo View setup and handoff](docs/STEREO_VIEW.md) for ports, diagnostics, and the
 existing physical-robot examples used by this implementation.
