@@ -26,7 +26,14 @@ reachy-stereo --source robot --robot-host <reachy-address>
 Open http://localhost:8081. Exit with Ctrl+C.
 
 To run it in the background instead, use `StereoLauncher.sh` at the repo root.
-It uses `./.venv/bin/reachy-stereo`, or `reachy-stereo` from PATH:
+It uses `./.venv/bin/reachy-stereo`, or `reachy-stereo` from PATH. If neither
+exists, the first run creates `./.venv` with Python 3.10 (`REACHY_STEREO_PYTHON`,
+else `python3.10` from PATH). It installs `reachy-sdk==0.7.0` first, then this
+checkout in editable mode with the `analysis` extra, so a later `git pull` needs
+no reinstall. Run `./StereoLauncher.sh --setup` only when `pyproject.toml`
+dependencies change. The two-step order matters on Apple Silicon: resolved alone,
+reachy-sdk gets prebuilt gRPC 1.62 wheels and numpy 1.26, while a single combined
+install backtracks into a `grpcio-tools` source build that fails.
 
 ```sh
 ./StereoLauncher.sh                         # simulator

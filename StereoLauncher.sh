@@ -13,28 +13,36 @@
 # Options:
 #   --ip <address>   robot address, for when REACHY_IP is unset or wrong (robot mode only)
 #   --port <port>    web port (default 8081); give -KILL the same --port
+#   --setup          (re)install the viewer's packages into ./.venv, then launch
 #   -- <args>        passed through to reachy-stereo, e.g. -- --fps 10 --sim-lens pinhole
 #
 # Access:
 #   Stereo View: http://localhost:8081
 #
+# First run: if neither ./.venv nor PATH has reachy-stereo, the launcher creates
+# ./.venv with Python 3.10 ($REACHY_STEREO_PYTHON, else python3.10 from PATH)
+# and installs this checkout into it in editable mode, so a later git pull needs
+# no reinstall. Run --setup again only when pyproject.toml's dependencies change.
+#
 # The robot address reaches reachy-stereo through REACHY_IP; this script never
 # prints it or writes it to the log. Log: $REACHY_STEREO_LOG (default
-# /tmp/reachy_stereo.log). reachy-stereo is taken from ./.venv, else from PATH.
+# /tmp/reachy_stereo.log).
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
+VENV="$REPO/.venv"
 LOG="${REACHY_STEREO_LOG:-/tmp/reachy_stereo.log}"
 PORT=8081
 SOURCE=sim
 ROBOT_IP="${REACHY_IP:-}"
 IP_GIVEN=0
 KILL=0
+SETUP=0
 EXTRA=()
 
 usage() {
-    sed -n '7,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '7,18p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 fail() {
@@ -46,6 +54,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         sim|robot) SOURCE="$1" ;;
         -KILL) KILL=1 ;;
+        --setup) SETUP=1 ;;
         --ip)
             [ $# -ge 2 ] && [ -n "$2" ] || fail "--ip needs an address"
             ROBOT_IP="$2"; IP_GIVEN=1; shift ;;
@@ -117,19 +126,60 @@ elif [ "$IP_GIVEN" = 1 ]; then
     fail "--ip is only for robot mode (the simulator is always localhost)"
 fi
 
-if [ -x "$REPO/.venv/bin/reachy-stereo" ]; then
-    BIN="$REPO/.venv/bin/reachy-stereo"
+# Creates ./.venv if needed and installs this checkout (editable, with the
+# analysis extra) into it. A .venv created by this run is removed again if the
+# install fails, so the next run starts clean; an existing one is never removed.
+setup_venv() {
+    local py created=0
+    if [ ! -x "$VENV/bin/python" ]; then
+        py="${REACHY_STEREO_PYTHON:-$(command -v python3.10 || true)}"
+        [ -n "$py" ] || fail "Python 3.10 is needed to create .venv: install it (e.g. 'uv python install 3.10') or set REACHY_STEREO_PYTHON"
+        "$py" -c 'import sys; sys.exit(sys.version_info[:2] != (3, 10))' 2>/dev/null \
+            || fail "$py is not Python 3.10; set REACHY_STEREO_PYTHON to a Python 3.10 interpreter"
+        echo "▶ Creating .venv (Python 3.10) …"
+        "$py" -m venv "$VENV" || fail "Could not create $VENV"
+        created=1
+    else
+        "$VENV/bin/python" -c 'import sys; sys.exit(sys.version_info[:2] != (3, 10))' \
+            || fail "$VENV is not Python 3.10; move it aside and run again"
+    fi
+    echo "▶ Installing the viewer into .venv (the first time takes a minute or two) …"
+    # reachy-sdk goes first, on its own: resolved alone it gets prebuilt gRPC
+    # 1.62 wheels and numpy 1.26 (as on the robot). Resolved together with the
+    # project, pip picks numpy 2 and backtracks to a grpcio-tools source build
+    # that fails on Apple Silicon. --only-binary turns any such build into an
+    # error instead.
+    if ! { "$VENV/bin/python" -m pip install -q --upgrade pip \
+           && "$VENV/bin/python" -m pip install -q --only-binary=grpcio,grpcio-tools 'reachy-sdk==0.7.0' \
+           && "$VENV/bin/python" -m pip install -q --only-binary=grpcio,grpcio-tools -e "$REPO[analysis]"; }; then
+        if [ "$created" = 1 ]; then
+            rm -rf "$VENV"
+            fail "Installing into .venv failed (see the pip output above); removed the partial .venv"
+        fi
+        fail "Installing into .venv failed (see the pip output above)"
+    fi
+    [ -x "$VENV/bin/reachy-stereo" ] || fail "The install finished but $VENV/bin/reachy-stereo is missing"
+    echo "  .venv ready"
+}
+
+if [ "$SETUP" = 1 ]; then
+    setup_venv
+    BIN="$VENV/bin/reachy-stereo"
+elif [ -x "$VENV/bin/reachy-stereo" ]; then
+    BIN="$VENV/bin/reachy-stereo"
 elif command -v reachy-stereo >/dev/null 2>&1; then
     BIN="$(command -v reachy-stereo)"
 else
-    fail "reachy-stereo is not installed. See docs/STEREO_VIEW.md, or run:
-    python3.10 -m venv .venv && .venv/bin/pip install 'reachy-sdk==0.7.0' && .venv/bin/pip install -e '.[dev]'"
+    echo "▶ First run: reachy-stereo is not installed yet."
+    setup_venv
+    BIN="$VENV/bin/reachy-stereo"
 fi
 
 echo "================================================"
 echo "  Reachy 1.2 Stereo View Launcher"
 echo "================================================"
 echo "    source : $SOURCE"
+echo "    viewer : $BIN"
 if [ "$SOURCE" = robot ]; then
     if [ "$IP_GIVEN" = 1 ]; then
         echo "    robot  : from --ip"
