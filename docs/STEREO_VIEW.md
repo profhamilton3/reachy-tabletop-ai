@@ -23,7 +23,25 @@ reachy-stereo --source sim
 reachy-stereo --source robot --robot-host <reachy-address>
 ```
 
-Open http://localhost:8081. Exit with Ctrl+C. There is no NUC installation,
+Open http://localhost:8081. Exit with Ctrl+C.
+
+To run it in the background instead, use `StereoLauncher.sh` at the repo root.
+It uses `./.venv/bin/reachy-stereo`, or `reachy-stereo` from PATH:
+
+```sh
+./StereoLauncher.sh                         # simulator
+./StereoLauncher.sh robot                   # physical robot at $REACHY_IP
+./StereoLauncher.sh robot --ip <address>    # when REACHY_IP is unset or wrong
+./StereoLauncher.sh -KILL                   # stop it
+```
+
+`--port` changes the web port (give `-KILL` the same one). Arguments after `--`
+pass through to `reachy-stereo`, e.g. `-- --fps 10`. The log is
+`/tmp/reachy_stereo.log` unless `REACHY_STEREO_LOG` is set. The launcher never
+prints the robot address. It replaces a viewer already on the port, and it
+refuses to start if another program holds that port.
+
+There is no NUC installation,
 Coral dependency, calibration run, or robot service restart.
 `REACHY_ENABLE_MOTION` is irrelevant to this camera-only application: it mounts
 no motion routes and issues no control commands even if that variable is true.
