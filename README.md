@@ -51,7 +51,8 @@ simulator, or `reachy-stereo --source robot --robot-host <reachy-address>` for t
 robot. Open [Stereo View](http://localhost:8081). Both modes use the Reachy v1 SDK;
 the viewer never enables motion or changes camera/head settings.
 To run it in the background, use `./StereoLauncher.sh [sim|robot] [--ip <address>]`;
-stop it with `./StereoLauncher.sh -KILL`.
+stop it with `./StereoLauncher.sh -KILL`. The first run creates `./.venv` (Python 3.10) and
+installs the viewer into it.
 
 See [Stereo View setup and handoff](docs/STEREO_VIEW.md) for ports, diagnostics, and the
 existing physical-robot examples used by this implementation.
