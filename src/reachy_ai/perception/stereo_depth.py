@@ -160,9 +160,10 @@ class PairDepth:
         # Reproject using left pixel coordinates, then undo rectification and
         # move to the original right optical camera. Do not label rectified XYZ as raw XYZ.
         homogeneous = np.stack((xl, yy, -dr, np.ones_like(xx)), axis=-1) @ g.Q.T
+        # Unmatched pixels become inf/NaN here and are dropped by the isfinite check below.
         with np.errstate(divide="ignore", invalid="ignore"):
             points = homogeneous[..., :3] / homogeneous[..., 3:]
-        points = (points @ g.rect_left) @ g.R.T + g.T
+            points = (points @ g.rect_left) @ g.R.T + g.T
         valid &= np.isfinite(points).all(axis=2) & (points[..., 2] >= NEAR_M) & (points[..., 2] <= FAR_M)
         depth = points[..., 2]
         # One fixed legend across captures; invalid pixels are dark, never zero-distance.
