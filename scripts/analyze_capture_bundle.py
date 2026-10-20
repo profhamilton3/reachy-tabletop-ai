@@ -327,10 +327,11 @@ def board_centre_camera(depth, left, right):
     Returns (xyz or None, detail)."""
     g = depth.geometry
     g.prepare(right.shape)
-    found = [grid.board_points(left, "left", g), grid.board_points(right, "right", g)]
+    found = [grid.board_points_detail(left, "left", g, near_row_hidden=True),
+             grid.board_points_detail(right, "right", g, near_row_hidden=True)]
     if None in found:
         return None, {"reason": "grid not found in " + " and ".join(e for e, f in zip(EYES, found) if f is None)}
-    tables = [{(round(o[0] * 1000), round(o[1] * 1000)): px for o, px in zip(obj, img)} for obj, img in found]
+    tables = [{(round(o[0] * 1000), round(o[1] * 1000)): px for o, px in zip(f["obj"], f["img"])} for f in found]
     shared = sorted(set(tables[0]) & set(tables[1]))
     if len(shared) < 4:
         return None, {"reason": f"only {len(shared)} grid corners seen by both eyes"}
@@ -342,7 +343,11 @@ def board_centre_camera(depth, left, right):
     board = np.array([[k[0] / 1000, k[1] / 1000, 0.0] for k in shared])
     rotation, centre = kabsch(board, right_cam)
     fit = np.linalg.norm(board @ rotation.T + centre - right_cam, axis=1)
-    return centre, {"corners": len(shared), "fit_rms_mm": round(float(np.sqrt((fit ** 2).mean()) * 1000), 1)}
+    detail = {"corners": len(shared), "fit_rms_mm": round(float(np.sqrt((fit ** 2).mean()) * 1000), 1),
+              "cells": len(shared) // 4}
+    if detail["cells"] < 9:
+        detail["cells_note"] = f"{detail['cells']} of 9 cells (near row hidden)"
+    return centre, detail
 
 
 def analyze_head(capture, files, depth):
@@ -411,6 +416,7 @@ def print_report(manifest, capture, result):
     elif result["kind"] == "head":
         for r in result["rows"]:
             where = (f"torso {r['centre_torso_m']} m" if "centre_torso_m" in r else r.get("reason", "not placed"))
+            where += f" ({r['cells_note']})" if "centre_torso_m" in r and "cells_note" in r else ""
             print(f"{r['step']:>24}: neck {r['neck_deg']} ({r['head_mode'] or 'no command'}) | {where}")
         if result["spread"]:
             s = result["spread"]

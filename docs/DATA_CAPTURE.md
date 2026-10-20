@@ -184,11 +184,13 @@ Arm at rest, the taped board clear and still (no objects on it), nobody near the
 | sweep_roll_right_5 | −5, 64, 0 |
 | sweep_roll_left_5 | +5, 64, 0 |
 
-Then head to neutral. Sim re-shoot, 2026-10-20: the grid was found in both eyes at board_view and
-sweep_yaw_left_5, with a board-centre spread of 0.6 mm worst and board_view within 5.4 mm of the scene grid
-centre. Every other sweep pose lost the grid in one eye, because the chest hides part of the near row and the
-finder needs whole rows: tracked in #41. Keep all six sweep poses on the robot; the bundle keeps them, and #41
-re-analyses it with no new robot time. The board is not expected in view at neutral.
+Then head to neutral. Sim re-shoot, 2026-10-20: with the whole-rows finder the grid was found in both eyes only
+at board_view and sweep_yaw_left_5; every other sweep pose lost it in one eye, because the chest hides part of the
+near row (#41). The analyser now accepts a partly hidden near row: it labels the far and middle rows only
+(6 cells, 24 corners, enough for the rigid fit) and reports "6 of 9 cells (near row hidden)" for that pose. With
+that, the grid is found in both eyes at every sweep pose of the sim re-shoot and each pose's board centre is
+within 10 mm of the scene grid centre (spread across the 7 poses: 3.2 mm worst). The robot's bundle is
+re-analysed with no new robot time. The board is not expected in view at neutral.
 
 Why these poses (render findings, sim head sweep of 2026-10-20, #28 / #39). The v1 poses (yaw ±15° at pitch 64
 and 56, plus 56° centre) were not analysable:
@@ -243,6 +245,11 @@ python scripts/analyze_capture_bundle.py reachy-capture-head_sweep.zip
   (`stereo_depth.camera_to_torso`) then carry it into the torso frame.
   - The board does not move, so the spread of that centre across head poses measures the consistency of the
     head/neck calibration.
+  - When the near row is not whole (the chest hides part of it), only the far and middle rows are labelled and
+    the pose is reported as "6 of 9 cells (near row hidden)". A quad that does not fit the known 3 × 3 layout
+    (floor checker squares, the arm: size, spacing, alignment) is left out, and a near-row cell must be seen
+    to show that the hidden row is the near one. This is opt-in for the head analyser only: the calibration
+    derivation and the zoom check keep the whole-rows finder.
   - A deviation over 20 mm is a finding. #185's camera check spread 6 / 4 / 9 mm.
   - So is a run where every pose has the same neck read-back (dry run).
 

@@ -234,7 +234,8 @@ tail -n 80 /tmp/reachy_stereo.log
 
 **S16. "grid not found" at some head-sweep poses**
 - Expected for neutral, where the board isn't in view.
-- On the sim, only board_view and yaw +5° are found with today's finder. The other sweep poses wait on #41.
+- On the sim, the grid is found in both eyes at every sweep pose. When the chest hides part of the near row, the
+  analyser uses the far and middle rows only and reports "6 of 9 cells (near row hidden)": that is expected, not a fault (#41).
 - Clear objects off the board before a head sweep.
 
 ---

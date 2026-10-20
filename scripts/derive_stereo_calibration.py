@@ -10,6 +10,7 @@ docs/reviews/2026-10-14-taught-board-poses-185/photo_check/board_pnp.py (PR #188
 """
 
 import argparse
+import itertools
 import json
 import re
 import sys
@@ -82,7 +83,95 @@ def detect(gray):
     return quads, partial
 
 
-def pick_grid(quads, partial, shape):
+#: Known layout of the taped grid (cell side 5.08 in on a 6 in pitch): the row-to-row distance in cell sides.
+PITCH_TO_SIDE = PITCH / (2 * HALF)
+#: Layout checks of the near-row-hidden fallback. They follow the known grid, with room for perspective and
+#: for the few degrees of head yaw/roll of a sweep; sides are sqrt(cell area) in px.
+LAYOUT_ROW_GAP = (0.7 * PITCH_TO_SIDE, 1.5 * PITCH_TO_SIDE)   # distance between row centres, in cell sides
+LAYOUT_COLUMN_SHIFT = 0.5     # a cell sits within this many sides of the one above/below it
+LAYOUT_SIZE_RATIO = 1.6       # cells of one row are within this area ratio of each other
+LAYOUT_SPACING_RATIO = 1.5    # neighbouring gaps within a row are within this ratio of each other
+
+
+def _row_clusters(keep, centres, median):
+    """Cluster the kept quads into image rows, nearest (lowest in the image) first."""
+    keep = sorted(keep, key=lambda i: -centres[i, 1])
+    rows, current = [], [keep[0]]
+    for i in keep[1:]:
+        if abs(centres[i, 1] - np.mean([centres[j, 1] for j in current])) < 0.5 * np.sqrt(median):
+            current.append(i)
+        else:
+            rows.append(current)
+            current = [i]
+    rows.append(current)
+    return rows
+
+
+def _best_row(members, centres, areas):
+    """The three quads (left to right) of a cluster that form one row of the grid, or None: similar size and
+    evenly spaced. Extra quads (floor squares, the arm) are left out; the most evenly spaced triple wins."""
+    best, best_score = None, None
+    for triple in itertools.combinations(sorted(members, key=lambda i: centres[i, 0]), 3):
+        a, gaps = areas[list(triple)], np.diff(centres[list(triple), 0])
+        if gaps.min() <= 0 or a.max() / a.min() > LAYOUT_SIZE_RATIO:
+            continue
+        score = gaps.max() / gaps.min()
+        if score <= LAYOUT_SPACING_RATIO and (best is None or score < best_score):
+            best, best_score = list(triple), score
+    return best
+
+
+def _pick_far_middle(quads, centres, areas):
+    """Near row not whole: label the far and middle rows only (6 cells), or None.
+
+    Needs two whole rows that fit the known 3x3 layout one above the other (about one pitch apart, columns
+    aligned, the nearer row larger) AND a cell nearer than them in a column of the grid: that cell is the
+    evidence that the hidden row is the near one. Quads that do not fit (floor squares, the arm) stay unlabelled."""
+    median = np.median(areas)
+    keep = [i for i in range(len(quads)) if 0.3 < areas[i] / median < 3]
+    if len(keep) < 7:
+        return None
+    clusters = _row_clusters(keep, centres, median)
+    whole = [(k, _best_row(c, centres, areas)) for k, c in enumerate(clusters)]
+    whole = [(k, r) for k, r in whole if r is not None]
+    if len(whole) < 2 or whole[-2][0] + 1 != whole[-1][0]:       # the far two rows, adjacent
+        return None
+    middle, far = whole[-2][1], whole[-1][1]
+    side = np.sqrt(np.mean(areas[middle + far]))
+    gap = centres[middle, 1].mean() - centres[far, 1].mean()
+    if not LAYOUT_ROW_GAP[0] * side <= gap <= LAYOUT_ROW_GAP[1] * side:
+        return None
+    if np.abs(centres[middle, 0] - centres[far, 0]).max() > LAYOUT_COLUMN_SHIFT * side:
+        return None
+    if areas[middle].mean() < areas[far].mean():                  # perspective: the nearer row is larger
+        return None
+    # Near-row evidence: a cell about one row gap below the middle row, in a column of the grid.
+    columns = centres[middle, 0] + (centres[middle, 0] - centres[far, 0])
+    for i in keep:
+        below = centres[i, 1] - centres[middle, 1].mean()
+        if i not in middle + far and 0.5 * gap <= below <= 1.5 * gap and \
+                np.abs(centres[i, 0] - columns).min() <= LAYOUT_COLUMN_SHIFT * side:
+            return {(1 + k, c): idx for k, row in enumerate((middle, far)) for c, idx in enumerate(row)}
+    return None
+
+
+def rows_used(grid):
+    """The board rows (0 near .. 2 far) that a pick_grid result labels, near to far."""
+    return sorted({r for r, _ in grid})
+
+
+def pick_grid(quads, partial, shape, near_row_hidden=False):
+    """Label visible cells (r, c), or None. Whole rows of 3, as always. With `near_row_hidden`, when that fails
+    because the near row is hidden (by the robot's own body) and not whole, the far and middle rows alone are
+    labelled: 6 cells. Off by default: the calibration derivation and the zoom check keep the strict finder.
+    `rows_used(result)` says which rows were labelled."""
+    found = _pick_whole_rows(quads, partial, shape)
+    if found is not None or not near_row_hidden or len(quads) < 7:
+        return found
+    return _pick_far_middle(quads, np.array([q[1].mean(0) for q in quads]), np.array([q[0] for q in quads]))
+
+
+def _pick_whole_rows(quads, partial, shape):
     """Label visible cells (r, c). Needs whole rows of 3; resolves which rows are visible."""
     h, _ = shape
     if len(quads) < 6:
@@ -120,10 +209,17 @@ def pick_grid(quads, partial, shape):
     return {(labels[k], c): rows[k][c] for k in range(len(rows)) for c in range(3)}
 
 
-def board_points(path, eye, geometry=None):
+def board_points(path, eye, geometry=None, near_row_hidden=False):
     """Matched (board XYZ, undistorted pixel) corner arrays for one photo (a path or a BGR image), or None.
 
-    `geometry` (a StereoGeometry) selects the lens of a sim photo; omitted, the robot's calibration is used."""
+    `geometry` (a StereoGeometry) selects the lens of a sim photo; omitted, the robot's calibration is used.
+    `near_row_hidden` accepts a partly hidden near row (see pick_grid)."""
+    found = board_points_detail(path, eye, geometry, near_row_hidden)
+    return None if found is None else (found["obj"], found["img"])
+
+
+def board_points_detail(path, eye, geometry=None, near_row_hidden=False):
+    """board_points plus which rows were used: {"obj", "img", "rows" (0 near .. 2 far), "cells"}, or None."""
     K, D, pinhole = lens_for(eye, geometry)
     if isinstance(path, np.ndarray):
         gray = cv2.cvtColor(path, cv2.COLOR_BGR2GRAY) if path.ndim == 3 else path
@@ -131,7 +227,7 @@ def board_points(path, eye, geometry=None):
         gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     und = cv2.undistort(gray, K, D, None, pinhole)
     quads, partial = detect(und)
-    grid = pick_grid(quads, partial, und.shape)
+    grid = pick_grid(quads, partial, und.shape, near_row_hidden)
     if grid is None:
         return None
     cells = board_cells()
@@ -148,7 +244,7 @@ def board_points(path, eye, geometry=None):
         img = cv2.cornerSubPix(und, img.astype(np.float32).reshape(-1, 1, 2), (5, 5), (-1, -1),
                                (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.01)
                                ).reshape(-1, 2).astype(float)
-    return np.array(obj), img
+    return {"obj": np.array(obj), "img": img, "rows": rows_used(grid), "cells": len(grid)}
 
 
 def solve_eye(path, eye):
