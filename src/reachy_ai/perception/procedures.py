@@ -263,6 +263,15 @@ class CaptureRun:
         self.zoom_commands.setdefault(step.id, []).extend(records)
         return records
 
+    def capture_blocker(self, step_id: str) -> str | None:
+        """Why a capture on this step must wait, or None. A step that commands a zoom is captured only after
+        that command has completed (live or dry-run, not failed): a pair taken earlier shows another zoom."""
+        step = self.procedure.step(step_id)
+        if step.zoom and not any(not r.get("error") for r in self.zoom_commands.get(step_id, [])):
+            return (f"Zoom {step.zoom} has not been commanded for this step yet: tick the confirm box and press "
+                    f"'Set zoom {step.zoom}' (wait for it to finish) before capturing.")
+        return None
+
     def start_zoom(self) -> str | None:
         """The level the "start" step read on both eyes (ZERO included), or None if unread, unreadable or split."""
         for step in self.procedure.steps:

@@ -477,7 +477,8 @@ def test_zoom_analyser_reports_pitch_per_level_from_a_bundle():
         assert pitch[("INTER", eye)]["pitch_vs_widest"] == pytest.approx(1.25, abs=0.03)
         assert pitch[("IN", eye)]["pitch_vs_widest"] == pytest.approx(1.5, abs=0.04)
     assert result["scene_zoom_is_widest"] is True and result["findings"] == []
-    assert {r["step"]: r["recorded_zoom"] for r in result["rows"]}["Zoom INTER"] == ["INTER"]  # not emptied
+    assert {r["level"]: r["step"] for r in result["rows"]}["INTER"] == "Zoom INTER"  # grouped by read-back
+    assert result["restore_status"] == "zoom restored to INTER (read back INTER)"
 
 
 def test_zoom_analyser_flags_a_zoom_that_never_changed():
@@ -500,15 +501,55 @@ def readback_bundle(levels_per_step):
 def test_zoom_analyser_never_falls_back_to_the_requested_level():
     _, files, capture = analyse.load(readback_bundle([["OUT"], ["INTER", None], ["IN", "OUT"]]))
     result = analyse.analyze_zoom(capture, files)
-    rows = {(r["step"], r["eye"]): r for r in result["rows"]}
-    assert rows[("Zoom OUT", "left")]["level"] == "OUT"
-    missing, mixed = rows[("Zoom INTER", "left")], rows[("Zoom IN", "left")]
-    assert missing["level"] is None and missing["readback_missing"] == 1 and missing["recorded_zoom"] == ["INTER"]
-    assert mixed["level"] is None and mixed["recorded_zoom"] == ["IN", "OUT"]
+    rows = {(r["level"], r["eye"]): r for r in result["rows"]}
+    assert rows[("OUT", "left")]["captures"] == 2 and rows[("OUT", "left")]["step"] == "Zoom OUT, Zoom IN"
+    unknown = rows[(None, "left")]  # the pair with no read-back is its own group, not the requested INTER
+    assert unknown["captures"] == 1 and unknown["readback_missing"] == 1 and unknown["step"] == "Zoom INTER"
+    assert rows[("IN", "left")]["captures"] == 1 and rows[("INTER", "left")]["captures"] == 1
     findings = " | ".join(result["findings"])
     assert "Zoom INTER: zoom read-back missing for 1 of 2" in findings
     assert "Zoom IN: mixed zoom read-backs within the step (IN, OUT)" in findings
-    assert "requested" not in findings.replace("not assumed to be the requested one", "")
+    assert "Zoom IN (pair 2): requested IN but the cameras read back OUT; its pitch is counted under OUT" in findings
+    assert "Zoom INTER (pair 2)" not in findings  # no read-back: never compared with, or filled in from, the request
+
+
+def test_zoom_analyser_counts_a_mixed_step_under_each_pairs_real_level():
+    """The sim test of 2026-10-20: the OUT step held a pair read back at IN, taken after the IN step."""
+    run = proc.CaptureRun(proc.get_procedure("zoom_fov"))
+    run.apply_zoom("zoom_start", RecordingSetter(start="IN"), False)
+    for step, level, factor in ((s, z, f) for s, z, f in zip(steps_with(run.procedure, "zoom"),
+                                                              ("OUT", "INTER", "IN"), (1.0, 1.25, 1.5))):
+        run.add_capture(step.id, meta(f"{step.id}-a", zoom=level),
+                        proc.encode_jpeg(scaled("Left Camera_screenshot_20.08.2026.png", factor)),
+                        proc.encode_jpeg(scaled("Right Camera_screenshot_20.08.2026.png", factor)))
+    run.add_capture("zoom_out", meta("late", zoom="IN"),  # a second OUT-step pair, really at IN
+                    proc.encode_jpeg(scaled("Left Camera_screenshot_20.08.2026.png", 1.5)),
+                    proc.encode_jpeg(scaled("Right Camera_screenshot_20.08.2026.png", 1.5)))
+    run.apply_zoom("zoom_restore", RecordingSetter(start="IN", dry_run=False), True)
+    _, files, capture = analyse.load(run.build_zip({}))
+    result = analyse.analyze_zoom(capture, files)
+    by_level = {(r["level"], r["eye"]): r for r in result["rows"]}
+    assert all(r["level"] in ("OUT", "INTER", "IN") for r in result["rows"])  # no unknown group
+    for eye in ("left", "right"):
+        assert by_level[("OUT", eye)]["pitch_vs_widest"] == 1.0 and by_level[("OUT", eye)]["captures"] == 1
+        assert by_level[("IN", eye)]["captures"] == 2 and by_level[("IN", eye)]["step"] == "Zoom OUT, Zoom IN"
+        assert by_level[("IN", eye)]["pitch_vs_widest"] == pytest.approx(1.5, abs=0.04)
+        assert by_level[("INTER", eye)]["pitch_vs_widest"] == pytest.approx(1.25, abs=0.03)
+    findings = " | ".join(result["findings"])
+    assert "Zoom OUT: mixed zoom read-backs within the step (IN, OUT)" in findings
+    assert "Zoom OUT (pair 2): requested OUT but the cameras read back IN; its pitch is counted under IN" in findings
+    assert result["scene_zoom_is_widest"] is True and result["restore_status"] == "zoom restored to IN (read back IN)"
+
+
+def test_zoom_analyser_notes_a_start_that_was_read_twice_with_different_results():
+    run = proc.CaptureRun(proc.get_procedure("zoom_fov"))
+    run.apply_zoom("zoom_start", RecordingSetter(start="ZERO"), False)
+    run.apply_zoom("zoom_start", RecordingSetter(start="IN"), False)
+    run.add_capture("zoom_out", meta("a", zoom="OUT"), jpeg(), jpeg())
+    _, files, capture = analyse.load(run.build_zip({}))
+    assert capture["start_zoom"] == "IN"  # the latest read
+    findings = analyse.analyze_zoom(capture, files)["findings"]
+    assert any("read 2 times with different results (ZERO, IN)" in f for f in findings)
 
 
 def test_zoom_analyser_reports_a_step_without_captures():
@@ -675,3 +716,32 @@ def test_depth_analyser_reports_the_setup_zoom_warning():
     result = analyse.analyze_depth(capture, files, depth=None, focal_px=400.0, baseline_m=0.078,
                                    measure=lambda *a, **k: (None, None))
     assert any("profile's zoom is unknown" in f for f in result["findings"])
+
+
+def test_capture_is_refused_until_the_steps_zoom_command_has_completed():
+    service, http = viewer()
+    with http as client:
+        client.post("/api/stereo/capture-run", json={"procedure": "zoom_fov"})
+        capture = "/api/stereo/capture-run/steps/zoom_out/capture"
+        settle(service)
+        refused = client.post(capture)
+        assert refused.status_code == 409 and "has not been commanded" in refused.json()["detail"]
+        assert "Set zoom OUT" in refused.json()["detail"]
+        client.post("/api/stereo/capture-run/steps/zoom_out/zoom", json={"confirm": False})  # refused: no command
+        assert client.post(capture).status_code == 409
+        client.post("/api/stereo/capture-run/steps/zoom_out/zoom", json={"confirm": True})  # dry-run still completes
+        settle(service)
+        assert client.post(capture).json()["pairs"] == 1
+        # steps that command no zoom are not gated by it
+        client.post("/api/stereo/capture-run", json={"procedure": "depth_ruler"})
+        assert client.post("/api/stereo/capture-run/steps/dist_0_5m/capture").json()["pairs"] == 1
+
+
+def test_a_failed_zoom_command_does_not_open_the_capture_gate():
+    run = proc.CaptureRun(proc.get_procedure("zoom_fov"))
+    assert "has not been commanded" in run.capture_blocker("zoom_in")
+    run.zoom_commands["zoom_in"] = [{"eye": "left", "requested": "IN", "ok": False, "error": "ValueError"}]
+    assert run.capture_blocker("zoom_in")
+    run.apply_zoom("zoom_in", RecordingSetter(), True)
+    assert run.capture_blocker("zoom_in") is None
+    assert run.capture_blocker("head_board_view") is None

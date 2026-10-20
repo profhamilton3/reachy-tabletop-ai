@@ -272,6 +272,9 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
             raise HTTPException(404, "Unknown step") from exc
         if not step.capture:
             raise HTTPException(409, "This step has nothing to capture")
+        blocker = run.capture_blocker(step_id)
+        if blocker:
+            raise HTTPException(409, blocker)
         with run_lock:
             meta, record = capture_record(settled=True)
             try:
