@@ -36,12 +36,13 @@ import derive_stereo_calibration as grid  # noqa: E402
 import ruler_depth_test as ruler  # noqa: E402
 import zoom_fov_check as zoom_check  # noqa: E402
 
-from reachy_ai.camera_zoom import EYES, SCENE_ZOOM  # noqa: E402
+from reachy_ai.camera_zoom import EYES, SCENE_ZOOM, ZOOM_READBACK  # noqa: E402
 from reachy_ai.pair_bundle import read_bundle  # noqa: E402
 from reachy_ai.perception.procedures import (  # noqa: E402
     SENSITIVITY_BASELINE_M,
     SENSITIVITY_FOCAL_PX,
     TOLERANCE_M,
+    ZERO_RESTORE_NOTE,
     sensitivity_mm_per_px,
 )
 from reachy_ai.perception.stereo_depth import DEFAULT_CALIBRATION, PairDepth, camera_to_torso  # noqa: E402
@@ -51,6 +52,8 @@ from reachy_ai.perception.stereo_depth import DEFAULT_CALIBRATION, PairDepth, ca
 SUBPIXEL_LIMIT_PX = 0.5
 #: Pitch ratio to the widest level below which two levels count as the same view.
 ZOOM_CHANGE_MIN = 0.03
+#: The starting pair matches a tested level when its cell pitch is within this fraction of the level's.
+ZOOM_MATCH_TOL = 0.03
 #: Head sweep: a board centre further than this from the mean over poses is a finding. #185's camera check
 #: (17 views, reachy-1-2-sim docs/reviews/2026-10-14-taught-board-poses-185) spread 6 / 4 / 9 mm in x / y / z.
 HEAD_SPREAD_LIMIT_MM = 20.0
@@ -96,33 +99,120 @@ def decode_pair(files, folder):
                  for eye in EYES)
 
 
+SIM_ZOOM_NOTE = "Field of view from the simulator's zoom model, not the real lens."
+
+
+def restore_findings(capture):
+    """(status line, findings) for the zoom restore step of a v3 zoom run.
+
+    The status line is positive ("zoom restored to IN (read back IN)") only when every eye read back the
+    starting level after a live command. Findings: not run, start unknown, failed, or a dry run."""
+    restore = [s for s in capture["steps"] if s.get("zoom_role") == "restore"]
+    if not restore:
+        return None, []  # an older bundle: no start or restore steps
+    start, records = capture.get("start_zoom"), restore[0].get("zoom_commands") or []
+    last = {r.get("eye"): r for r in records}  # the latest attempt per eye
+    if start is None:
+        return None, ["The starting zoom is unknown (not read, unreadable or the eyes differed): the zoom was "
+                      "not restored; set it to its starting level by hand."]
+    if not records:
+        return None, [f"The restore step was not run: the cameras may still be at the last level tested, not "
+                      f"the starting level {start}; set the zoom back to {start}."]
+    findings = []
+    for eye, r in last.items():
+        if r.get("dry_run"):
+            findings.append(f"Restore to {start} ({eye}) was a dry run: nothing was sent.")
+        elif not r.get("ok") or r.get("after") != start:
+            why = f" ({r['error']})" if r.get("error") else ""
+            action = ZERO_RESTORE_NOTE if start == "ZERO" else f"set the zoom to {start} by hand."
+            findings.append(f"Restore FAILED ({eye}): requested {start}, read back {r.get('after')}{why}; {action}")
+    status = None
+    if not findings and last:
+        after = sorted({r["after"] for r in last.values()})
+        status = f"zoom restored to {start} (read back {', '.join(after)})"
+    return status, findings
+
+
+def start_reads(capture):
+    """The levels the start step read, in order, one entry per press (eyes joined: 'IN', or 'IN/OUT')."""
+    for step in capture["steps"]:
+        if step.get("zoom_role") == "start":
+            records = step.get("zoom_commands") or []
+            return ["/".join(dict.fromkeys(str(r.get("level")) for r in records[n:n + 2]))
+                    for n in range(0, len(records), 2)]
+    return []
+
+
+def start_match(capture, files, rows):
+    """Which tested level the untouched starting pair matches, from its cell pitch (within ZOOM_MATCH_TOL).
+
+    Returns {"text": ..., "level": matched level or None, "ratio": ...}; the pitch ratio is start / level, per
+    eye where both were found, then averaged."""
+    start = capture.get("start_zoom") or "unknown"
+    entries = [e for s in capture["steps"] if s.get("zoom_role") == "start" for e in s["captures"]]
+    if not entries:
+        return {"text": f"start {start}: no pair captured at the starting zoom.", "level": None, "ratio": None}
+    pair = decode_pair(files, entries[0]["folder"])
+    pitch = {eye: zoom_check.cell_pitch_px(pair[EYES.index(eye)]) for eye in EYES}
+    by_level = {}
+    for r in rows:
+        if r["level"] and r["pitch_px"] and pitch.get(r["eye"]):
+            by_level.setdefault(r["level"], []).append(pitch[r["eye"]] / r["pitch_px"])
+    if not by_level:
+        return {"text": f"start {start}: the board was not found in the starting pair (or at any tested level).",
+                "level": None, "ratio": None}
+    ratios = {level: sum(v) / len(v) for level, v in by_level.items()}
+    level = min(ratios, key=lambda k: abs(ratios[k] - 1))
+    ratio = round(ratios[level], 2)
+    if abs(ratios[level] - 1) <= ZOOM_MATCH_TOL:
+        return {"text": f"start {start} matches {level} (ratio {ratio:.2f})", "level": level, "ratio": ratio}
+    return {"text": f"start {start} matches none of the tested levels (closest {level}, ratio {ratio:.2f})",
+            "level": None, "ratio": ratio}
+
+
 def analyze_zoom(capture, files):
-    rows, findings = [], []
+    """Cell pitch per zoom level, grouping pairs by each capture's own read-back, not by the step's request.
+
+    A pair whose read-back differs from its step's request is a finding, but counts under its real level."""
+    findings = []
+    if bundle_geometry(capture, files)[0] == "sim":
+        findings.append(SIM_ZOOM_NOTE)
+    groups = {}  # (level or None, eye) -> {"steps", "requested", "captures", "pitches"}
     for step in capture["steps"]:
         if not step.get("requested_zoom"):
-            continue  # a head-only step
-        recorded = [e["zoom_level"] for e in step["captures"]]
+            continue  # a head, start or restore step
+        entries = step["captures"]
+        recorded = [e["zoom_level"] for e in entries]
         seen = sorted({z for z in recorded if z})
-        missing = recorded.count(None)
-        if not recorded:
+        if not entries:
             findings.append(f"{step['label']}: no capture.")
-        if missing:
-            findings.append(f"{step['label']}: zoom read-back missing for {missing} of {len(recorded)} capture(s); "
-                            "the level is unknown, not assumed to be the requested one.")
+        if recorded.count(None):
+            findings.append(f"{step['label']}: zoom read-back missing for {recorded.count(None)} of "
+                            f"{len(recorded)} capture(s); the level is unknown, not assumed to be the requested one.")
         if len(seen) > 1:
             findings.append(f"{step['label']}: mixed zoom read-backs within the step ({', '.join(seen)}).")
-        # Only the cameras' own read-back names the level; never fall back to the request.
-        level = seen[0] if len(seen) == 1 and not missing else None
-        for eye in EYES:
-            pitches = []
-            for entry in step["captures"]:
-                pitch = zoom_check.cell_pitch_px(decode_pair(files, entry["folder"])[EYES.index(eye)])
+        for n, entry in enumerate(entries, 1):
+            level = entry["zoom_level"]  # only the cameras' own read-back names the level
+            if level and level != step["requested_zoom"]:
+                findings.append(f"{step['label']} (pair {n}): requested {step['requested_zoom']} but the cameras "
+                                f"read back {level}; its pitch is counted under {level}.")
+            pair = decode_pair(files, entry["folder"])
+            for eye in EYES:
+                group = groups.setdefault((level, eye), {"steps": [], "requested": set(), "captures": 0,
+                                                         "pitches": []})
+                if step["label"] not in group["steps"]:
+                    group["steps"].append(step["label"])
+                group["requested"].add(step["requested_zoom"])
+                group["captures"] += 1
+                pitch = zoom_check.cell_pitch_px(pair[EYES.index(eye)])
                 if pitch:
-                    pitches.append(pitch)
-            rows.append({"step": step["label"], "level": level, "requested_zoom": step["requested_zoom"],
-                         "recorded_zoom": seen, "readback_missing": missing,
-                         "eye": eye, "captures": len(step["captures"]), "found": len(pitches),
-                         "pitch_px": round(statistics.median(pitches), 2) if pitches else None})
+                    group["pitches"].append(pitch)
+    order = {level: n for n, level in enumerate(ZOOM_READBACK)}
+    rows = [{"step": ", ".join(g["steps"]), "level": level, "requested_zoom": sorted(g["requested"]), "eye": eye,
+             "captures": g["captures"], "found": len(g["pitches"]),
+             "readback_missing": g["captures"] if level is None else 0,
+             "pitch_px": round(statistics.median(g["pitches"]), 2) if g["pitches"] else None}
+            for (level, eye), g in sorted(groups.items(), key=lambda kv: (order.get(kv[0][0], 99), kv[0][1]))]
     zoom_check.summarize(rows)
     levels = {r["level"] for r in rows if r["pitch_px"] and r["level"]}
     ratios = [r["pitch_vs_widest"] for r in rows if r["pitch_vs_widest"] and r["level"] not in (SCENE_ZOOM, None)]
@@ -131,10 +221,6 @@ def analyze_zoom(capture, files):
     elif ratios and all(abs(x - 1) < ZOOM_CHANGE_MIN for x in ratios):
         findings.append("The cell pitch did not change between levels: the zoom did not change "
                         "(dry-run, or the command failed).")
-    for r in rows:
-        if r["level"] and r["level"] != r["requested_zoom"]:
-            findings.append(f"{r['step']} ({r['eye']}): requested {r['requested_zoom']} but the cameras read back "
-                            f"{r['level']}.")
     pitch = {(r["level"], r["eye"]): r["pitch_px"] for r in rows if r["pitch_px"] and r["level"]}
     widest_ok = None
     if SCENE_ZOOM in levels and len(levels) > 1:
@@ -142,8 +228,16 @@ def analyze_zoom(capture, files):
                         for e in EYES if (SCENE_ZOOM, e) in pitch)
         if not widest_ok:
             findings.append(f"{SCENE_ZOOM} does not have the smallest cell pitch: it is not the widest view.")
+    reads = start_reads(capture)
+    if len(set(reads)) > 1:
+        findings.append(f"The starting zoom was read {len(reads)} times with different results "
+                        f"({', '.join(reads)}); the recorded start is the first complete read, later reads are extra "
+                        "read-backs.")
+    status, restore = restore_findings(capture)
+    findings.extend(restore)
     return {"kind": "zoom", "rows": rows, "scene_zoom": SCENE_ZOOM, "scene_zoom_is_widest": widest_ok,
-            "findings": findings}
+            "start_zoom": capture.get("start_zoom"), "start_match": start_match(capture, files, rows),
+            "restore_status": status, "findings": findings}
 
 
 def depth_verdict(row):
@@ -206,8 +300,14 @@ def analyze_depth(capture, files, depth, roi=None, focal_px=None, baseline_m=Non
             row["implied_disparity_px"] = round(abs(row["error_mm"]) / sens, 2)
             row["verdict"] = depth_verdict(row)
         rows.append(row)
+    checks = [step for step in capture["steps"] if step.get("zoom_role") == "check"]
+    unread = ["The zoom was not read at setup: the result applies only at the zoom recorded in the bundle."
+              ] if checks and not any(step.get("zoom_commands") for step in checks) else []
+    warnings = unread + sorted({r["warning"] for step in capture["steps"] if step.get("zoom_role") == "check"
+                       for r in step.get("zoom_commands") or [] if r.get("warning")})
     return {"kind": "depth", "tolerance_mm": TOLERANCE_M * 1000, "focal_px": round(focal_px, 1),
-            "baseline_m": round(baseline_m, 4), "sensitivity_source": source, "rows": rows}
+            "baseline_m": round(baseline_m, 4), "sensitivity_source": source, "rows": rows,
+            "findings": warnings}
 
 
 def kabsch(source, target):
@@ -300,6 +400,10 @@ def print_report(manifest, capture, result):
     print(f"{capture['procedure']['name']} v{capture['procedure']['version']} · calibration {capture['calibration_id']}"
           f" · {len(manifest['files'])} files, SHA-256 verified")
     if result["kind"] == "zoom":
+        print("starting zoom:", result["start_zoom"] or "unknown (not read in this bundle)")
+        print(result["start_match"]["text"])
+        if result["restore_status"]:
+            print(result["restore_status"])
         for r in result["rows"]:
             print(f"{r['step']:>10} {r['eye']:>5}: zoom {r['level']}  cell pitch "
                   f"{'not found' if r['pitch_px'] is None else str(r['pitch_px']) + ' px'}  "

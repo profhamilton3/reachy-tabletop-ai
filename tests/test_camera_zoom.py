@@ -44,7 +44,9 @@ def test_policy_is_the_widest_level_and_names_normalize():
     assert normalize_zoom(types.SimpleNamespace(name="IN")) == "IN"
     assert normalize_zoom("inter") == "INTER"
     assert normalize_zoom("auto") is None and normalize_zoom(None) is None
-    assert normalize_zoom("ZERO") is None  # cannot be set, so not a policy level
+    # ZERO is the SDK's unset level: a real read-back value, never mapped to another level, not a policy level.
+    assert normalize_zoom("zero") == "ZERO" and normalize_zoom(types.SimpleNamespace(name="ZERO")) == "ZERO"
+    assert "ZERO" not in camera_zoom.ZOOM_ORDER
 
 
 def test_setter_is_dry_run_by_default_and_sends_nothing(caplog):
@@ -75,7 +77,7 @@ def test_live_setter_reports_a_failed_or_unconfirmed_command():
 def test_setter_rejects_unknown_levels_and_eyes_without_commanding():
     client = fake_client()
     s = setter(client, dry_run=False)
-    for bad in ("ZERO", "wide", ""):
+    for bad in ("wide", ""):
         with pytest.raises(ValueError):
             s.set_level("left", bad)
     with pytest.raises(ValueError):
@@ -132,13 +134,38 @@ def test_viewer_status_and_capture_carry_the_zoom_warning_and_id():
         assert context["calibration_id"].startswith(context["analysis_profile"]["id"])
 
 
-def test_sim_source_has_no_zoom_context_and_keeps_the_plain_calibration_id():
+def test_sim_source_reports_the_readback_only_and_keeps_the_plain_calibration_id():
     service = StereoService(StereoSettings())
     service._new_session()
     feed(service, "left")
     feed(service, "right")
     service.start = service.stop = lambda: None
     with TestClient(create_app(service.settings, service)) as client:
-        assert client.get("/api/stereo/status").json()["zoom"] is None
+        zoom = client.get("/api/stereo/status").json()["zoom"]
+        assert zoom["levels"] == {"left": None, "right": None} and zoom["warning"] is None  # nothing read yet
+        service._accept({"kind": "diagnostics", "section": "left", "values": {"zoom_level": "ZERO"}})
+        service._accept({"kind": "diagnostics", "section": "right", "values": {"zoom_level": "ZERO"}})
         context = client.post("/api/stereo/pairs").json()["camera_context"]
-        assert context["zoom"] is None and "@zoom" not in context["calibration_id"]
+        assert context["zoom"]["captured"] == "ZERO" and context["zoom"]["warning"] is None
+        assert "@zoom" not in context["calibration_id"]
+
+
+def test_zero_is_a_readback_and_a_restore_command_but_the_sdk_may_refuse_it():
+    assert zoom_status("OUT", {"left": "ZERO", "right": "ZERO"})["captured"] == "ZERO"
+    client = fake_client(left="ZERO", right="ZERO")
+    assert [r["level"] for r in setter(client).read_both()] == ["ZERO", "ZERO"]
+    assert client.left_camera.commands == []  # read-back only
+    accepted = setter(fake_client(left="INTER", right="INTER"), dry_run=False).set_level("left", "ZERO")
+    assert accepted["ok"] and accepted["after"] == "ZERO"
+    refused = setter(fake_client(fail=True), dry_run=False).set_level("left", "ZERO")
+    assert refused["ok"] is False and refused["error"] == "ValueError"
+
+
+def test_zoom_read_warning_compares_with_the_profile_zoom():
+    ok = camera_zoom.zoom_read_warning("OUT", {"left": "OUT", "right": "OUT"})
+    assert ok is None
+    mismatch = camera_zoom.zoom_read_warning("OUT", {"left": "IN", "right": "IN"})
+    assert "read IN" in mismatch and "valid at OUT" in mismatch
+    unknown = camera_zoom.zoom_read_warning(None, {"left": "IN", "right": "IN"})
+    assert "profile's zoom is unknown" in unknown and "only at the zoom recorded in the bundle (IN)" in unknown
+    assert "could not be read" in camera_zoom.zoom_read_warning("OUT", {"left": "OUT", "right": None})

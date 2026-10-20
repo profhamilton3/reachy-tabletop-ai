@@ -20,7 +20,7 @@ import numpy as np
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
-from reachy_ai.camera_zoom import EYES, calibration_id, zoom_status
+from reachy_ai.camera_zoom import EYES, calibration_id, normalize_zoom, zoom_status
 from reachy_ai.config import HEAD_PRESETS
 from reachy_ai.pair_bundle import BundleTooLarge, build_bundle, json_bytes, viewer_version
 from reachy_ai.perception.pair_detector import (
@@ -54,6 +54,12 @@ class _ServiceZoom:
     def set_both(self, level):
         return self.service.request_zoom(level)
 
+    def read_both(self):
+        """The cameras' last read-back (connection time, or after a live command); no command is sent."""
+        with self.service.lock:
+            levels = {eye: (self.service.diagnostics.get(eye) or {}).get("zoom_level") for eye in EYES}
+        return [{"eye": eye, "level": normalize_zoom(levels[eye])} for eye in EYES]
+
 
 class _ServiceHead:
     """Head mover for `CaptureRun.apply_head`: the SDK process runs the primitive, gate included."""
@@ -80,11 +86,16 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
             camera.stop()
 
     def zoom_context(profile):
-        """Zoom read back from the cameras against the profile's; physical cameras only."""
-        if settings.source == "sim":
-            return None
+        """Zoom read back from the cameras against the profile's.
+
+        The simulator has no calibration profile at a zoom level, so it reports only the read-back levels."""
         with camera.lock:
             readbacks = {eye: camera.diagnostics.get(eye) for eye in EYES}
+        if settings.source == "sim":
+            levels = {eye: normalize_zoom((readbacks[eye] or {}).get("zoom_level")) for eye in EYES}
+            captured = levels["left"] if levels["left"] == levels["right"] else None
+            return {"levels": levels, "captured": captured, "profile": None, "scene_policy": None,
+                    "matches_profile": None, "warnings": [], "warning": None}
         return zoom_status(profile.get("zoom_level"), readbacks)
 
     app = FastAPI(title="Reachy Stereo View", lifespan=lifespan)
@@ -131,7 +142,8 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
                 zoom = zoom_context(profile)
                 record["camera_context"]["zoom"] = zoom
                 record["camera_context"]["calibration_id"] = (calibration_id(profile.get("id"), zoom["captured"])
-                                                                  if zoom else profile.get("id"))
+                                                                  if zoom and settings.source != "sim"
+                                                                  else profile.get("id"))
                 record["camera_context"]["analysis_profile"] = dict(profile)
                 return camera.snapshot_metadata(record), record
         except ValueError as exc:
@@ -179,13 +191,13 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
 
     @app.post("/api/stereo/capture-run/steps/{step_id}/zoom")
     def run_zoom(step_id: str, confirm: bool = Body(False, embed=True)):
-        """Set this step's zoom. Refused without the operator's confirm; dry-run unless --allow-zoom-commands."""
+        """Set this step's zoom, on the simulator as on the robot. Refused without the operator's confirm;
+        dry-run unless --allow-zoom-commands. A read step (start, check) only reads the zoom back."""
         run = current_run()
-        if settings.source == "sim":
-            raise HTTPException(409, "The simulator has no camera zoom to command")
         try:
             with run_lock:
-                records = run.apply_zoom(step_id, _ServiceZoom(camera), confirm)
+                profile_zoom = depth.status().get("profile", {}).get("zoom_level")
+                records = run.apply_zoom(step_id, _ServiceZoom(camera), confirm, profile_zoom)
         except (ZoomNotConfirmed, CommandBusy) as exc:
             raise HTTPException(409, str(exc)) from exc
         except KeyError as exc:
@@ -194,7 +206,9 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
             raise HTTPException(422, str(exc)) from exc
         except (RuntimeError, TimeoutError) as exc:
             raise HTTPException(503, str(exc)) from exc
-        return {"dry_run": not camera.settings.zoom_commands, "records": records, "state": run.state()}
+        read_only = run.procedure.step(step_id).zoom_role in ("start", "check")  # nothing was commanded
+        return {"dry_run": not read_only and not camera.settings.zoom_commands, "records": records,
+                "state": run.state()}
 
     @app.post("/api/stereo/capture-run/steps/{step_id}/head")
     def run_head(step_id: str, confirm: bool = Body(False, embed=True)):
@@ -258,6 +272,9 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
             raise HTTPException(404, "Unknown step") from exc
         if not step.capture:
             raise HTTPException(409, "This step has nothing to capture")
+        blocker = run.capture_blocker(step_id)
+        if blocker:
+            raise HTTPException(409, blocker)
         with run_lock:
             meta, record = capture_record(settled=True)
             try:

@@ -55,8 +55,9 @@ The launcher passes `--allow-head-motion --allow-zoom-commands` and sets `REACHY
 viewer's command line only (it is never exported). Starting `reachy-stereo` directly stays dry-run unless you
 pass those flags and the variable yourself.
 
-Open http://localhost:8081. The simulator has no zoom, so zoom steps are refused there; head steps work on
-the simulator's neck.
+Open http://localhost:8081. Zoom steps work on the simulator under the same rules as on the robot: a confirm
+tick per command and `--allow-zoom-commands` (otherwise a logged dry run). Head steps work on the simulator's
+neck. See *The simulator's zoom model* below.
 
 ## What you see
 
@@ -91,6 +92,10 @@ hand ready and the run finished.
 
 neutral → 20° → 55° → 60° → 64° (`board_view`) → back to neutral.
 
+**Order of a robot session:** Board-view approach, then Head sweep, then Depth ruler test, then **Zoom FOV
+check last**. The zoom check can leave the lens at a level the SDK cannot restore (see the restore step
+below), and every other test assumes the scene zoom.
+
 **Neck sign check.** When the viewer connects it computes the SDK head IK (`head._look_at`; nothing moves) for
 two points and requires `neck_pitch > 0` for (0.3, 0.0, −0.4), i.e. looking down, and `neck_yaw > 0` for
 (0.5, 0.3, 0.0), i.e. turning left. Check the result on the page under *Connection & camera diagnostics*
@@ -112,24 +117,53 @@ Capture at each pose. Stop and report if the neck labours, sounds wrong, or read
 3. Run the last step (head to neutral), then press **Download capture bundle**. Choosing "None" or
    **Discard run** forgets the run.
 
-### Zoom field-of-view check (v2)
+### Zoom field-of-view check (v4)
 
-Arm at rest on the table, taped 3x3 board clear.
-1. Step 0: point the head at `board_view`.
+Run this last in a robot session. Arm at rest on the table, taped 3x3 board clear.
+1. Step 0, the starting zoom, untouched: press *Read zoom* (read-back only; no zoom command). The level can be
+   `ZERO`, the SDK's unset level (the simulator starts there); it is recorded as `ZERO`, not mapped to another
+   level. The **first complete read** of the run is the starting level; later reads are kept as extra
+   read-backs and never change it, and it is fixed once any zoom command has been sent. Then tick the confirm
+   box, press *Move head* (to `board_view`), wait for the read-back and press *Capture*: this pair is at the
+   starting zoom.
 2. For each of **OUT, INTER, IN**: tick *I confirm: command zoom X*, press *Set zoom X*, wait for the pause to
-   finish, press *Capture*. The tick must be repeated for every command.
-3. Last step: head to neutral.
+   finish, press *Capture*. Capture is refused until that step's zoom command has completed. The tick must be
+   repeated for every command.
+3. Head to neutral.
+4. Last step: tick *I confirm: command zoom restore* and press *Restore zoom*. This commands the starting
+   level from step 0 and records the read-back. If the starting level is unknown, nothing is sent. If it
+   cannot be commanded, the failure is recorded. `ZERO` cannot be commanded through the SDK; restarting the
+   robot's camera service is expected to re-home the lens (unconfirmed). Any other level: set it by hand.
 
 If the viewer is dry-run, the zoom does not change, and the analyser says so. This also measures whether OUT
-is really the widest view.
+is really the widest view. The analyser reports the starting level, the cell pitch of the starting pair and
+which tested level it matches within 3% (e.g. "start ZERO matches INTER (ratio 1.00)", or "matches none"), and
+flags a restore that failed, was a dry run, was not run, or had no known starting level. It groups pairs by
+each capture's own zoom read-back, not by step.
 
-### Depth ruler test (v2)
+### Depth ruler test (v3)
 
 Arm at rest at the scene zoom (OUT); do not change the zoom.
-1. Step 0 sets the head to **neutral**; it stays there for the whole test.
-2. Hold the flat, textured target (the 60 mm cube face or a checker card) square to the right camera, centred
+1. Step 0: press *Read zoom* (no command). A warning shows if the zoom differs from the level the calibration
+   profile is valid at. While the profile's `zoom_level` is null, the warning says the profile's zoom is
+   unknown, so the result applies only at the zoom recorded in the bundle.
+2. Step 1 sets the head to **neutral**; it stays there for the whole test.
+3. Hold the flat, textured target (the 60 mm cube face or a checker card) square to the right camera, centred
    in the image, at **0.3, 0.5, 0.8 and 1.2 m**, measured from the right camera's lens face along its axis.
-3. Press *Capture* three times at each distance, keeping the target still.
+4. Press *Capture* three times at each distance, keeping the target still.
+
+### The simulator's zoom model
+
+Under `mujoco-remote` (what `SivaLabLauncher.sh` runs) the simulator models zoom as a **field-of-view change
+only**:
+- a zoom command changes both cameras' field of view; `INTER` is the measured lab calibration, `OUT` and `IN`
+  come from Pollen's 65-125° range read as diagonal (an inference from one data point);
+- lens distortion is fixed, not re-modelled per level;
+- the change is instant.
+
+The `kinematic` and `fixture` backends only store the level (the analyser then reports that the cell pitch
+did not change). A zoom bundle from the simulator is marked `source: sim` in `capture.json`, and the analyser
+prints "Field of view from the simulator's zoom model, not the real lens."
 
 ### Board-view approach (v2)
 
@@ -177,7 +211,8 @@ unzip or rename files inside it: the manifest holds a SHA-256 for every file, an
 Each bundle holds, per step, `left.jpg`, `right.jpg` and `pair.json`, plus:
 - `capture.json`:
   - procedure name and version, step labels and the calibration id;
-  - the requested and read-back zoom per step;
+  - the requested and read-back zoom per step, with the camera source (`sim` or `robot`);
+  - for the zoom check, the starting zoom and every read, command and restore record;
   - the requested head pose per step, every head command attempt (the commanded preset and angles,
     live/dry-run, the outcome, the gate's reasons, the neck read-back after the move);
   - the neck read-back frozen with each capture;

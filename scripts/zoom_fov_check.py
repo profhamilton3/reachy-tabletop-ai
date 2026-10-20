@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _operator_common as common  # noqa: E402
 import derive_stereo_calibration as grid  # noqa: E402
 
-from reachy_ai.camera_zoom import EYES, SCENE_ZOOM, ZOOM_ORDER, ZoomSetter, normalize_zoom  # noqa: E402
+from reachy_ai.camera_zoom import EYES, SCENE_ZOOM, ZOOM_ORDER, ZoomSetter  # noqa: E402
 from reachy_ai.perception.procedures import CaptureRun, encode_jpeg, zoom_fov_procedure  # noqa: E402
 
 
@@ -76,6 +76,7 @@ def main():
     print("starting zoom:", start, "| zoom commands:", "LIVE" if args.live_zoom else "dry run (not sent)")
     rows = []
     run = CaptureRun(zoom_fov_procedure(args.levels))
+    run.apply_zoom("zoom_start", zoom, confirmed=True)  # step 0: read-back only, recorded as the starting level
     try:
         for level in args.levels:
             step_id = f"zoom_{level.lower()}"
@@ -102,10 +103,16 @@ def main():
                 print(f"{level:>6} {eye:>5}: zoom readback {actual}  cell pitch "
                       f"{'not found (board not fully in view?)' if pitch is None else f'{pitch:.1f} px'}")
     finally:
-        if args.live_zoom:  # put the lens back where it was
-            for eye in EYES:
-                if start[eye] and normalize_zoom(start[eye]):
-                    zoom.set_level(eye, start[eye])
+        if args.live_zoom:  # last step: put the lens back where it was (a confirm, like any zoom command)
+            answer = input(f"Restore the starting zoom {run.start_zoom() or 'unknown'} on both cameras? Type y: ")
+            if answer.strip() == "y":
+                restored = run.apply_zoom("zoom_restore", zoom, confirmed=True)
+            else:
+                restored = run.apply_zoom("zoom_restore", zoom, confirmed=False) if run.start_zoom() is None else []
+            for record in restored:
+                print("zoom restore:", record.get("note") or f"{record['eye']} read back {record.get('after')}")
+            if not restored:
+                print("zoom NOT restored: set the zoom back to its starting level by hand.")
     summarize(rows)
     changed = {r["eye"]: r["pitch_vs_widest"] for r in rows if r["level"] != SCENE_ZOOM and r["pitch_vs_widest"]}
     print("pitch relative to the widest level:", json.dumps(changed))
