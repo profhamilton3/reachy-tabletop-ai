@@ -207,6 +207,7 @@ def profile_document(rows, rotation, translation, centre):
                         "This profile is valid at that zoom only; re-derive after any zoom change."),
         "provenance": {
             "date_derived": date.today().isoformat(),
+            "opencv_version": cv2.__version__,
             "pictures": "tests/Pictures/ (captured 2026-08-20, 20 left/right screenshot pairs, 480x640)",
             "intrinsics": ("2026-08-27 re-solve, sim scenes/calibration_measured_2026_08_27.yaml: "
                            "reprojection RMS 0.97 px (left) / 0.84 px (right); measured principal points"),

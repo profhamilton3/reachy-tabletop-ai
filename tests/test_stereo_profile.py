@@ -59,8 +59,10 @@ def test_regenerated_profile_matches_the_committed_one():
     rows, rotation, translation, centre = derive.derive()
     committed = profile()
     assert len(rows) == len(committed["provenance"]["pairs_used"]) >= 4
-    np.testing.assert_allclose(centre, committed["right_centre_in_left_m"], atol=1e-4)
-    np.testing.assert_allclose(translation, committed["T"], atol=1e-4)
+    # The derivation varies by about 0.5 mm across OpenCV builds (CI differs from the build that
+    # derived the committed profile); the pair-to-pair spread is 3.6-3.9 mm.
+    np.testing.assert_allclose(centre, committed["right_centre_in_left_m"], atol=1e-3)
+    np.testing.assert_allclose(translation, committed["T"], atol=1e-3)
 
 
 @pytest.mark.parametrize("change, reason", [
