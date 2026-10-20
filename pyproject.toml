@@ -32,6 +32,10 @@ audio = [
     "pyaudio>=0.2.14",
     "sounddevice>=0.4.7",
 ]
+voice = [
+    "vosk==0.3.44",          # offline recognition; model in tests/vosk (issue #29)
+    "sounddevice==0.5.6",    # Mac/workstation microphone; needs PortAudio
+]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
