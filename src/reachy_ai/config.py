@@ -50,7 +50,7 @@ NECK_READBACK_TOLERANCE_DEG: float = 3.0  # capture refused if any neck joint is
 # Named head poses (roll, pitch, yaw), degrees. board_view is reachy-1-2-sim gaze.BOARD_VIEW: all nine
 # cells in both eyes in the October layout (ADR-0010 section 5). The three approach poses step the first
 # robot session up to it (20 deg first: a small move that shows the head tilts DOWN). The six sweep
-# poses are UNVALIDATED until a head-sweep run on the sim confirms the grid is found at each of them.
+# poses: on the sim, board_view and yaw_left_5 are analysable; the rest wait on the finder follow-up (#41).
 # They vary yaw and roll only, all at pitch 64: the chest hides the near row of cells at lower pitch, and
 # 64 is the stop. Pinhole frame margins at pitch 64 (without the chest) are 66 px at yaw 0, 49 at +-5,
 # 38 at +-8 and 14 at +-15, so the old +-15 deg and 56 deg poses were too tight (see DATA_CAPTURE.md).

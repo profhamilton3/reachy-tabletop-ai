@@ -150,8 +150,11 @@ Arm at rest, the taped board clear and still (no objects on it), nobody near the
 | sweep_roll_right_5 | −5, 64, 0 |
 | sweep_roll_left_5 | +5, 64, 0 |
 
-Then head to neutral. The six sweep poses are **not yet validated**: a head-sweep run on the simulator must
-first confirm that the grid is found in both eyes at each of them. The board is not expected in view at neutral.
+Then head to neutral. Sim re-shoot, 2026-10-20: the grid was found in both eyes at board_view and
+sweep_yaw_left_5, with a board-centre spread of 0.6 mm worst and board_view within 5.4 mm of the scene grid
+centre. Every other sweep pose lost the grid in one eye, because the chest hides part of the near row and the
+finder needs whole rows: tracked in #41. Keep all six sweep poses on the robot; the bundle keeps them, and #41
+re-analyses it with no new robot time. The board is not expected in view at neutral.
 
 Why these poses (render findings, sim head sweep of 2026-10-20, #28 / #39). The v1 poses (yaw ±15° at pitch 64
 and 56, plus 56° centre) were not analysable:
