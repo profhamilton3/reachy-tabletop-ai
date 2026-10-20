@@ -37,6 +37,7 @@
     button:hover, .download:hover { border-color: #90caf9; }
     button:disabled { opacity: .45; cursor: not-allowed; }
     :focus-visible { outline: 2px solid #80cbc4; outline-offset: 3px; }
+    #zoom-warning { margin: 0 0 14px; padding: 8px 12px; border: 1px solid #ffb74d; border-radius: 6px; color: #ffb74d; font-size: 12px; line-height: 1.6; }
     #notice { min-height: 24px; margin: 14px 0; color: #ffb74d; font-size: 12px; line-height: 1.6; }
     #pair-info { overflow-wrap: anywhere; }
     #analysis-panel { margin-top: 18px; padding: 18px; background: #16213e;
@@ -98,6 +99,7 @@
       <button id="save-zip" hidden title="Download pair.json, both images, and any analysis or depth results as one zip">Save pair (zip)</button></div>
   </section>
   <p id="notice" role="status" aria-live="polite">Connecting to camera service…</p>
+  <p id="zoom-warning" role="alert" hidden></p>
   <section id="analysis-panel" hidden aria-label="Captured-pair analysis">
     <h2>RIGHT-EYE ANALYSIS</h2>
     <div id="analysis-summary" class="subtle" role="status" aria-live="polite"></div>
@@ -158,6 +160,9 @@
     $('depth-button').disabled = measuring || analyzing || !activeAnalysis || !status?.depth?.available;
     $('depth-button').title = status?.depth?.reason || 'Measure this fixed stereo pair using its saved geometry';
     $('analyze').title = status?.detector?.reason || 'Analyze the captured right-eye image';
+    const zoom = (frozen && activePair?.camera_context?.zoom) || status?.zoom;
+    $('zoom-warning').hidden = !zoom?.warning;
+    $('zoom-warning').textContent = zoom?.warning ? 'Zoom: ' + zoom.warning : '';
     if (frozen) return;
     const offline = !lastStatus || Date.now() - lastStatus > 3000;
     for (const eye of eyes) {

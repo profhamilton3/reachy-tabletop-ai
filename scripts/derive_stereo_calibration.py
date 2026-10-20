@@ -203,6 +203,9 @@ def profile_document(rows, rotation, translation, centre):
         "baseline_m": round(float(np.linalg.norm(centre)), 4),
         "relative_rotation_deg": round(float(np.degrees(np.linalg.norm(
             Rotation.from_matrix(rotation).as_rotvec()))), 2),
+        "zoom_level": None,
+        "zoom_level_note": ("None = not recorded. Set to the SDK ZoomLevel name (OUT / INTER / IN) when the profile "
+                            "is derived from pictures taken at a known zoom (scripts/zoom_fov_check.py, #28 B)."),
         "zoom_caveat": ("The camera zoom used for the August pictures was never recorded (see #28 B). "
                         "This profile is valid at that zoom only; re-derive after any zoom change."),
         "provenance": {

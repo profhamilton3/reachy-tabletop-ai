@@ -30,9 +30,11 @@ data/bags/
 *.caffemodel
 *.prototxt
 
-# Calibration outputs (generated — commit only the template)
+# Calibration outputs (generated — commit only the template and stereo_params.json)
 data/calibration/*.json
 !data/calibration/stereo_params_template.json
+# Generated from the versioned profile in calibration/ by scripts/generate_stereo_params.py (#28 A)
+!data/calibration/stereo_params.json
 
 # OS
 .DS_Store

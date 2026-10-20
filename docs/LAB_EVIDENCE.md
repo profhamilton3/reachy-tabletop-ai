@@ -120,3 +120,46 @@ These need a tape measure; photographs cannot supply them.
   forward than the photos show, or the board's near edge is closer to the robot
   than 0.160. The measurement above resolves this too.
 - **Table surface friction**, currently inherited from the demo scene.
+
+## Stereo depth error on the 6 in cells (#28 C, offline)
+
+**Only one distance band is covered: about 0.5–0.85 m (median 0.71 m).** The 2026-08-20 pictures in
+`tests/Pictures/` were all taken with the board at that distance. There is no evidence here for 0.3, 0.5 (as a
+centred target), 0.8 or 1.2 m; those need the ruler test (`docs/PERCEPTION_STAGE1.md`, `scripts/ruler_depth_test.py`).
+Profile: `calibration/reachy12_stereo_2026_08_27.json`. Reproduce with
+`PYTHONPATH=src python scripts/check_depth_error.py` (6 pairs have the grid in both eyes).
+
+Method: the reference for each grid corner is the PnP board plane of **one eye alone** (known 5.08 in cells on a
+6 in pitch, that eye's intrinsics; it does not use the stereo baseline). Stereo depth is compared with it two ways:
+(a) both eyes' corners triangulated with the profile's `R`/`T`, forward depth Z in the left camera frame; (b) the
+viewer's dense SGBM depth on boxes over the four tape junctions, forward Z in the right camera frame.
+
+| Set | Corners n | Z error mean | Z error RMS | median \|error\| | max \|error\| |
+|---|---|---|---|---|---|
+| All 6 pairs, triangulated corners | 168 | −2.5 mm | **14.8 mm** | 6.0 mm | 76.4 mm |
+| 4 pairs used to derive `R`/`T` | 108 | −3.2 mm | 12.3 mm | 5.7 mm | 72.8 mm |
+| 2 held-out pairs (`_18`, `_2`) | 60 | −1.3 mm | 18.3 mm | 6.2 mm | 76.4 mm |
+| All pairs, dense SGBM at the junctions | 15 | −4.8 mm | 11.7 mm | 10.4 mm | 20.5 mm |
+
+Range (|X|) error over all corners: mean −2.6 mm, RMS 16.6 mm, max 99.8 mm. Per pair (Z error, reference Z):
+
+| Pair | Used for pose | Reference Z | Corners | Mean | RMS | Max |
+|---|---|---|---|---|---|---|
+| 20.08.2026 | yes | 0.57–0.82 m | 24 | +2.1 mm | 10.5 mm | 23.3 mm |
+| 20.08.2026_4 | yes | 0.57–0.85 m | 24 | −4.6 mm | 11.3 mm | 24.0 mm |
+| 20.08.2026_5 | yes | 0.59–0.84 m | 24 | −4.4 mm | 10.3 mm | 31.6 mm |
+| 20.08.2026_6 | yes | 0.51–0.84 m | 36 | −5.1 mm | 15.1 mm | 72.8 mm |
+| 20.08.2026_18 | no | 0.53–0.83 m | 24 | −3.4 mm | 23.8 mm | 76.4 mm |
+| 20.08.2026_2 | no | 0.48–0.85 m | 36 | +0.2 mm | 13.5 mm | 50.8 mm |
+
+Reading it:
+
+- Typical error is small (median 6 mm) and unbiased (mean −2.5 mm), but the RMS (14.8 mm) sits at the 15 mm
+  target and the tail is long (up to 76 mm). The two worst pairs are the ones where row-error checks already
+  flagged corners as probably mislabelled (PR #34), so part of the tail is the test reference, not the stereo.
+- This is a **consistency check, not an independent bound**: the pose in the profile was derived from four of these
+  six pairs. The two held-out pairs are the only fairly independent evidence, and they are the weakest (RMS 18 mm,
+  n = 60 corners from two pictures of the same scene).
+- It says nothing about distance dependence. By `ΔZ = Z² / (f·B) · Δd`, one pixel of disparity error is about
+  2.9 / 8.0 / 20.5 / 46 mm at 0.3 / 0.5 / 0.8 / 1.2 m (f ≈ 400 px, B = 0.078 m): analytic, not measured.
+- The zoom of these pictures was never recorded; the bounds apply to the profile as it is, at that zoom.
