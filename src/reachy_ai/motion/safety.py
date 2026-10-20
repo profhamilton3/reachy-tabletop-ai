@@ -13,9 +13,11 @@ from reachy_ai.config import (
     HEAD_LOOK_AT_Y_MIN,
     HEAD_LOOK_AT_Z_MAX,
     HEAD_LOOK_AT_Z_MIN,
+    HEAD_MAX_AVG_SPEED_DEG_S,
     HEAD_MIN_DURATION_S,
     HEAD_STEEP_MIN_DURATION_S,
     HEAD_STEEP_PITCH_DEG,
+    HEAD_UNKNOWN_START_MIN_DURATION_S,
     NECK_JOINTS,
     NECK_LIMITS_DEG,
     WORKSPACE_X_MAX,
@@ -84,12 +86,16 @@ def head_gate_check(
     operator_approved: bool = False,
     look_at: Pose3D | None = None,
     motion_enabled: bool | None = None,
+    present_deg: dict[str, float] | None = None,
 ) -> GateResult:
-    """Head (neck) moves only: limits, duration, look_at box, approval and REACHY_ENABLE_MOTION.
+    """Head (neck) moves only: limits, duration, speed, look_at box, approval and REACHY_ENABLE_MOTION.
 
     `target_deg` maps neck_roll / neck_pitch / neck_yaw to the goal in degrees (None when the
     angles could not be found before moving). `look_at` is the torso-frame point a look_at move
     aims at; presets have none. `motion_enabled` defaults to config.REACHY_ENABLE_MOTION.
+    `present_deg` is the neck read-back taken before the move: the largest joint change divided by
+    the duration may not exceed HEAD_MAX_AVG_SPEED_DEG_S. Without it (None, or any joint missing or
+    not finite) the speed is unknown and the duration must be at least HEAD_UNKNOWN_START_MIN_DURATION_S.
     """
     failures: list[str] = []
 
@@ -112,6 +118,16 @@ def head_gate_check(
         failures.append(f"A move to pitch above {HEAD_STEEP_PITCH_DEG} deg needs at least "
                         f"{HEAD_STEEP_MIN_DURATION_S} s (got {duration_s} s)")
 
+    if target_deg is not None and math.isfinite(duration_s) and duration_s >= HEAD_MIN_DURATION_S:
+        change = _largest_change(target_deg, present_deg)
+        if change is None:
+            if duration_s < HEAD_UNKNOWN_START_MIN_DURATION_S:
+                failures.append(f"Present neck angles unknown: duration {duration_s} s is shorter than the "
+                                f"{HEAD_UNKNOWN_START_MIN_DURATION_S} s minimum without them")
+        elif change / duration_s > HEAD_MAX_AVG_SPEED_DEG_S:
+            failures.append(f"Average neck speed {change / duration_s:.1f} deg/s ({change:.1f} deg in "
+                            f"{duration_s} s) exceeds {HEAD_MAX_AVG_SPEED_DEG_S} deg/s")
+
     if not operator_approved:
         failures.append("Operator approval not given")
 
@@ -119,6 +135,19 @@ def head_gate_check(
         failures.append(MOTION_DISABLED)
 
     return _report(failures)
+
+
+def _largest_change(target_deg: dict[str, float], present_deg: dict[str, float] | None) -> float | None:
+    """Largest neck-joint change from the present to the target angles; None if either is unusable."""
+    if present_deg is None:
+        return None
+    changes = []
+    for name in NECK_JOINTS:
+        goal, present = target_deg.get(name), present_deg.get(name)
+        if goal is None or present is None or not math.isfinite(goal) or not math.isfinite(present):
+            return None
+        changes.append(abs(goal - present))
+    return max(changes)
 
 
 def _report(failures: list[str]) -> GateResult:

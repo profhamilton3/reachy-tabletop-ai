@@ -106,6 +106,7 @@ def test_the_worker_routes_observations_and_control_to_their_own_queues(monkeypa
         left_camera=_Camera(), right_camera=_Camera(fail_after=3),
         head=types.SimpleNamespace(joints=types.SimpleNamespace(neck_roll=joint, neck_pitch=joint, neck_yaw=joint)))
     monkeypatch.setitem(sys.modules, "reachy_sdk", types.SimpleNamespace(ReachySDK=lambda **_: robot))
+    monkeypatch.setattr("reachy_ai.sdk_compat.fix_command_poll", lambda: True)  # the fake SDK has no module to patch
     monkeypatch.setattr(stereo.signal, "signal", lambda *_: None)  # main-thread only; the test runs a thread
     monkeypatch.setattr(stereo, "version", lambda _: "0.7.0")
     monkeypatch.setattr(threading, "excepthook", threading.excepthook)  # restored after the test

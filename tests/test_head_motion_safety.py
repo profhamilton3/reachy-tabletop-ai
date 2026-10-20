@@ -11,13 +11,15 @@ import types
 
 import pytest
 
-from reachy_ai import config, stereo
+from reachy_ai import config, sdk_compat, stereo
 from reachy_ai.motion import primitives, safety
 from reachy_ai.motion.safety import MOTION_DISABLED, Pose3D, head_gate_check
 from reachy_ai.reachy_client import ReachyClient
 from reachy_ai.stereo import CommandBusy, StereoService, StereoSettings
 
 BOARD_VIEW = {"neck_roll": 0.0, "neck_pitch": 64.0, "neck_yaw": 0.0}
+NEUTRAL = {"neck_roll": 0.0, "neck_pitch": 0.0, "neck_yaw": 0.0}
+SIGN_OK = {"neck_roll": 0.0, "neck_pitch": 10.0, "neck_yaw": 10.0}  # IK that passes both sign probes
 
 
 class FakeJoint:
@@ -92,8 +94,8 @@ def move(robot, preset="board_view", live=True, clock=None, **kwargs):
 
 # --- the head gate ----------------------------------------------------------------------------------
 
-def gate(target=BOARD_VIEW, duration=3.0, approved=True, look_at=None, enabled=True):
-    return head_gate_check(target, duration, approved, look_at, enabled)
+def gate(target=BOARD_VIEW, duration=3.0, approved=True, look_at=None, enabled=True, present=NEUTRAL):
+    return head_gate_check(target, duration, approved, look_at, enabled, present)
 
 
 def test_head_gate_passes_every_preset_at_the_default_duration():
@@ -129,8 +131,43 @@ def test_head_gate_rejects_too_short_durations():
     assert gate(neutral, 1.5).passed
     steep = gate(BOARD_VIEW, 2.9).failures  # above 55 deg of pitch needs 3 s
     assert len(steep) == 1 and "needs at least 3.0 s" in steep[0]
-    assert gate({**BOARD_VIEW, "neck_pitch": 55.0}, 1.5).passed
+    assert gate({**BOARD_VIEW, "neck_pitch": 55.0}, 1.5, present={**NEUTRAL, "neck_pitch": 40.0}).passed
     assert gate(BOARD_VIEW, math.inf).failures and gate(BOARD_VIEW, math.nan).failures
+
+
+def test_head_gate_bounds_the_average_speed_from_the_present_angles():
+    yaw = lambda deg: {**NEUTRAL, "neck_yaw": deg}  # noqa: E731
+    fast = gate(yaw(45.0), 1.5, present=yaw(-45.0)).failures  # 90 deg in 1.5 s = 60 deg/s
+    assert len(fast) == 1 and "Average neck speed 60.0 deg/s" in fast[0] and "exceeds 30.0 deg/s" in fast[0]
+    assert gate(yaw(45.0), 3.0, present=yaw(-45.0)).passed  # 30 deg/s: at the bound
+    assert gate(yaw(45.0), 2.9, present=yaw(-45.0)).failures
+    assert gate(yaw(45.0), 1.5, present=yaw(15.0)).passed  # 30 deg of yaw in 1.5 s = 20 deg/s
+    assert config.HEAD_MAX_AVG_SPEED_DEG_S == 30.0
+
+
+def test_head_gate_applies_the_three_second_minimum_when_the_present_angles_are_unknown():
+    for unknown in (None, {"neck_roll": 0.0, "neck_pitch": 0.0}, {**NEUTRAL, "neck_yaw": math.nan}):
+        short = gate(NEUTRAL, 2.9, present=unknown).failures
+        assert len(short) == 1 and "Present neck angles unknown" in short[0], unknown
+        assert gate(NEUTRAL, 3.0, present=unknown).passed
+
+
+def test_every_viewer_preset_move_at_three_seconds_passes_from_every_preset():
+    for source in config.HEAD_PRESETS:
+        for goal in config.HEAD_PRESETS:
+            result = gate(primitives.preset_angles(goal), config.HEAD_DEFAULT_DURATION_S,
+                          present=primitives.preset_angles(source))
+            assert result.passed, (source, goal, result.failures)
+
+
+def test_a_primitive_move_reads_the_neck_first_and_the_gate_refuses_a_fast_one():
+    robot = FakeReachy()
+    yaw = robot.head.joints.neck_yaw
+    yaw.present_position = -45.0
+    refused = move(robot, "sweep_64_left", duration=1.5)  # 64 deg of pitch in 1.5 s
+    assert refused["outcome"] == "refused" and any("exceeds" in f for f in refused["gate"]["failures"])
+    assert robot.goals() == {n: [] for n in config.NECK_JOINTS}
+    assert move(robot, "neutral", duration=3.0)["outcome"] == "reached"
 
 
 def test_head_gate_rejects_missing_approval_and_motion_disabled(monkeypatch):
@@ -237,9 +274,10 @@ def test_release_needs_the_operator_and_goes_through_turn_off_smoothly():
 # --- the SDK process: one head command thread -------------------------------------------------------
 
 def test_worker_runs_moves_in_the_sdk_process_and_stop_holds_the_head(monkeypatch):
-    robot = FakeReachy()
+    robot = FakeReachy(ik=SIGN_OK)
     robot.left_camera = robot.right_camera = None  # cameras unused here
     monkeypatch.setitem(sys.modules, "reachy_sdk", types.SimpleNamespace(ReachySDK=lambda **_: robot))
+    monkeypatch.setattr(sdk_compat, "fix_command_poll", lambda: True)
     monkeypatch.setattr(stereo.signal, "signal", lambda *_: None)
     monkeypatch.setattr(stereo, "version", lambda _: "0.7.0")
     monkeypatch.setattr(threading, "excepthook", threading.excepthook)
@@ -270,9 +308,10 @@ def test_worker_runs_moves_in_the_sdk_process_and_stop_holds_the_head(monkeypatc
 
 
 def test_worker_head_moves_are_dry_run_without_the_viewer_flag(monkeypatch):
-    robot = FakeReachy()
+    robot = FakeReachy(ik=SIGN_OK)
     robot.left_camera = robot.right_camera = None
     monkeypatch.setitem(sys.modules, "reachy_sdk", types.SimpleNamespace(ReachySDK=lambda **_: robot))
+    monkeypatch.setattr(sdk_compat, "fix_command_poll", lambda: True)
     monkeypatch.setattr(stereo.signal, "signal", lambda *_: None)
     monkeypatch.setattr(stereo, "version", lambda _: "0.7.0")
     monkeypatch.setattr(threading, "excepthook", threading.excepthook)
@@ -339,3 +378,165 @@ def test_reachy_client_look_at_goes_through_the_primitive_and_gate():
     record = connected.look_at(0.3, 0.0, -0.41, operator_approved=True)
     assert record["mode"] == "dry-run" and record["target_deg"]["neck_pitch"] == 45.0
     assert connected._reachy.goals() == {n: [] for n in config.NECK_JOINTS}
+
+
+# --- review fixes: the #23 poll fix, the neck sign check, the 20 deg approach step ------------------------
+
+def run_worker(monkeypatch, robot, settings, requests=None, order=None, wait=0.6, halt=None):
+    """Run _sdk_worker on a thread against `robot`; return the control messages (and head results by id)."""
+    robot.left_camera = robot.right_camera = None
+    monkeypatch.setitem(sys.modules, "reachy_sdk", types.SimpleNamespace(ReachySDK=lambda **_: robot))
+    monkeypatch.setattr(sdk_compat, "fix_command_poll", lambda: order.append("fix") or True)
+    monkeypatch.setattr(stereo.signal, "signal", lambda *_: None)
+    monkeypatch.setattr(stereo, "version", lambda _: "0.7.0")
+    monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+    monkeypatch.setattr(config, "REACHY_ENABLE_MOTION", True)
+    control, stop = queue.Queue(), threading.Event()
+    head_requests, halt = queue.Queue(maxsize=1), halt or threading.Event()
+    worker = threading.Thread(target=stereo._sdk_worker, daemon=True, args=(
+        settings, queue.Queue(maxsize=4), control, stop, None, (head_requests, halt)))
+    worker.start()
+    for request in requests or []:
+        head_requests.put(request)
+    messages, deadline = [], time.monotonic() + wait
+    while time.monotonic() < deadline:
+        try:
+            messages.append(control.get(timeout=0.05))
+        except queue.Empty:
+            pass
+    stop.set()
+    worker.join(timeout=2)
+    return messages
+
+
+def test_worker_fixes_the_command_poll_before_constructing_the_sdk(monkeypatch):
+    order = []
+    robot = FakeReachy(ik=SIGN_OK)
+    robot.left_camera = robot.right_camera = None
+
+    def make_sdk(**_):
+        order.append("sdk")
+        return robot
+
+    monkeypatch.setitem(sys.modules, "reachy_sdk", types.SimpleNamespace(ReachySDK=make_sdk))
+    monkeypatch.setattr(sdk_compat, "fix_command_poll", lambda: order.append("fix") or True)
+    monkeypatch.setattr(stereo.signal, "signal", lambda *_: None)
+    monkeypatch.setattr(stereo, "version", lambda _: "0.7.0")
+    monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+    control, stop = queue.Queue(), threading.Event()
+    worker = threading.Thread(target=stereo._sdk_worker, daemon=True,
+                              args=(StereoSettings(), queue.Queue(maxsize=4), control, stop))
+    worker.start()
+    time.sleep(0.3)
+    stop.set()
+    worker.join(timeout=2)
+    messages = []
+    while not control.empty():
+        messages.append(control.get_nowait())
+    assert order == ["fix", "sdk"]
+    assert {"kind": "diagnostics", "section": "command_poll_fix", "values": {"applied": True}} in messages
+
+
+def test_neck_sign_check_passes_when_pitch_looks_down_and_yaw_turns_left():
+    robot = FakeReachy(ik=SIGN_OK)
+    check = primitives.neck_sign_check(robot)
+    assert check["result"] == "passed"
+    assert robot.head.ik_calls == [(0.3, 0.0, -0.4), (0.5, 0.3, 0.0)]
+    assert robot.goals() == {n: [] for n in config.NECK_JOINTS} and robot.parts == []  # nothing moved
+
+
+@pytest.mark.parametrize("ik, joint", [({"neck_roll": 0.0, "neck_pitch": -10.0, "neck_yaw": 10.0}, "neck_pitch"),
+                                       ({"neck_roll": 0.0, "neck_pitch": 10.0, "neck_yaw": -10.0}, "neck_yaw"),
+                                       ({"neck_roll": 0.0, "neck_pitch": 0.0, "neck_yaw": 10.0}, "neck_pitch")])
+def test_neck_sign_check_fails_on_a_wrong_sign(ik, joint):
+    check = primitives.neck_sign_check(FakeReachy(ik=ik))
+    assert check["result"] == "failed" and joint in check["detail"] and "expected > 0" in check["detail"]
+
+
+def test_neck_sign_check_fails_when_the_ik_call_fails():
+    robot = FakeReachy(ik=SIGN_OK)
+    robot.head._look_at = lambda *_: (_ for _ in ()).throw(ConnectionError("10.0.0.5:50055"))
+    check = primitives.neck_sign_check(robot)
+    assert check["result"] == "failed" and check["detail"] == "IK call failed (ConnectionError)"  # no address
+
+
+MOVE = {"id": "m1", "action": "move", "preset": "board_approach_20", "approved": True}
+RELEASE = {"id": "r1", "action": "release", "preset": None, "approved": True}
+
+
+def head_results(messages):
+    return {m["id"]: m["record"] for m in messages if m["kind"] == "head_result"}
+
+
+def sign_check(messages):
+    return next(m["values"] for m in messages if m.get("section") == "neck_sign_check")
+
+
+def test_a_failed_sign_check_refuses_live_moves_and_releases_but_not_stop(monkeypatch):
+    robot = FakeReachy(ik={"neck_roll": 0.0, "neck_pitch": -10.0, "neck_yaw": 10.0})
+    halt = threading.Event()
+    messages = run_worker(monkeypatch, robot, StereoSettings(source="robot", head_motion=True), [MOVE],
+                          order=[], wait=0.5, halt=halt)
+    assert sign_check(messages)["result"] == "failed"
+    refused = head_results(messages)["m1"]
+    assert refused["outcome"] == "refused" and refused["mode"] == "dry-run"
+    assert refused["gate_failures"][0].startswith("neck sign check failed: ")
+    assert refused["gate"]["failures"] == refused["gate_failures"]
+    assert robot.goals() == {n: [] for n in config.NECK_JOINTS} and robot.parts == []
+    messages = run_worker(monkeypatch, robot, StereoSettings(source="robot", head_motion=True), [RELEASE],
+                          order=[], wait=0.5)
+    assert head_results(messages)["r1"]["outcome"] == "refused" and robot.parts == []
+    halt = threading.Event()
+    halt.set()
+    messages = run_worker(monkeypatch, robot, StereoSettings(source="robot", head_motion=True), order=[],
+                          wait=0.5, halt=halt)
+    assert head_results(messages)["stop"]["outcome"] == "held"  # Stop still works
+
+
+def test_a_passed_sign_check_lets_the_move_through(monkeypatch):
+    robot = FakeReachy(ik=SIGN_OK)
+    messages = run_worker(monkeypatch, robot, StereoSettings(source="robot", head_motion=True), [MOVE],
+                          order=[], wait=4.0)
+    assert sign_check(messages)["result"] == "passed"
+    assert head_results(messages)["m1"]["outcome"] == "reached"
+
+
+def test_a_failed_ik_call_on_the_robot_refuses_but_the_simulator_records_skipped(monkeypatch):
+    def no_ik(*_):
+        raise RuntimeError("no head IK")
+
+    robot = FakeReachy(ik=SIGN_OK)
+    robot.head._look_at = no_ik
+    messages = run_worker(monkeypatch, robot, StereoSettings(source="robot", head_motion=True), [MOVE],
+                          order=[], wait=0.5)
+    assert sign_check(messages)["result"] == "failed"
+    assert head_results(messages)["m1"]["gate_failures"] == [
+        "neck sign check failed: IK call failed (RuntimeError)"]
+
+    robot = FakeReachy(ik=SIGN_OK)
+    robot.head._look_at = no_ik
+    messages = run_worker(monkeypatch, robot, StereoSettings(source="sim", head_motion=True), [MOVE],
+                          order=[], wait=4.0)
+    assert sign_check(messages)["result"] == "skipped (sim)"
+    assert head_results(messages)["m1"]["outcome"] == "reached"  # not refused
+
+
+def test_the_sign_check_is_in_the_status_and_every_bundle():
+    service = StereoService(StereoSettings(source="robot"))
+    service._new_session()
+    assert service.status()["neck_sign_check"] is None
+    service._accept({"kind": "diagnostics", "section": "neck_sign_check",
+                     "values": {"result": "passed", "detail": "ok"}})
+    assert service.status()["neck_sign_check"] == {"result": "passed", "detail": "ok"}
+    assert service.status()["diagnostics"]["neck_sign_check"]["result"] == "passed"
+
+
+def test_the_board_view_approach_starts_with_a_20_degree_step_and_says_the_head_tilts_down():
+    from reachy_ai.perception.procedures import get_procedure
+    assert config.HEAD_PRESETS["board_approach_20"] == (0.0, 20.0, 0.0)
+    procedure = get_procedure("board_view_approach")
+    assert procedure.version == "2"
+    assert [s.head for s in procedure.steps] == ["neutral", "board_approach_20", "board_approach_55",
+                                                 "board_approach_60", "board_view", "neutral"]
+    assert ("The head must tilt DOWN. If it tilts up or sideways, press Stop head and report."
+            in procedure.steps[1].instruction)

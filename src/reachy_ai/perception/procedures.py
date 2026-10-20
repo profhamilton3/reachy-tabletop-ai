@@ -99,13 +99,15 @@ def head_deg(preset: str | None) -> dict | None:
     return None if preset is None else dict(zip(NECK_JOINTS, HEAD_PRESETS[preset]))
 
 
-def head_step(preset: str, capture: bool = True, step_id: str | None = None, label: str | None = None) -> Step:
+def head_step(preset: str, capture: bool = True, step_id: str | None = None, label: str | None = None,
+              warning: str = "") -> Step:
     then = "then press Capture." if capture else "nothing to capture."
     return Step(
         id=step_id or f"head_{preset}", label=label or f"Head: {preset}", head=preset, capture=capture,
         instruction=f"Point head at {preset} {HEAD_PRESETS[preset]} (roll, pitch, yaw deg): tick the confirm box "
                     f"and press 'Move head' (the neck moves; dry-run unless the viewer was started with "
-                    f"--allow-head-motion and REACHY_ENABLE_MOTION=true), wait for the read-back, {then}")
+                    f"--allow-head-motion and REACHY_ENABLE_MOTION=true), wait for the read-back, {then}"
+                    + (f" {warning}" if warning else ""))
 
 
 def end_step() -> Step:
@@ -162,13 +164,16 @@ def head_sweep_procedure(presets=SWEEP_PRESETS, captures_per_step=2) -> Procedur
 
 def board_view_approach_procedure() -> Procedure:
     return Procedure(
-        id="board_view_approach", name="Board-view approach", version="1", kind="head",
-        summary="First robot session: step the neck up to the board view (55, 60, then 64 deg pitch) with the "
-                "operator watching, capturing at each pose.",
+        id="board_view_approach", name="Board-view approach", version="2", kind="head",
+        summary="First robot session: step the neck up to the board view (20, 55, 60, then 64 deg pitch) with "
+                "the operator watching, capturing at each pose.",
         setup=("Arm at rest on the table; Siva watches the head through every move, hand near the Stop button.",
                "Run this once before any head sweep or zoom check in the first robot session."),
-        steps=tuple(head_step(p) for p in ("neutral", "board_approach_55", "board_approach_60", "board_view"))
-        + (end_step(),))
+        steps=(head_step("neutral"),
+               head_step("board_approach_20", warning="The head must tilt DOWN. If it tilts up or sideways, "
+                                                      "press Stop head and report."),
+               *(head_step(p) for p in ("board_approach_55", "board_approach_60", "board_view")),
+               end_step()))
 
 
 PROCEDURES = {p.id: p for p in (zoom_fov_procedure(), depth_ruler_procedure(), board_view_approach_procedure(),

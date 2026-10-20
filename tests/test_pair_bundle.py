@@ -77,7 +77,7 @@ def test_bundle_grows_with_analysis_and_depth(client_and_service):
     assert archive.read("left.jpg") == client.get(url + "/left.jpg").content
     assert archive.read("right.jpg") == client.get(url + "/right.jpg").content
     assert manifest["calibration_id"] == "cal-123"
-    assert set(manifest["versions"]) == {"viewer", "sdk", "detector_model"}
+    assert set(manifest["versions"]) == {"viewer", "sdk", "neck_sign_check", "detector_model"}
 
     client.post(url + "/analysis")
     archive = open_zip(client.get(url + "/bundle.zip"))

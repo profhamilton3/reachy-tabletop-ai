@@ -128,6 +128,12 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
     threading.excepthook = thread_error
 
     try:
+        from reachy_ai.sdk_compat import fix_command_poll
+
+        # Before the SDK is constructed: 0.7.0 leaks pending waits on every command push (#23).
+        command_poll_fixed = fix_command_poll()
+        LOG.info("reachy_sdk command-poll fix applied=%s", command_poll_fixed)
+
         from reachy_sdk import ReachySDK
 
         robot = ReachySDK(
@@ -138,6 +144,7 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
         publish({"kind": "error", "error": type(exc).__name__})
         return
     publish({"kind": "ready", "sdk_version": version("reachy-sdk")})
+    publish({"kind": "diagnostics", "section": "command_poll_fix", "values": {"applied": command_poll_fixed}})
 
     def read_eye(eye):
         camera = getattr(robot, f"{eye}_camera", None)
@@ -214,7 +221,15 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
         # The only thread that commands the neck. Stop is an event, so it reaches a running move.
         from reachy_ai.motion import primitives
         requests, halt = head
+        from reachy_ai import config
         live = settings.head_motion  # primitives also require REACHY_ENABLE_MOTION and a passed gate
+        # IK only, nothing moves; done here so it is settled before the first command is read.
+        check = primitives.neck_sign_check(robot)
+        if settings.source == "sim" and check.get("ik_failed"):
+            check = {"result": "skipped (sim)", "detail": "the simulator has no head IK: " + check["detail"]}
+        publish({"kind": "diagnostics", "section": "neck_sign_check",
+                 "values": {"result": check["result"], "detail": check["detail"]}})
+        refusal = f"neck sign check failed: {check['detail']}" if check["result"] == "failed" else None
         while not stop.is_set():
             if halt.is_set():
                 record = primitives.hold_head(robot, allow_live=live)
@@ -224,6 +239,14 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
             try:
                 request = requests.get(timeout=0.1)
             except queue.Empty:
+                continue
+            if refusal and live and config.REACHY_ENABLE_MOTION:  # Stop (above) still works
+                LOG.warning("HEAD %s refused: %s", request["action"].upper(), refusal)
+                record = {"action": request["action"], "preset": request.get("preset"), "mode": "dry-run",
+                          "outcome": "refused", "gate_failures": [refusal],
+                          "gate": {"passed": False, "failures": [refusal]}, "readback_deg": None}
+                publish({"kind": "head_result", "id": request["id"], "record": record,
+                         "finished_ns": time.monotonic_ns()})
                 continue
             try:
                 if request["action"] == "move":
@@ -488,6 +511,11 @@ class StereoService:
             wait["message"] = message
             wait["event"].set()
 
+    def neck_sign_check(self) -> dict | None:
+        """The SDK process's IK sign check ({result, detail}), or None before it has run."""
+        with self.lock:
+            return copy.deepcopy(self.diagnostics.get("neck_sign_check"))
+
     def head_motion_mode(self) -> str:
         from reachy_ai import config
         return "live" if self.settings.head_motion and config.REACHY_ENABLE_MOTION else "dry-run"
@@ -591,7 +619,8 @@ class StereoService:
             can_capture = can_capture and skew is not None and skew <= self.settings.max_pair_skew_ms
             return {"schema_version": "1", "source": self.settings.source, "session_id": self.session,
                     "motion_controls": "head only", "head_motion": self.head_motion_mode(),
-                    "head_busy": self.head_busy, "recording": False, "eyes": eyes,
+                    "head_busy": self.head_busy, "neck_sign_check": self.neck_sign_check(),
+                    "recording": False, "eyes": eyes,
                     "observation_skew_ms": round(skew, 1) if skew is not None else None,
                     "can_capture": can_capture, "diagnostics": dict(self.diagnostics),
                     "delivery": {"observation_queue": OBSERVATION_QUEUE, "policy": "newest kept",

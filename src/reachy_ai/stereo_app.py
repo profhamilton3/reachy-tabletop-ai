@@ -274,7 +274,8 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
         """Every pair of the run, step labels, zoom per step and a SHA-256 manifest; built in memory."""
         run = current_run()
         with camera.lock:
-            versions = {"viewer": viewer_version(), "sdk": camera.diagnostics.get("sdk_version")}
+            versions = {"viewer": viewer_version(), "sdk": camera.diagnostics.get("sdk_version"),
+                        "neck_sign_check": camera.diagnostics.get("neck_sign_check")}
         try:
             data = run.build_zip(versions)
         except RunLimit as exc:
@@ -317,6 +318,7 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
             analysis, depth_result = record.get("analysis"), record.get("depth")
             depth_png = record.get("depth_image")
             sdk_version = camera.diagnostics.get("sdk_version")
+            neck_sign_check = camera.diagnostics.get("neck_sign_check")
             calibration_id = record["camera_context"].get("calibration_id")
         files = {"pair.json": json_bytes(metadata)}
         for eye, pixels in frames.items():
@@ -334,7 +336,7 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
         if depth_result is not None and depth_png is not None:
             files["depth.json"] = json_bytes(depth_result)
             files["depth.png"] = depth_png
-        versions = {"viewer": viewer_version(), "sdk": sdk_version,
+        versions = {"viewer": viewer_version(), "sdk": sdk_version, "neck_sign_check": neck_sign_check,
                     "detector_model": (analysis or {}).get("model")}
         try:
             data = build_bundle(files, versions, calibration_id)

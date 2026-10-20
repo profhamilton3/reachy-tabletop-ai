@@ -86,8 +86,8 @@ def test_head_steps_open_and_close_the_procedures():
     assert sweep.kind == "head" and [s.head for s in sweep.steps] == [*proc.SWEEP_PRESETS, "neutral"]
     assert sweep.steps[1].describe()["head_deg"] == {"neck_roll": 0.0, "neck_pitch": 64.0, "neck_yaw": 0.0}
     approach = proc.get_procedure("board_view_approach")
-    assert [s.head for s in approach.steps] == ["neutral", "board_approach_55", "board_approach_60", "board_view",
-                                                "neutral"]
+    assert [s.head for s in approach.steps] == ["neutral", "board_approach_20", "board_approach_55",
+                                                "board_approach_60", "board_view", "neutral"]
     assert all("Point head at" in s.instruction for p in proc.PROCEDURES.values() for s in p.steps if s.head)
 
 

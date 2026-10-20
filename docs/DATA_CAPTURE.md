@@ -27,8 +27,14 @@ nothing is sent.
 4. The head safety gate (`motion/safety.py`, `head_gate_check`) passes:
    - neck angles inside roll ±15°, pitch −20…+64°, yaw ±45° (the URDF travel is ±45.8° / −45.8…+64.7° / ±159.9°);
    - duration at least 1.5 s, and at least 3 s for a move to a pitch above 55°;
+   - average speed (largest joint change from the neck angles read just before the move, divided by the
+     duration) at most 30°/s; if the present angles cannot be read, the duration must be at least 3 s;
    - for a look-at point (not used by the procedures), the point is inside the head look-at box.
 5. No other head command is running (one at a time). **Stop head** interrupts a move and holds the head where it is.
+6. On `--source robot` the neck sign check passed (see *First robot session*).
+
+Close any notebook or other program connected to the robot before moving the head from the viewer: two
+clients must never command the neck at once.
 
 Moves run in the viewer's SDK process through `motion/primitives.py`, which touches the neck only. Every move
 is logged with its preset, target angles, duration and live/dry-run, and recorded in the run and the bundle,
@@ -79,7 +85,18 @@ hand ready and the run finished.
 (reachy-1-2-sim ADR-0010). Before any head sweep or zoom check (which starts at `board_view`), run
 **Board-view approach** once with Siva watching the head throughout and a hand near **Stop head**:
 
-neutral → 55° → 60° → 64° (`board_view`) → back to neutral.
+neutral → 20° → 55° → 60° → 64° (`board_view`) → back to neutral.
+
+**Neck sign check.** When the viewer connects it computes the SDK head IK (`head._look_at`; nothing moves) for
+two points and requires `neck_pitch > 0` for (0.3, 0.0, −0.4), i.e. looking down, and `neck_yaw > 0` for
+(0.5, 0.3, 0.0), i.e. turning left. Check the result on the page under *Connection & camera diagnostics*
+(`neck_sign_check`, also from `/api/stereo/status`); every bundle records it. If it failed, or the IK call
+failed on `--source robot`, every live head move and release is refused with
+`neck sign check failed: <detail>` (**Stop head** still works). On `--source sim` a server without head IK
+records `skipped (sim)` instead.
+
+**The 20° step.** The first move is only 20° of pitch. The head must tilt **down**; if it tilts up or
+sideways, press **Stop head** and report.
 
 Capture at each pose. Stop and report if the neck labours, sounds wrong, or reads back more than 3° short.
 
@@ -110,7 +127,7 @@ Arm at rest at the scene zoom (OUT); do not change the zoom.
    in the image, at **0.3, 0.5, 0.8 and 1.2 m**, measured from the right camera's lens face along its axis.
 3. Press *Capture* three times at each distance, keeping the target still.
 
-### Board-view approach (v1)
+### Board-view approach (v2)
 
 See *First robot session* above. Capture once per pose.
 
@@ -179,7 +196,9 @@ Before the session:
 - [ ] The viewer started with the switches you intend (see *Start the viewer*); the page shows the head and
       zoom modes you expect.
 - [ ] Arm at rest on the table, board clear, nobody near the head.
-- [ ] First session only: **Board-view approach** with Siva watching, before anything else.
+- [ ] No notebook or other program is connected to the robot (two clients must never command the neck).
+- [ ] The page shows `neck_sign_check: passed`.
+- [ ] First session only: **Board-view approach** (starts with the 20° step) with Siva watching, before anything else.
 
 **Neck IMU (#6): read-only, for Siva to run on the NUC.** It sends no command. Paste the output into #6.
 

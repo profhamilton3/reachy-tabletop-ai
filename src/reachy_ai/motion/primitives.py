@@ -129,6 +129,28 @@ def read_neck(robot) -> dict[str, float] | None:
         return None
 
 
+#: IK-only probes of the neck's sign convention: (look_at point in metres, joint, what a positive angle means).
+SIGN_PROBES = (((0.3, 0.0, -0.4), "neck_pitch", "looks down"), ((0.5, 0.3, 0.0), "neck_yaw", "turns left"))
+
+
+def neck_sign_check(robot) -> dict:
+    """Compute the SDK head IK for two known points and check the angle signs. Nothing moves.
+
+    Returns {"result": "passed" | "failed", "detail": str}; a failed IK call fails the check."""
+    for point, joint_name, meaning in SIGN_PROBES:
+        try:
+            goals = robot.head._look_at(*point)  # IK only (a kinematics-service call)
+            angles = {joint.name: float(angle) for joint, angle in goals.items()}
+        except Exception as exc:  # noqa: BLE001 - report the type only
+            return {"result": "failed", "detail": f"IK call failed ({type(exc).__name__})", "ik_failed": True}
+        value = angles.get(joint_name)
+        if value is None or not value > 0:
+            return {"result": "failed",
+                    "detail": f"look_at{point} gave {joint_name} {value}; expected > 0 ({meaning})"}
+    return {"result": "passed",
+            "detail": "; ".join(f"look_at{p} -> {n} > 0 ({m})" for p, n, m in SIGN_PROBES)}
+
+
 def _neck(robot) -> dict[str, Any]:
     joints = robot.head.joints
     return {name: getattr(joints, name) for name in NECK_JOINTS}
@@ -141,7 +163,8 @@ def _motion_enabled(value: bool | None) -> bool:
 def _move_neck(robot, target: dict[str, float] | None, duration: float, *, preset: str | None,
                look_at: Pose3D | None, operator_approved: bool, allow_live: bool, motion_enabled: bool | None,
                stop_event, sleep, clock) -> dict:
-    gate = head_gate_check(target, duration, operator_approved, look_at, motion_enabled)
+    present = read_neck(robot)  # before the move: the gate bounds the speed from here to the target
+    gate = head_gate_check(target, duration, operator_approved, look_at, motion_enabled, present)
     blocking = [f for f in gate.failures if f != MOTION_DISABLED]
     live = gate.passed and allow_live and robot is not None
     record = {"action": "move", "preset": preset,

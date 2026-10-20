@@ -41,16 +41,19 @@ HEAD_MIN_DURATION_S: float = 1.5          # every head move; with the limits abo
 HEAD_STEEP_PITCH_DEG: float = 55.0        # a move to a pitch above this ...
 HEAD_STEEP_MIN_DURATION_S: float = 3.0    # ... takes at least this long
 HEAD_DEFAULT_DURATION_S: float = 3.0
+HEAD_MAX_AVG_SPEED_DEG_S: float = 30.0    # largest joint change / duration; needs the present angles
+HEAD_UNKNOWN_START_MIN_DURATION_S: float = 3.0  # without the present angles the speed cannot be checked
 HEAD_READBACK_SETTLE_S: float = 0.3       # after a move, before the neck read-back
 CAPTURE_SETTLE_S: float = 0.5             # frames must be observed this long after a zoom/head command ends
 NECK_READBACK_TOLERANCE_DEG: float = 3.0  # capture refused if any neck joint is further off its command
 
 # Named head poses (roll, pitch, yaw), degrees. board_view is reachy-1-2-sim gaze.BOARD_VIEW: all nine
-# cells in both eyes in the October layout (ADR-0010 section 5). The two approach poses step the first
-# robot session up to it. The five sweep poses are UNVALIDATED until a head-sweep run on the sim confirms
-# the board stays in view.
+# cells in both eyes in the October layout (ADR-0010 section 5). The three approach poses step the first
+# robot session up to it (20 deg first: a small move that shows the head tilts DOWN). The five sweep
+# poses are UNVALIDATED until a head-sweep run on the sim confirms the board stays in view.
 HEAD_PRESETS: dict[str, tuple[float, float, float]] = {
     "neutral": (0.0, 0.0, 0.0),
+    "board_approach_20": (0.0, 20.0, 0.0),
     "board_approach_55": (0.0, 55.0, 0.0),
     "board_approach_60": (0.0, 60.0, 0.0),
     "board_view": (0.0, 64.0, 0.0),
