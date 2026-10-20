@@ -96,8 +96,37 @@ def decode_pair(files, folder):
                  for eye in EYES)
 
 
+SIM_ZOOM_NOTE = "Field of view from the simulator's zoom model, not the real lens."
+
+
+def restore_findings(capture):
+    """Findings about the zoom restore step of a v3 zoom run: not run, start unknown, failed, or a dry run."""
+    restore = [s for s in capture["steps"] if s.get("zoom_role") == "restore"]
+    if not restore:
+        return []  # an older bundle: no start or restore steps
+    start, records = capture.get("start_zoom"), restore[0].get("zoom_commands") or []
+    last = {r.get("eye"): r for r in records}  # the latest attempt per eye
+    if start is None:
+        return ["The starting zoom is unknown (not read, unreadable or the eyes differed): the zoom was not "
+                "restored; set it to its starting level by hand."]
+    if not records:
+        return [f"The restore step was not run: the cameras may still be at the last level tested, not the "
+                f"starting level {start}; set the zoom back to {start}."]
+    findings = []
+    for eye, r in last.items():
+        if r.get("dry_run"):
+            findings.append(f"Restore to {start} ({eye}) was a dry run: nothing was sent.")
+        elif not r.get("ok") or r.get("after") != start:
+            why = f" ({r['error']})" if r.get("error") else ""
+            findings.append(f"Restore FAILED ({eye}): requested {start}, read back {r.get('after')}{why}; "
+                            f"set the zoom to {start} by hand.")
+    return findings
+
+
 def analyze_zoom(capture, files):
     rows, findings = [], []
+    if bundle_geometry(capture, files)[0] == "sim":
+        findings.append(SIM_ZOOM_NOTE)
     for step in capture["steps"]:
         if not step.get("requested_zoom"):
             continue  # a head-only step
@@ -142,8 +171,9 @@ def analyze_zoom(capture, files):
                         for e in EYES if (SCENE_ZOOM, e) in pitch)
         if not widest_ok:
             findings.append(f"{SCENE_ZOOM} does not have the smallest cell pitch: it is not the widest view.")
+    findings.extend(restore_findings(capture))
     return {"kind": "zoom", "rows": rows, "scene_zoom": SCENE_ZOOM, "scene_zoom_is_widest": widest_ok,
-            "findings": findings}
+            "start_zoom": capture.get("start_zoom"), "findings": findings}
 
 
 def depth_verdict(row):
@@ -206,8 +236,14 @@ def analyze_depth(capture, files, depth, roi=None, focal_px=None, baseline_m=Non
             row["implied_disparity_px"] = round(abs(row["error_mm"]) / sens, 2)
             row["verdict"] = depth_verdict(row)
         rows.append(row)
+    checks = [step for step in capture["steps"] if step.get("zoom_role") == "check"]
+    unread = ["The zoom was not read at setup: the result applies only at the zoom recorded in the bundle."
+              ] if checks and not any(step.get("zoom_commands") for step in checks) else []
+    warnings = unread + sorted({r["warning"] for step in capture["steps"] if step.get("zoom_role") == "check"
+                       for r in step.get("zoom_commands") or [] if r.get("warning")})
     return {"kind": "depth", "tolerance_mm": TOLERANCE_M * 1000, "focal_px": round(focal_px, 1),
-            "baseline_m": round(baseline_m, 4), "sensitivity_source": source, "rows": rows}
+            "baseline_m": round(baseline_m, 4), "sensitivity_source": source, "rows": rows,
+            "findings": warnings}
 
 
 def kabsch(source, target):
@@ -300,6 +336,7 @@ def print_report(manifest, capture, result):
     print(f"{capture['procedure']['name']} v{capture['procedure']['version']} · calibration {capture['calibration_id']}"
           f" · {len(manifest['files'])} files, SHA-256 verified")
     if result["kind"] == "zoom":
+        print("starting zoom:", result["start_zoom"] or "unknown (not read in this bundle)")
         for r in result["rows"]:
             print(f"{r['step']:>10} {r['eye']:>5}: zoom {r['level']}  cell pitch "
                   f"{'not found' if r['pitch_px'] is None else str(r['pitch_px']) + ' px'}  "

@@ -51,11 +51,18 @@ def steps_with(procedure, attribute):
 
 
 class RecordingSetter:
-    def __init__(self, dry_run=True):
-        self.dry_run, self.calls = dry_run, []
+    def __init__(self, dry_run=True, start="INTER", accepts=True, reads=None):
+        self.dry_run, self.calls, self.start, self.accepts = dry_run, [], start, accepts
+        self.reads = reads or {"left": start, "right": start}
+
+    def read_both(self):
+        return [{"eye": e, "level": self.reads[e]} for e in ("left", "right")]
 
     def set_both(self, level):
         self.calls.append(level)
+        if not self.accepts:
+            return [{"eye": e, "requested": level, "before": "OUT", "dry_run": self.dry_run, "after": "OUT",
+                     "ok": False, "error": "ValueError"} for e in ("left", "right")]
         return [{"eye": e, "requested": level, "dry_run": self.dry_run, "after": level, "ok": True}
                 for e in ("left", "right")]
 
@@ -76,12 +83,16 @@ def test_procedures_describe_numbered_instructions_and_steps():
 
 def test_head_steps_open_and_close_the_procedures():
     zoom, depth = proc.get_procedure("zoom_fov"), proc.get_procedure("depth_ruler")
-    # Zoom check: step 0 points the head at the board view; the run ends with the head at neutral.
-    assert (zoom.steps[0].head, zoom.steps[0].capture) == ("board_view", False)
-    assert (zoom.steps[-1].head, zoom.steps[-1].capture) == ("neutral", False)
-    # Depth ruler: step 0 sets neutral and nothing moves the head after it.
-    assert (depth.steps[0].head, depth.steps[0].capture) == ("neutral", False)
-    assert all(s.head is None for s in depth.steps[1:])
+    # Zoom check: step 0 reads the zoom, step 1 points the head at the board view, the head returns to
+    # neutral, and the last step restores the starting zoom.
+    assert (zoom.steps[0].zoom_role, zoom.steps[0].capture) == ("start", False)
+    assert (zoom.steps[1].head, zoom.steps[1].capture) == ("board_view", False)
+    assert (zoom.steps[-2].head, zoom.steps[-2].capture) == ("neutral", False)
+    assert (zoom.steps[-1].zoom_role, zoom.steps[-1].capture) == ("restore", False)
+    # Depth ruler: step 0 reads the zoom, step 1 sets neutral and nothing moves the head after it.
+    assert (depth.steps[0].zoom_role, depth.steps[0].capture) == ("check", False)
+    assert (depth.steps[1].head, depth.steps[1].capture) == ("neutral", False)
+    assert all(s.head is None for s in depth.steps[2:])
     sweep = proc.get_procedure("head_sweep")
     assert sweep.kind == "head" and [s.head for s in sweep.steps] == [*proc.SWEEP_PRESETS, "neutral"]
     assert sweep.steps[1].describe()["head_deg"] == {"neck_roll": 0.0, "neck_pitch": 64.0, "neck_yaw": 0.0}
@@ -93,16 +104,18 @@ def test_head_steps_open_and_close_the_procedures():
 
 def test_run_state_counts_pairs_and_enforces_limits():
     run = proc.CaptureRun(proc.get_procedure("depth_ruler"))
-    step = run.procedure.steps[1].id
+    step = run.procedure.steps[2].id
     for n in range(proc.MAX_CAPTURES_PER_STEP):
         run.add_capture(step, meta(f"p{n}"), jpeg(), jpeg())
-    assert run.state()["steps"][1]["captured"] == proc.MAX_CAPTURES_PER_STEP
+    assert run.state()["steps"][2]["captured"] == proc.MAX_CAPTURES_PER_STEP
     with pytest.raises(proc.RunLimit):
         run.add_capture(step, meta("extra"), jpeg(), jpeg())
     with pytest.raises(KeyError):
         run.add_capture("nope", meta("x"), jpeg(), jpeg())
     with pytest.raises(ValueError, match="nothing to capture"):
         run.add_capture("head_neutral", meta("x"), jpeg(), jpeg())
+    with pytest.raises(ValueError, match="nothing to capture"):
+        run.add_capture("zoom_check", meta("x"), jpeg(), jpeg())
 
 
 def test_zoom_only_after_confirm_and_only_on_zoom_steps():
@@ -110,9 +123,10 @@ def test_zoom_only_after_confirm_and_only_on_zoom_steps():
     setter = RecordingSetter()
     with pytest.raises(proc.ZoomNotConfirmed):
         run.apply_zoom("zoom_inter", setter, confirmed=False)
-    assert setter.calls == [] and run.state()["steps"][2]["zoom_commands"] == []
+    by_id = {s["id"]: s for s in run.state()["steps"]}
+    assert setter.calls == [] and by_id["zoom_inter"]["zoom_commands"] == []
     run.apply_zoom("zoom_inter", setter, confirmed=True)
-    assert setter.calls == ["INTER"] and len(run.state()["steps"][2]["zoom_commands"]) == 2
+    assert setter.calls == ["INTER"] and len(run.state()["steps"][3]["zoom_commands"]) == 2
     with pytest.raises(ValueError):
         proc.CaptureRun(proc.get_procedure("depth_ruler")).apply_zoom("dist_0_3m", setter, confirmed=True)
 
@@ -160,28 +174,31 @@ def test_confirmed_zoom_through_the_real_setter_is_dry_run_by_default(caplog):
 
 def zoom_run():
     run = proc.CaptureRun(proc.get_procedure("zoom_fov"))
+    run.apply_zoom("zoom_start", RecordingSetter(), False)  # read-back only: no confirm
     for n, step in enumerate(steps_with(run.procedure, "zoom")):
         run.apply_zoom(step.id, RecordingSetter(), True)
         run.add_capture(step.id, meta(f"pair{n}", zoom=step.zoom), jpeg(n), jpeg(n + 1))
+    run.apply_zoom("zoom_restore", RecordingSetter(), True)
     return run
 
 
 def test_bundle_has_every_pair_labels_zoom_calibration_and_sha256():
     data = zoom_run().build_zip({"viewer": "9.9", "sdk": "0.7.0"})
     manifest, files = read_bundle(data)
-    assert manifest["procedure"] == {"id": "zoom_fov", "name": "Zoom field-of-view check", "version": "2"}
+    assert manifest["procedure"] == {"id": "zoom_fov", "name": "Zoom field-of-view check", "version": "3"}
     assert manifest["calibration_id"] == "cal-1" and manifest["versions"]["sdk"] == "0.7.0"
     for n, level in enumerate(("out", "inter", "in")):
-        folder = f"steps/{n + 2:02d}_zoom_{level}/cap1"
+        folder = f"steps/{n + 3:02d}_zoom_{level}/cap1"
         assert {f"{folder}/left.jpg", f"{folder}/right.jpg", f"{folder}/pair.json"} <= set(files)
     capture = json.loads(files["capture.json"])
-    assert [s["label"] for s in capture["steps"]] == ["Head: board_view", "Zoom OUT", "Zoom INTER", "Zoom IN",
-                                                      "End: head to neutral"]
-    zoom_steps = capture["steps"][1:4]
+    assert [s["label"] for s in capture["steps"]] == [
+        "Zoom: starting level", "Head: board_view", "Zoom OUT", "Zoom INTER", "Zoom IN", "End: head to neutral",
+        "Zoom: restore starting level"]
+    zoom_steps = capture["steps"][2:5]
     assert [s["captures"][0]["zoom_level"] for s in zoom_steps] == ["OUT", "INTER", "IN"]
-    assert capture["procedure"]["version"] == "2" and capture["calibration_id"] == "cal-1"
+    assert capture["procedure"]["version"] == "3" and capture["calibration_id"] == "cal-1"
     assert zoom_steps[0]["zoom_commands"][0]["requested"] == "OUT"
-    assert capture["steps"][0]["requested_head"] == "board_view" and capture["steps"][0]["captures"] == []
+    assert capture["steps"][1]["requested_head"] == "board_view" and capture["steps"][1]["captures"] == []
     assert {e["name"] for e in manifest["files"]} == set(files)
 
 
@@ -271,7 +288,7 @@ def test_viewer_zoom_needs_confirm_then_is_dry_run_and_capture_and_download_work
         result = client.post(url + "/zoom", json={"confirm": True}).json()
         assert service.zoom_requests == ["INTER"] and result["dry_run"] is True
         state = client.post(url + "/capture").json()
-        assert state["steps"][2]["captured"] == 1 and state["pairs"] == 1
+        assert state["steps"][3]["captured"] == 1 and state["pairs"] == 1
         monkeypatch.chdir(tmp_path)
         real_open = builtins.open
 
@@ -285,8 +302,8 @@ def test_viewer_zoom_needs_confirm_then_is_dry_run_and_capture_and_download_work
         assert response.status_code == 200 and "attachment" in response.headers["content-disposition"]
         manifest, files = read_bundle(response.content)
         capture = json.loads(files["capture.json"])
-        assert capture["steps"][2]["captures"][0]["zoom_level"] == "OUT"  # the real read-back, not the request
-        assert capture["steps"][2]["requested_zoom"] == "INTER"
+        assert capture["steps"][3]["captures"][0]["zoom_level"] == "OUT"  # the real read-back, not the request
+        assert capture["steps"][3]["requested_zoom"] == "INTER"
         assert capture["calibration_id"].endswith("@zoom=OUT") and manifest["procedure"]["id"] == "zoom_fov"
         assert list(tmp_path.iterdir()) == []
         assert client.delete("/api/stereo/capture-run").status_code == 200
@@ -359,15 +376,58 @@ def test_capture_is_refused_while_the_neck_reads_back_off_its_command():
         assert "stopped" in client.post(url).json()["detail"]
 
 
-def test_simulator_refuses_zoom_commands_but_depth_steps_capture():
-    service, http = viewer(source="sim")
+def test_simulator_zoom_follows_the_robot_rules_confirm_then_dry_run():
+    service, http = viewer(source="sim", level="ZERO")
     with http as client:
         client.post("/api/stereo/capture-run", json={"procedure": "zoom_fov"})
-        assert client.post("/api/stereo/capture-run/steps/zoom_out/zoom", json={"confirm": True}).status_code == 409
+        url = "/api/stereo/capture-run/steps/zoom_out/zoom"
+        assert client.post(url, json={}).status_code == 409  # the confirm is still needed
         assert service.zoom_requests == []
+        result = client.post(url, json={"confirm": True}).json()
+        assert service.zoom_requests == ["OUT"] and result["dry_run"] is True  # no --allow-zoom-commands
         client.post("/api/stereo/capture-run", json={"procedure": "depth_ruler"})
-        assert client.post("/api/stereo/capture-run/steps/dist_0_5m/zoom", json={"confirm": True}).status_code == 409
+        assert client.post("/api/stereo/capture-run/steps/dist_0_5m/zoom", json={"confirm": True}).status_code == 422
+        settle(service)
         assert client.post("/api/stereo/capture-run/steps/dist_0_5m/capture").json()["pairs"] == 1
+
+
+def test_simulator_zoom_bundle_records_source_zero_and_the_start_and_restore_steps():
+    service, http = viewer(source="sim", level="ZERO")
+    with http as client:
+        client.post("/api/stereo/capture-run", json={"procedure": "zoom_fov"})
+        base = "/api/stereo/capture-run/steps/"
+        read = client.post(base + "zoom_start/zoom", json={}).json()  # read-back only: no confirm, no command
+        assert [r["level"] for r in read["records"]] == ["ZERO", "ZERO"] and read["dry_run"] is False
+        assert service.zoom_requests == []
+        settle(service)
+        assert client.post(base + "zoom_out/zoom", json={"confirm": True}).status_code == 200
+        settle(service)
+        client.post(base + "zoom_out/capture")
+        assert client.post(base + "zoom_restore/zoom", json={}).status_code == 409  # a command: needs the confirm
+        assert client.post(base + "zoom_restore/zoom", json={"confirm": True}).status_code == 200
+        assert service.zoom_requests == ["OUT", "ZERO"]  # ZERO commanded as the restore target
+        capture = json.loads(read_bundle(client.get(base[:-6] + "bundle.zip").content)[1]["capture.json"])
+    assert capture["source"] == "sim" and capture["start_zoom"] == "ZERO"
+    assert capture["steps"][2]["captures"][0]["zoom_level"] == "ZERO"  # recorded as ZERO, not unknown
+    assert [r["level"] for r in capture["steps"][0]["zoom_commands"]] == ["ZERO", "ZERO"]
+    restore = capture["steps"][-1]
+    assert restore["zoom_role"] == "restore" and all(r["target"] == "ZERO" for r in restore["zoom_commands"])
+
+
+def test_depth_ruler_setup_step_warns_when_the_zoom_differs_or_the_profile_zoom_is_unknown():
+    service, http = viewer(level="IN")
+    with http as client:
+        client.post("/api/stereo/capture-run", json={"procedure": "depth_ruler"})
+        records = client.post("/api/stereo/capture-run/steps/zoom_check/zoom", json={}).json()["records"]
+        assert service.zoom_requests == []  # read-back only
+        assert [r["level"] for r in records] == ["IN", "IN"]
+        warning = records[0]["warning"]
+        assert "profile's zoom is unknown" in warning and "recorded in the bundle (IN)" in warning
+    run = proc.CaptureRun(proc.get_procedure("depth_ruler"))
+    ok = run.apply_zoom("zoom_check", RecordingSetter(start="OUT"), False, profile_zoom="OUT")
+    assert ok[0]["warning"] is None
+    bad = run.apply_zoom("zoom_check", RecordingSetter(start="IN"), False, profile_zoom="OUT")
+    assert "valid at OUT" in bad[0]["warning"] and bad[0]["profile_zoom"] == "OUT"
 
 
 def test_zoom_result_updates_the_readback_only_when_really_sent():
@@ -398,10 +458,12 @@ def scaled(name, factor):
 def zoom_fixture_bundle(factors=(1.0, 1.25, 1.5)):
     """The August board pair, enlarged to stand in for the zoomed-in levels (cell pitch scales with the zoom)."""
     run = proc.CaptureRun(proc.get_procedure("zoom_fov"))
+    run.apply_zoom("zoom_start", RecordingSetter(start="INTER"), False)
     for step, factor in zip(steps_with(run.procedure, "zoom"), factors):
         run.add_capture(step.id, meta(step.id, zoom=step.zoom),
                         proc.encode_jpeg(scaled("Left Camera_screenshot_20.08.2026.png", factor)),
                         proc.encode_jpeg(scaled("Right Camera_screenshot_20.08.2026.png", factor)))
+    run.apply_zoom("zoom_restore", RecordingSetter(start="INTER", dry_run=False), True)
     return run.build_zip({})
 
 
@@ -482,7 +544,7 @@ def test_depth_analyser_judges_each_distance_against_the_analytic_sensitivity():
 
 def test_depth_analyser_reports_a_close_range_miss_as_a_real_problem():
     _, files, capture = analyse.load(depth_fixture_bundle())
-    ruler_m = capture["steps"][1]["distance_m"]
+    ruler_m = capture["steps"][2]["distance_m"]
     result = analyse.analyze_depth(capture, files, depth=None,
                                    measure=lambda depth, left, right, roi: (ruler_m + 0.05, {}))
     near = result["rows"][0]
@@ -547,3 +609,69 @@ def test_head_sweep_analyser_flags_a_spread_the_head_transform_does_not_explain(
     assert any("grid not found" in f for f in result["findings"])
     torso = [result["poses"][p]["centre_torso_m"] for p in ("Head: neutral", "Head: board_view")]
     assert abs(np.linalg.norm(torso[0]) - np.linalg.norm(torso[1])) < 0.05  # yaw turns it, roughly in place
+
+
+def restore_bundle(start_setter=None, restore_setter=None, restore=True, sim=False):
+    """A zoom run (captures at x1) with a chosen start read and restore outcome."""
+    run = proc.CaptureRun(proc.get_procedure("zoom_fov"))
+    left = proc.encode_jpeg(scaled("Left Camera_screenshot_20.08.2026.png", 1))
+    right = proc.encode_jpeg(scaled("Right Camera_screenshot_20.08.2026.png", 1))
+    run.apply_zoom("zoom_start", start_setter or RecordingSetter(start="ZERO"), False)
+    for step in steps_with(run.procedure, "zoom"):
+        run.add_capture(step.id, meta(step.id, zoom=step.zoom), left, right)
+    if restore:
+        run.apply_zoom("zoom_restore", restore_setter or RecordingSetter(start="ZERO", dry_run=False), True)
+    if sim:
+        first = next(iter(run.captures.values()))[0]["meta"]["camera_context"]
+        first["analysis_profile"] = {"source": "sim", "lens": "distorted"}
+    return run.build_zip({})
+
+
+def test_zoom_analyser_reports_the_starting_level_and_a_clean_restore():
+    _, files, capture = analyse.load(restore_bundle())
+    result = analyse.analyze_zoom(capture, files)
+    assert result["start_zoom"] == "ZERO"
+    assert not any("estore" in f for f in result["findings"])
+
+
+def test_zoom_analyser_flags_a_failed_missing_dry_run_or_unknown_restore():
+    def findings(**kw):
+        _, files, capture = analyse.load(restore_bundle(**kw))
+        return " | ".join(analyse.analyze_zoom(capture, files)["findings"])
+    failed = findings(restore_setter=RecordingSetter(start="ZERO", dry_run=False, accepts=False))
+    assert "Restore FAILED (left): requested ZERO, read back OUT (ValueError)" in failed
+    assert "restore step was not run" in findings(restore=False)
+    assert "Restore to ZERO (left) was a dry run" in findings(restore_setter=RecordingSetter(start="ZERO"))
+    unknown = findings(start_setter=RecordingSetter(reads={"left": None, "right": None}))
+    assert "starting zoom is unknown" in unknown and "by hand" in unknown
+
+
+def test_unknown_start_restore_sends_nothing_and_records_the_manual_step():
+    run = proc.CaptureRun(proc.get_procedure("zoom_fov"))
+    run.apply_zoom("zoom_start", RecordingSetter(reads={"left": "IN", "right": "OUT"}), False)  # eyes differ
+    setter = RecordingSetter()
+    record = run.apply_zoom("zoom_restore", setter, True)[0]
+    assert setter.calls == [] and record["manual"] and record["ok"] is False and "by hand" in record["note"]
+    failed = proc.CaptureRun(proc.get_procedure("zoom_fov"))
+    failed.apply_zoom("zoom_start", RecordingSetter(start="ZERO"), False)
+    refused = failed.apply_zoom("zoom_restore", RecordingSetter(dry_run=False, accepts=False), True)
+    assert all(r["manual"] and "set the zoom to ZERO by hand" in r["note"] for r in refused)
+
+
+def test_zoom_analyser_notes_the_simulator_zoom_model():
+    _, files, capture = analyse.load(restore_bundle(sim=True))
+    findings = analyse.analyze_zoom(capture, files)["findings"]
+    assert "Field of view from the simulator's zoom model, not the real lens." in findings
+    _, files, capture = analyse.load(restore_bundle())
+    assert not any("simulator" in f for f in analyse.analyze_zoom(capture, files)["findings"])
+
+
+def test_depth_analyser_reports_the_setup_zoom_warning():
+    run = proc.CaptureRun(proc.get_procedure("depth_ruler"))
+    run.apply_zoom("zoom_check", RecordingSetter(start="IN"), False, profile_zoom=None)
+    image = proc.encode_jpeg(np.zeros((16, 16, 3), np.uint8))
+    run.add_capture("dist_0_3m", meta("p", zoom="IN"), image, image)
+    _, files, capture = analyse.load(run.build_zip({}))
+    result = analyse.analyze_depth(capture, files, depth=None, focal_px=400.0, baseline_m=0.078,
+                                   measure=lambda *a, **k: (None, None))
+    assert any("profile's zoom is unknown" in f for f in result["findings"])

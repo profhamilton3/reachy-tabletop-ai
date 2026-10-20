@@ -523,9 +523,13 @@
         move.onclick = () => { const ok = box.checked; confirmed['head' + step.id] = false; runStep(step.id, 'head', {confirm: ok}, 'Head move '); };
         li.append(label, move);
       }
-      if (step.zoom) {
-        const [box, label] = confirmBox('zoom', `I confirm: command zoom ${step.zoom}`);
-        const set = Object.assign(document.createElement('button'), {textContent: `Set zoom ${step.zoom}`});
+      if (step.zoom_role === 'start' || step.zoom_role === 'check') {
+        const read = Object.assign(document.createElement('button'), {textContent: 'Read zoom', disabled: runBusy});
+        read.onclick = () => runStep(step.id, 'zoom', {confirm: false}, 'Zoom read ');
+        li.append(read);
+      } else if (step.zoom || step.zoom_role === 'restore') {
+        const [box, label] = confirmBox('zoom', `I confirm: command zoom ${step.zoom || 'restore (starting level)'}`);
+        const set = Object.assign(document.createElement('button'), {textContent: step.zoom ? `Set zoom ${step.zoom}` : 'Restore zoom'});
         set.onclick = () => { const ok = box.checked; confirmed['zoom' + step.id] = false; runStep(step.id, 'zoom', {confirm: ok}, 'Zoom command '); };
         li.append(label, set);
       }
@@ -539,11 +543,18 @@
       li.append(Object.assign(document.createElement('span'), {className: 'subtle',
         textContent: (step.capture ? `${step.captured} pair${step.captured === 1 ? '' : 's'} captured` : 'no capture') +
           (head ? ` · head ${head.mode === 'live' ? head.outcome : head.outcome === 'refused' ? 'refused' : 'dry-run'}${neck}` : '') +
-          (step.zoom_commands.length ? ` · zoom ${step.zoom_commands.at(-1).dry_run ? 'dry-run' : step.zoom_commands.at(-1).after ?? '?'}` : '')}));
+          (step.zoom_commands.length ? zoomSummary(step.zoom_commands) : '')}));
       return li;
     });
     $('capture-steps').replaceChildren(...rows);
     $('run-download').disabled = !runState.pairs;
+  }
+  function zoomSummary(commands) {
+    const last = commands.at(-1);
+    const warn = commands.find(c => c.warning || c.note);
+    const text = last.action === 'read' ? `read ${commands.slice(-2).map(c => c.level ?? '?').join('/')}`
+      : last.dry_run ? 'dry-run' : last.after ?? '?';
+    return ` · zoom ${text}` + (warn ? ` · ${warn.warning || warn.note}` : '');
   }
   async function runStep(stepId, action, body, label) {
     if (runBusy) return;

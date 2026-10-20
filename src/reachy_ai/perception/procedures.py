@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from reachy_ai.camera_zoom import SCENE_ZOOM, ZOOM_ORDER
+from reachy_ai.camera_zoom import SCENE_ZOOM, ZOOM_ORDER, zoom_read_warning
 from reachy_ai.config import HEAD_PRESETS, NECK_JOINTS
 from reachy_ai.pair_bundle import build_bundle, json_bytes
 
@@ -61,11 +61,12 @@ class Step:
     distance_m: float | None = None  # ruler distance from the right camera's lens face
     head: str | None = None          # head preset this step points at (config.HEAD_PRESETS; needs confirm)
     capture: bool = True             # False for a head-only step (e.g. the end of a run)
+    zoom_role: str | None = None     # "start" (read-back only), "check" (read-back vs the profile) or "restore"
 
     def describe(self) -> dict:
         return {"id": self.id, "label": self.label, "zoom": self.zoom, "distance_m": self.distance_m,
                 "head": self.head, "head_deg": head_deg(self.head), "capture": self.capture,
-                "instruction": self.instruction}
+                "zoom_role": self.zoom_role, "instruction": self.instruction}
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,28 @@ def end_step() -> Step:
     return head_step("neutral", capture=False, step_id="end_neutral", label="End: head to neutral")
 
 
+def zoom_start_step() -> Step:
+    return Step(
+        id="zoom_start", label="Zoom: starting level", zoom_role="start", capture=False,
+        instruction="Read the starting zoom: press 'Read zoom' (read-back only, no zoom command is sent). The "
+                    "last step puts the lens back at this level.")
+
+
+def zoom_restore_step() -> Step:
+    return Step(
+        id="zoom_restore", label="Zoom: restore starting level", zoom_role="restore", capture=False,
+        instruction="Restore the starting zoom: tick the confirm box and press 'Restore zoom' (the lens moves; "
+                    "dry-run unless the viewer was started with --allow-zoom-commands), wait for the read-back. "
+                    "If the starting level is unknown or cannot be commanded, set it by hand.")
+
+
+def zoom_check_step() -> Step:
+    return Step(
+        id="zoom_check", label="Zoom: read and check", zoom_role="check", capture=False,
+        instruction="Read the zoom: press 'Read zoom' (read-back only, no command). A warning shows if it differs "
+                    "from the level the calibration profile is valid at, or if the profile's zoom is unknown.")
+
+
 def zoom_fov_procedure(levels=ZOOM_ORDER) -> Procedure:
     steps = tuple(Step(
         id=f"zoom_{level.lower()}", label=f"Zoom {level}", zoom=level,
@@ -121,12 +144,13 @@ def zoom_fov_procedure(levels=ZOOM_ORDER) -> Procedure:
                     f"unless the viewer was started with --allow-zoom-commands), wait for the read-back, "
                     f"then press Capture.") for level in levels)
     return Procedure(
-        id="zoom_fov", name="Zoom field-of-view check", version="2", kind="zoom",
+        id="zoom_fov", name="Zoom field-of-view check", version="3", kind="zoom",
         summary="Head at the board view, board at each zoom level; the analyser reports the apparent cell pitch "
-                "per level.",
+                "per level. The starting zoom is read first and put back at the end.",
         setup=("Arm at rest on the table; the head is moved only by the head steps below.",
                f"The widest level is expected to be {SCENE_ZOOM}; the analysis confirms it."),
-        steps=(head_step("board_view", capture=False), *steps, end_step()))
+        steps=(zoom_start_step(), head_step("board_view", capture=False), *steps, end_step(),
+               zoom_restore_step()))
 
 
 def depth_ruler_procedure(distances=DISTANCES_M, captures_per_step=3) -> Procedure:
@@ -136,13 +160,16 @@ def depth_ruler_procedure(distances=DISTANCES_M, captures_per_step=3) -> Procedu
                     f"camera, centred in the image, {d:.1f} m from its lens face along its axis, then press "
                     f"Capture {captures_per_step} times.") for d in distances)
     return Procedure(
-        id="depth_ruler", name="Depth ruler test", version="2", kind="depth",
+        id="depth_ruler", name="Depth ruler test", version="3", kind="depth",
         summary="Head at neutral, target at known ruler distances; the analyser compares stereo depth with the "
                 "ruler.",
         setup=(f"Arm at rest at the scene zoom ({SCENE_ZOOM}); do not change the zoom during this test.",
-               "The first step sets the head to neutral; it stays there for the whole test.",
+               "The first step reads the zoom (no command) and warns if it is not the level the calibration "
+               "profile is valid at.",
+               "The second step sets the head to neutral; it stays there for the whole test.",
                "Measure each distance from the right camera's lens face along its axis."),
-        steps=(head_step("neutral", capture=False), *steps), captures_per_step=captures_per_step)
+        steps=(zoom_check_step(), head_step("neutral", capture=False), *steps),
+        captures_per_step=captures_per_step)
 
 
 #: Head-sweep poses, in order: neutral, the board view, then the sweep around it.
@@ -207,18 +234,63 @@ class CaptureRun:
     def pair_count(self) -> int:
         return sum(len(v) for v in self.captures.values())
 
-    def apply_zoom(self, step_id: str, setter, confirmed: bool) -> list[dict]:
+    def apply_zoom(self, step_id: str, setter, confirmed: bool, profile_zoom: str | None = None) -> list[dict]:
         """Command this step's zoom level through `setter` (a `ZoomSetter`, or anything with `set_both`).
 
         Refused with ZoomNotConfirmed unless `confirmed`; whether the command is really sent or only
-        logged is the setter's `dry_run`. Every attempt is recorded in the run (and so the bundle)."""
+        logged is the setter's `dry_run`. Every attempt is recorded in the run (and so the bundle).
+        A "start" or "check" step only reads the zoom back (`setter.read_both`, no command, no confirm);
+        `profile_zoom` is the level the calibration profile is valid at, for the "check" warning.
+        A "restore" step commands the level the "start" step read."""
         step = self.procedure.step(step_id)
+        if step.zoom_role in ("start", "check"):
+            return self._read_zoom(step, setter, profile_zoom)
+        if step.zoom_role == "restore":
+            return self._restore_zoom(step, setter, confirmed)
         if step.zoom is None:
             raise ValueError(f"step {step_id!r} does not change the zoom")
         if not confirmed:
             raise ZoomNotConfirmed("A zoom command needs the operator's explicit confirm.")
         records = setter.set_both(step.zoom)
         self.zoom_commands.setdefault(step_id, []).extend(records)
+        return records
+
+    def _read_zoom(self, step: Step, setter, profile_zoom: str | None) -> list[dict]:
+        records = [{"action": "read", **r} for r in setter.read_both()]
+        if step.zoom_role == "check":
+            warning = zoom_read_warning(profile_zoom, {r["eye"]: r["level"] for r in records})
+            records = [{**r, "profile_zoom": profile_zoom, "warning": warning} for r in records]
+        self.zoom_commands.setdefault(step.id, []).extend(records)
+        return records
+
+    def start_zoom(self) -> str | None:
+        """The level the "start" step read on both eyes (ZERO included), or None if unread, unreadable or split."""
+        for step in self.procedure.steps:
+            if step.zoom_role == "start":
+                latest = {r["eye"]: r.get("level") for r in self.zoom_commands.get(step.id, [])}
+                levels = set(latest.values())
+                return levels.pop() if len(levels) == 1 and len(latest) == 2 else None
+        return None
+
+    def _restore_zoom(self, step: Step, setter, confirmed: bool) -> list[dict]:
+        """Put the lens back at the starting level. Unknown start: nothing is sent; the operator sets it by hand."""
+        start = self.start_zoom()
+        sent = self.zoom_commands.setdefault(step.id, [])
+        if start is None:
+            records = [{"action": "restore", "target": None, "ok": False, "manual": True,
+                        "dry_run": getattr(setter, "dry_run", None),
+                        "note": "The starting zoom is unknown, so it cannot be restored: set the zoom to its "
+                                "starting level by hand."}]
+            sent.extend(records)
+            return records
+        if not confirmed:
+            raise ZoomNotConfirmed("A zoom command needs the operator's explicit confirm.")
+        records = [{**r, "action": "restore", "target": start} for r in setter.set_both(start)]
+        for r in records:
+            if not r.get("ok") and not r.get("dry_run"):
+                r.update(manual=True, note=f"The starting zoom {start} could not be commanded or confirmed by "
+                                           f"read-back: set the zoom to {start} by hand.")
+        sent.extend(records)
         return records
 
     def apply_head(self, step_id: str, mover, confirmed: bool) -> dict:
@@ -299,10 +371,13 @@ class CaptureRun:
             steps.append({"index": index, "id": step.id, "label": step.label, "instruction": step.instruction,
                           "distance_m": step.distance_m, "requested_zoom": step.zoom,
                           "requested_head": step.head, "requested_head_deg": head_deg(step.head),
+                          "zoom_role": step.zoom_role,
                           "zoom_commands": self.zoom_commands.get(step.id, []),
                           "head_commands": self.head_commands.get(step.id, []), "captures": entries})
         summary = {"schema_version": "2", "procedure": self.identity(), "kind": self.procedure.kind,
                    "calibration_id": self.calibration_id(), "steps": steps, "head_events": self.head_events}
+        if self.procedure.kind == "zoom":
+            summary["start_zoom"] = self.start_zoom()  # None: not read, unreadable or the eyes differed
         profile = self.analysis_profile()
         if profile.get("source"):
             summary["source"] = profile["source"]  # which camera geometry the analysers must use

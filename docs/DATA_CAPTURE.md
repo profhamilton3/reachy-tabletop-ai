@@ -55,8 +55,9 @@ The launcher passes `--allow-head-motion --allow-zoom-commands` and sets `REACHY
 viewer's command line only (it is never exported). Starting `reachy-stereo` directly stays dry-run unless you
 pass those flags and the variable yourself.
 
-Open http://localhost:8081. The simulator has no zoom, so zoom steps are refused there; head steps work on
-the simulator's neck.
+Open http://localhost:8081. Zoom steps work on the simulator under the same rules as on the robot: a confirm
+tick per command and `--allow-zoom-commands` (otherwise a logged dry run). Head steps work on the simulator's
+neck. See *The simulator's zoom model* below.
 
 ## What you see
 
@@ -112,24 +113,48 @@ Capture at each pose. Stop and report if the neck labours, sounds wrong, or read
 3. Run the last step (head to neutral), then press **Download capture bundle**. Choosing "None" or
    **Discard run** forgets the run.
 
-### Zoom field-of-view check (v2)
+### Zoom field-of-view check (v3)
 
 Arm at rest on the table, taped 3x3 board clear.
-1. Step 0: point the head at `board_view`.
-2. For each of **OUT, INTER, IN**: tick *I confirm: command zoom X*, press *Set zoom X*, wait for the pause to
+1. Step 0: press *Read zoom*. This reads the starting zoom back and records it; no command is sent. The
+   level can be `ZERO`, the SDK's unset level (the simulator starts there). It is recorded as `ZERO`, not
+   mapped to another level.
+2. Point the head at `board_view`.
+3. For each of **OUT, INTER, IN**: tick *I confirm: command zoom X*, press *Set zoom X*, wait for the pause to
    finish, press *Capture*. The tick must be repeated for every command.
-3. Last step: head to neutral.
+4. Head to neutral.
+5. Last step: tick *I confirm: command zoom restore* and press *Restore zoom*. This commands the starting
+   level from step 0 (`ZERO` too, if the SDK accepts it as a command) and records the read-back. If the
+   starting level is unknown or cannot be commanded, the step sends nothing (or records the failure) and
+   says to set the zoom by hand; do that before any other test.
 
 If the viewer is dry-run, the zoom does not change, and the analyser says so. This also measures whether OUT
-is really the widest view.
+is really the widest view. The analyser reports the starting level and flags a restore that failed, was a dry
+run, was not run, or had no known starting level.
 
-### Depth ruler test (v2)
+### Depth ruler test (v3)
 
 Arm at rest at the scene zoom (OUT); do not change the zoom.
-1. Step 0 sets the head to **neutral**; it stays there for the whole test.
-2. Hold the flat, textured target (the 60 mm cube face or a checker card) square to the right camera, centred
+1. Step 0: press *Read zoom* (no command). A warning shows if the zoom differs from the level the calibration
+   profile is valid at. While the profile's `zoom_level` is null, the warning says the profile's zoom is
+   unknown, so the result applies only at the zoom recorded in the bundle.
+2. Step 1 sets the head to **neutral**; it stays there for the whole test.
+3. Hold the flat, textured target (the 60 mm cube face or a checker card) square to the right camera, centred
    in the image, at **0.3, 0.5, 0.8 and 1.2 m**, measured from the right camera's lens face along its axis.
-3. Press *Capture* three times at each distance, keeping the target still.
+4. Press *Capture* three times at each distance, keeping the target still.
+
+### The simulator's zoom model
+
+Under `mujoco-remote` (what `SivaLabLauncher.sh` runs) the simulator models zoom as a **field-of-view change
+only**:
+- a zoom command changes both cameras' field of view; `INTER` is the measured lab calibration, `OUT` and `IN`
+  come from Pollen's 65-125° range read as diagonal (an inference from one data point);
+- lens distortion is fixed, not re-modelled per level;
+- the change is instant.
+
+The `kinematic` and `fixture` backends only store the level (the analyser then reports that the cell pitch
+did not change). A zoom bundle from the simulator is marked `source: sim` in `capture.json`, and the analyser
+prints "Field of view from the simulator's zoom model, not the real lens."
 
 ### Board-view approach (v2)
 
@@ -177,7 +202,8 @@ unzip or rename files inside it: the manifest holds a SHA-256 for every file, an
 Each bundle holds, per step, `left.jpg`, `right.jpg` and `pair.json`, plus:
 - `capture.json`:
   - procedure name and version, step labels and the calibration id;
-  - the requested and read-back zoom per step;
+  - the requested and read-back zoom per step, with the camera source (`sim` or `robot`);
+  - for the zoom check, the starting zoom and every read, command and restore record;
   - the requested head pose per step, every head command attempt (the commanded preset and angles,
     live/dry-run, the outcome, the gate's reasons, the neck read-back after the move);
   - the neck read-back frozen with each capture;
