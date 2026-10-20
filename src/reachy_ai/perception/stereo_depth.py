@@ -70,6 +70,10 @@ def check_physical_geometry(K, D, R, T):
     return reasons
 
 
+#: Sim post-render lens warp per eye: (fx, fy) of the warp and its radial k1, k2. Applied only to the "distorted" lens.
+SIM_WARP = {"left": ((408.4, 407.0), (-0.3163, 0.1027)), "right": ((400.9, 398.8), (-0.3895, 0.1838))}
+
+
 class StereoGeometry:
     def __init__(self, source="sim", sim_lens="distorted", calibration=None):
         self.source, self.sim_lens = source, sim_lens
@@ -134,6 +138,18 @@ class StereoGeometry:
     def status(self):
         return {"available": self.error is None, "reason": self.error, "profile": self.identity}
 
+    def board_lens(self, eye):
+        """(source camera matrix, distortion, pinhole matrix) for a raw frame of this eye ("left"/"right").
+
+        The grid finder undistorts the raw frame from the source matrix and distortion into the pinhole matrix,
+        which is also what the rectification maps take as input."""
+        i = 0 if eye == "left" else 1
+        pinhole = self.K[i]
+        if self.sim_lens == "distorted":
+            (fx, fy), (a, b) = SIM_WARP[eye]
+            return np.array([[fx, 0, 320], [0, fy, 240], [0, 0, 1.]]), np.array([a, b, 0, 0, 0.]), pinhole
+        return pinhole, np.zeros(5), pinhole
+
     def prepare(self, shape):
         if self.error:
             raise DepthUnavailable(self.error)
@@ -155,8 +171,7 @@ class StereoGeometry:
             if self.source == "sim" and self.sim_lens == "distorted":
                 # Render uses fx=fy. The optional post-render warp uses measured
                 # fx/fy. Compose the two explicitly rather than swapping axes.
-                fx, fy = (408.4, 407.0) if i == 0 else (400.9, 398.8)
-                a, b = (-0.3163, 0.1027) if i == 0 else (-0.3895, 0.1838)
+                (fx, fy), (a, b) = SIM_WARP["left" if i == 0 else "right"]
                 x, y = (mx - 320) / fx, (my - 240) / fy
                 radius = x * x + y * y
                 scale = 1 + a * radius + b * radius * radius

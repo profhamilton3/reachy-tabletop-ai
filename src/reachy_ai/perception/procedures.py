@@ -146,13 +146,13 @@ def depth_ruler_procedure(distances=DISTANCES_M, captures_per_step=3) -> Procedu
 
 
 #: Head-sweep poses, in order: neutral, the board view, then the sweep around it.
-SWEEP_PRESETS = ("neutral", "board_view", "sweep_64_right", "sweep_64_left",
-                 "sweep_56_right", "sweep_56_centre", "sweep_56_left")
+SWEEP_PRESETS = ("neutral", "board_view", "sweep_yaw_right_5", "sweep_yaw_left_5", "sweep_yaw_right_8",
+                 "sweep_yaw_left_8", "sweep_roll_right_5", "sweep_roll_left_5")
 
 
 def head_sweep_procedure(presets=SWEEP_PRESETS, captures_per_step=2) -> Procedure:
     return Procedure(
-        id="head_sweep", name="Head sweep", version="1", kind="head",
+        id="head_sweep", name="Head sweep", version="2", kind="head",
         summary="Board captured from each head pose; the analyser places the board centre in the torso frame "
                 "from stereo depth and the recorded neck angles, and reports the spread across poses.",
         setup=("Arm at rest on the table, the taped 3x3 board clear and still; nobody near the head.",
@@ -273,6 +273,12 @@ class CaptureRun:
                 return (record["meta"].get("camera_context") or {}).get("calibration_id")
         return None
 
+    def analysis_profile(self) -> dict:
+        for taken in self.captures.values():
+            for record in taken:
+                return (record["meta"].get("camera_context") or {}).get("analysis_profile") or {}
+        return {}
+
     def bundle_files(self) -> dict[str, bytes]:
         files: dict[str, bytes] = {}
         steps = []
@@ -297,6 +303,11 @@ class CaptureRun:
                           "head_commands": self.head_commands.get(step.id, []), "captures": entries})
         summary = {"schema_version": "2", "procedure": self.identity(), "kind": self.procedure.kind,
                    "calibration_id": self.calibration_id(), "steps": steps, "head_events": self.head_events}
+        profile = self.analysis_profile()
+        if profile.get("source"):
+            summary["source"] = profile["source"]  # which camera geometry the analysers must use
+            if profile["source"] == "sim":
+                summary["sim_lens"] = profile.get("lens")
         return {"capture.json": json_bytes(summary), **files}
 
     def identity(self) -> dict:

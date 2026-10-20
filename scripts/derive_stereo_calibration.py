@@ -43,6 +43,14 @@ def distortion(eye):
     return np.array([*LENS[eye]["k"], 0, 0, 0], dtype=float)
 
 
+def lens_for(eye, geometry=None):
+    """(source camera matrix, distortion, pinhole matrix) of a raw frame: the robot's calibration, or the sim's
+    lens when `geometry` is a sim StereoGeometry. The robot result is the fixed LENS, as before."""
+    if geometry is not None and geometry.source == "sim":
+        return geometry.board_lens(eye)
+    return camera_matrix(eye), distortion(eye), camera_matrix(eye)
+
+
 def board_cells():
     """Cell centres in the board frame (X forward, Y left), r = 0 near .. 2 far, c = 0 left .. 2 right."""
     return {(r, c): np.array([(r - 1) * PITCH, (1 - c) * PITCH]) for r in range(3) for c in range(3)}
@@ -112,14 +120,16 @@ def pick_grid(quads, partial, shape):
     return {(labels[k], c): rows[k][c] for k in range(len(rows)) for c in range(3)}
 
 
-def board_points(path, eye):
-    """Matched (board XYZ, undistorted pixel) corner arrays for one photo (a path or a BGR image), or None."""
-    K, D = camera_matrix(eye), distortion(eye)
+def board_points(path, eye, geometry=None):
+    """Matched (board XYZ, undistorted pixel) corner arrays for one photo (a path or a BGR image), or None.
+
+    `geometry` (a StereoGeometry) selects the lens of a sim photo; omitted, the robot's calibration is used."""
+    K, D, pinhole = lens_for(eye, geometry)
     if isinstance(path, np.ndarray):
         gray = cv2.cvtColor(path, cv2.COLOR_BGR2GRAY) if path.ndim == 3 else path
     else:
         gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-    und = cv2.undistort(gray, K, D)
+    und = cv2.undistort(gray, K, D, None, pinhole)
     quads, partial = detect(und)
     grid = pick_grid(quads, partial, und.shape)
     if grid is None:

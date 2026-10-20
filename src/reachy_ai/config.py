@@ -49,19 +49,23 @@ NECK_READBACK_TOLERANCE_DEG: float = 3.0  # capture refused if any neck joint is
 
 # Named head poses (roll, pitch, yaw), degrees. board_view is reachy-1-2-sim gaze.BOARD_VIEW: all nine
 # cells in both eyes in the October layout (ADR-0010 section 5). The three approach poses step the first
-# robot session up to it (20 deg first: a small move that shows the head tilts DOWN). The five sweep
-# poses are UNVALIDATED until a head-sweep run on the sim confirms the board stays in view.
+# robot session up to it (20 deg first: a small move that shows the head tilts DOWN). The six sweep
+# poses are UNVALIDATED until a head-sweep run on the sim confirms the grid is found at each of them.
+# They vary yaw and roll only, all at pitch 64: the chest hides the near row of cells at lower pitch, and
+# 64 is the stop. Pinhole frame margins at pitch 64 (without the chest) are 66 px at yaw 0, 49 at +-5,
+# 38 at +-8 and 14 at +-15, so the old +-15 deg and 56 deg poses were too tight (see DATA_CAPTURE.md).
 HEAD_PRESETS: dict[str, tuple[float, float, float]] = {
     "neutral": (0.0, 0.0, 0.0),
     "board_approach_20": (0.0, 20.0, 0.0),
     "board_approach_55": (0.0, 55.0, 0.0),
     "board_approach_60": (0.0, 60.0, 0.0),
     "board_view": (0.0, 64.0, 0.0),
-    "sweep_64_right": (0.0, 64.0, -15.0),
-    "sweep_64_left": (0.0, 64.0, 15.0),
-    "sweep_56_right": (0.0, 56.0, -15.0),
-    "sweep_56_centre": (0.0, 56.0, 0.0),
-    "sweep_56_left": (0.0, 56.0, 15.0),
+    "sweep_yaw_right_5": (0.0, 64.0, -5.0),
+    "sweep_yaw_left_5": (0.0, 64.0, 5.0),
+    "sweep_yaw_right_8": (0.0, 64.0, -8.0),
+    "sweep_yaw_left_8": (0.0, 64.0, 8.0),
+    "sweep_roll_right_5": (-5.0, 64.0, 0.0),
+    "sweep_roll_left_5": (5.0, 64.0, 0.0),
 }
 
 # Box a head look_at(x, y, z) point must lie in. SDK torso frame (reachy_sdk head.look_at: X forward,

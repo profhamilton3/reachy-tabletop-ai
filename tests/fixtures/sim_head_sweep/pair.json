@@ -1,0 +1,119 @@
+{
+  "camera_context": {
+    "analysis_profile": {
+      "baseline_m": 0.0725,
+      "focal_px": [
+        407.0,
+        398.8
+      ],
+      "geometry": "URDF camera positions and axes",
+      "id": "771392183ddc6c62",
+      "lens": "distorted",
+      "name": "measured_2026_08_27 + scene URDF",
+      "neck_origin_pitch_rad": 0.174,
+      "neck_origin_xyz_m": [
+        0.015,
+        0,
+        0.095
+      ],
+      "radial": [
+        [
+          -0.3163,
+          0.1027
+        ],
+        [
+          -0.3895,
+          0.1838
+        ]
+      ],
+      "resolution": [
+        640,
+        480
+      ],
+      "right_camera_in_head_m": [
+        0.0033,
+        -0.03625,
+        0.061
+      ],
+      "source": "sim",
+      "warp_fx_px": [
+        408.4,
+        400.9
+      ]
+    },
+    "calibration_id": "771392183ddc6c62",
+    "settings_at_connection": {
+      "left": {
+        "focus": 0,
+        "zoom": 0,
+        "zoom_level": "ZERO"
+      },
+      "right": {
+        "focus": 0,
+        "zoom": 0,
+        "zoom_level": "ZERO"
+      }
+    },
+    "zoom": null
+  },
+  "eyes": {
+    "left": {
+      "capture_time_ns": null,
+      "encoding": "bgr8",
+      "frame_id": "793316fb499c414bb107e18680d4275a:left:126951",
+      "height": 480,
+      "observed_time_ns": 593771710750416,
+      "sequence": 126951,
+      "url": "/api/stereo/pairs/7eba006cb4aa4807bc71db712c9c38eb/left.jpg",
+      "width": 640
+    },
+    "right": {
+      "capture_time_ns": null,
+      "encoding": "bgr8",
+      "frame_id": "793316fb499c414bb107e18680d4275a:right:127131",
+      "height": 480,
+      "observed_time_ns": 593771798807041,
+      "sequence": 127131,
+      "url": "/api/stereo/pairs/7eba006cb4aa4807bc71db712c9c38eb/right.jpg",
+      "width": 640
+    }
+  },
+  "head_command": {
+    "action": "move",
+    "mode": "live",
+    "outcome": "reached",
+    "preset": "board_view",
+    "target_deg": {
+      "neck_pitch": 64.0,
+      "neck_roll": 0.0,
+      "neck_yaw": 0.0
+    }
+  },
+  "head_context": {
+    "age_at_capture_ms": 115.0,
+    "frame_skew_ms": 105.2,
+    "joints": {
+      "neck_pitch": {
+        "compliant": false,
+        "goal_deg": 64.0,
+        "present_deg": 64.78
+      },
+      "neck_roll": {
+        "compliant": false,
+        "goal_deg": 0.0,
+        "present_deg": -0.0
+      },
+      "neck_yaw": {
+        "compliant": false,
+        "goal_deg": 0.0,
+        "present_deg": -0.0
+      }
+    },
+    "observed_ns": 593771693598875
+  },
+  "observation_skew_ms": 88.1,
+  "pair_id": "7eba006cb4aa4807bc71db712c9c38eb",
+  "pairing": "latest observed frames; not synchronized exposure",
+  "session_id": "793316fb499c414bb107e18680d4275a",
+  "source": "sim"
+}

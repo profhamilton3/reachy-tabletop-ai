@@ -164,7 +164,7 @@ def test_a_primitive_move_reads_the_neck_first_and_the_gate_refuses_a_fast_one()
     robot = FakeReachy()
     yaw = robot.head.joints.neck_yaw
     yaw.present_position = -45.0
-    refused = move(robot, "sweep_64_left", duration=1.5)  # 64 deg of pitch in 1.5 s
+    refused = move(robot, "sweep_yaw_left_8", duration=1.5)  # 64 deg of pitch in 1.5 s
     assert refused["outcome"] == "refused" and any("exceeds" in f for f in refused["gate"]["failures"])
     assert robot.goals() == {n: [] for n in config.NECK_JOINTS}
     assert move(robot, "neutral", duration=3.0)["outcome"] == "reached"
