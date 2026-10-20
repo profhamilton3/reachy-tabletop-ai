@@ -12,6 +12,9 @@ the right camera frame (the viewer's own SGBM path, inner-60% box median) and re
     python scripts/ruler_depth_test.py --distances 0.5 --roi 180,260,120,120
 
 It refuses to run if the cameras are not at the profile/scene zoom unless --allow-zoom-mismatch.
+It also writes capture-bundle.zip, the bundle the viewer's "Data capture" dropdown produces
+(docs/DATA_CAPTURE.md); scripts/analyze_capture_bundle.py reads it and judges the errors against the
+analytic sensitivity per distance. Steps come from reachy_ai.perception.procedures.
 """
 
 import argparse
@@ -28,10 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _operator_common as common  # noqa: E402
 
 from reachy_ai.camera_zoom import EYES, ZoomSetter, zoom_status  # noqa: E402
+from reachy_ai.perception.procedures import DISTANCES_M, TOLERANCE_M, CaptureRun, depth_ruler_procedure, encode_jpeg  # noqa: E402
 from reachy_ai.perception.stereo_depth import PairDepth  # noqa: E402
-
-TOLERANCE_M = 0.015
-DISTANCES_M = (0.3, 0.5, 0.8, 1.2)
 
 
 def evaluate(ruler_m, measured_z_m, tolerance_m=TOLERANCE_M):
@@ -74,8 +75,10 @@ def main():
     out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M%S")
     out.mkdir(parents=True, exist_ok=True)
     rows = []
-    for ruler in args.distances:
-        input(f"Place the target at {ruler:.2f} m from the right camera's lens face, square to it, then press Enter… ")
+    procedure = depth_ruler_procedure(args.distances, args.pairs)
+    run = CaptureRun(procedure)
+    for ruler, step in zip(args.distances, procedure.steps):
+        input(f"{step.instruction.split(' then press')[0]}, then press Enter… ")
         previous, values = (None, None), []
         for i in range(args.pairs):
             left, right = common.fresh_pair(robot, previous)
@@ -83,6 +86,8 @@ def main():
             roi = tuple(float(v) for v in args.roi.split(",")) if args.roi else default_roi(right.shape)
             z, item = measure(depth, left, right, roi)
             values.append(z)
+            run.add_capture(step.id, {"pair_id": f"cli-{ruler}-{i}", "camera_context": {"zoom": status}},
+                            encode_jpeg(left), encode_jpeg(right))
             if i == 0:
                 shown = right.copy()
                 x, y, w, h = (int(v) for v in roi)
@@ -104,6 +109,8 @@ def main():
               f"(< {TOLERANCE_M * 1000:.0f} mm)")
     report = {"zoom": status, "tolerance_mm": TOLERANCE_M * 1000, "rows": rows}
     (out / "report.json").write_text(json.dumps(report, indent=2))
+    if run.pair_count():
+        (out / "capture-bundle.zip").write_bytes(run.build_zip({"viewer": None, "sdk": None, "source": "cli"}))
     print("saved", out)
     return 0 if rows and all(r["within_target"] for r in rows) else 1
 

@@ -10,8 +10,10 @@ frame), so the ratio between levels shows the field-of-view change. No arm or he
 
 Without --live-zoom no zoom command is sent (dry run: the commands are only logged). With it,
 each level is an explicit, logged camera-service call; the starting zoom is restored at the end.
-Captures are saved under --out as <eye>_<level>.png with the report, for later re-derivation of
-the stereo profile at the scene zoom (the profile's zoom is not recorded, see docs/PERCEPTION_STAGE1.md).
+Captures are saved under --out as <eye>_<level>.png with the report, plus capture-bundle.zip: the
+same bundle the viewer's "Data capture" dropdown downloads (docs/DATA_CAPTURE.md), which
+scripts/analyze_capture_bundle.py reads. Steps and the confirm rule come from
+reachy_ai.perception.procedures; with --live-zoom each zoom command asks for a typed y first.
 """
 
 import argparse
@@ -29,6 +31,7 @@ import _operator_common as common  # noqa: E402
 import derive_stereo_calibration as grid  # noqa: E402
 
 from reachy_ai.camera_zoom import EYES, SCENE_ZOOM, ZOOM_ORDER, ZoomSetter, normalize_zoom  # noqa: E402
+from reachy_ai.perception.procedures import CaptureRun, encode_jpeg, zoom_fov_procedure  # noqa: E402
 
 
 def cell_pitch_px(image):
@@ -72,13 +75,23 @@ def main():
     start = {eye: zoom.read(eye) for eye in EYES}
     print("starting zoom:", start, "| zoom commands:", "LIVE" if args.live_zoom else "dry run (not sent)")
     rows = []
+    run = CaptureRun(zoom_fov_procedure(args.levels))
     try:
         for level in args.levels:
-            commands = zoom.set_both(level)
+            step_id = f"zoom_{level.lower()}"
+            confirmed = not args.live_zoom or input(f"Command zoom {level} on both cameras? Type y: ").strip() == "y"
+            if not confirmed:
+                print(f"zoom {level}: not confirmed; stopping")
+                break
+            commands = run.apply_zoom(step_id, zoom, confirmed=True)  # dry-run unless --live-zoom
             if args.live_zoom and not all(c["ok"] for c in commands):
                 print(f"zoom {level}: command not confirmed by readback {commands}; stopping")
                 break
             frames = dict(zip(EYES, common.fresh_pair(robot)))
+            run.add_capture(step_id, {"pair_id": f"cli-{level}", "camera_context": {
+                "zoom": {"captured": zoom.read("left") if zoom.read("left") == zoom.read("right") else None,
+                         "levels": {eye: zoom.read(eye) for eye in EYES}}}},
+                encode_jpeg(frames["left"]), encode_jpeg(frames["right"]))
             for eye in EYES:
                 actual = zoom.read(eye)
                 cv2.imwrite(str(out / f"{eye}_{level}.png"), frames[eye])
@@ -98,6 +111,8 @@ def main():
     print("pitch relative to the widest level:", json.dumps(changed))
     report = {"start_zoom": start, "live_zoom": args.live_zoom, "rows": rows}
     (out / "report.json").write_text(json.dumps(report, indent=2))
+    if run.pair_count():
+        (out / "capture-bundle.zip").write_bytes(run.build_zip({"viewer": None, "sdk": None, "source": "cli"}))
     print("saved", out)
     return 0
 

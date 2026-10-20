@@ -38,6 +38,15 @@
     button:disabled { opacity: .45; cursor: not-allowed; }
     :focus-visible { outline: 2px solid #80cbc4; outline-offset: 3px; }
     #zoom-warning { margin: 0 0 14px; padding: 8px 12px; border: 1px solid #ffb74d; border-radius: 6px; color: #ffb74d; font-size: 12px; line-height: 1.6; }
+    #capture-panel { margin-top: 18px; padding: 18px; background: #16213e; border: 1px solid #2b3a63; border-radius: 8px; }
+    #capture-panel h2 { margin-bottom: 10px; }
+    #capture-instructions { font-size: 12px; line-height: 1.8; padding-left: 0; list-style: none; margin: 10px 0; }
+    #capture-steps { list-style: none; padding: 0; margin: 10px 0; display: grid; gap: 8px; }
+    #capture-steps li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 10px;
+      background: #101d32; border-radius: 5px; font-size: 12px; }
+    #capture-steps .step-label { min-width: 90px; color: #80cbc4; }
+    #capture-steps label { display: flex; gap: 6px; align-items: center; }
+    #capture-select { max-width: 360px; }
     #notice { min-height: 24px; margin: 14px 0; color: #ffb74d; font-size: 12px; line-height: 1.6; }
     #pair-info { overflow-wrap: anywhere; }
     #analysis-panel { margin-top: 18px; padding: 18px; background: #16213e;
@@ -100,6 +109,19 @@
   </section>
   <p id="notice" role="status" aria-live="polite">Connecting to camera service…</p>
   <p id="zoom-warning" role="alert" hidden></p>
+  <section id="capture-panel" aria-label="Data capture">
+    <h2>DATA CAPTURE <span class="subtle">· camera only, never arm motion</span></h2>
+    <label class="subtle" for="capture-select">Procedure</label>
+    <select id="capture-select"><option value="">None</option></select>
+    <div id="capture-body" hidden>
+      <p class="subtle" id="capture-summary"></p>
+      <ol id="capture-instructions"></ol>
+      <ul id="capture-steps"></ul>
+      <div class="actions"><button id="run-download">Download capture bundle</button>
+        <button id="run-discard">Discard run</button></div>
+      <p class="subtle" id="capture-note" role="status" aria-live="polite"></p>
+    </div>
+  </section>
   <section id="analysis-panel" hidden aria-label="Captured-pair analysis">
     <h2>RIGHT-EYE ANALYSIS</h2>
     <div id="analysis-summary" class="subtle" role="status" aria-live="polite"></div>
@@ -460,6 +482,83 @@
     analysisURL = null;
     paint();
   };
+  // --- Data capture (camera only). The run is held in server memory; the bundle is a download. ---
+  let procedures = [], runState = null, zoomMode = 'dry-run', runBusy = false, lastCan = null;
+  const confirmed = {};  // per step; cleared after every zoom command so each one needs a fresh confirm
+  const note = text => { $('capture-note').textContent = text; };
+  async function runApi(path, options = {}) {
+    const response = await fetch('/api/stereo/capture-run' + path, {...options, signal: AbortSignal.timeout(45000)});
+    const body = response.headers.get('content-type')?.includes('json') ? await response.json() : null;
+    if (!response.ok) throw Error(body?.detail || 'Request failed');
+    return body;
+  }
+  function renderRun() {
+    $('capture-body').hidden = !runState;
+    if (!runState) return;
+    const proc = procedures.find(p => p.id === runState.procedure.id);
+    $('capture-summary').textContent = `${runState.procedure.name} v${runState.procedure.version} · ${runState.procedure.summary}`
+      + ` · zoom commands: ${zoomMode}`;
+    $('capture-instructions').replaceChildren(...(proc?.instructions || []).map(t => Object.assign(document.createElement('li'), {textContent: t})));
+    const rows = runState.steps.map(step => {
+      const li = document.createElement('li');
+      li.append(Object.assign(document.createElement('span'), {className: 'step-label', textContent: step.label}));
+      if (step.zoom) {
+        const box = Object.assign(document.createElement('input'), {type: 'checkbox', id: 'confirm-' + step.id, checked: !!confirmed[step.id]});
+        box.onchange = () => { confirmed[step.id] = box.checked; };
+        const label = document.createElement('label');
+        label.append(box, `I confirm: command zoom ${step.zoom}`);
+        const set = Object.assign(document.createElement('button'), {textContent: `Set zoom ${step.zoom}`});
+        set.onclick = () => { const ok = box.checked; confirmed[step.id] = false; runStep(step.id, 'zoom', {confirm: ok}, 'Zoom command '); };
+        li.append(label, set);
+      }
+      const cap = Object.assign(document.createElement('button'), {textContent: 'Capture', disabled: runBusy || !status?.can_capture});
+      cap.onclick = () => runStep(step.id, 'capture', null, 'Captured ');
+      li.append(cap, Object.assign(document.createElement('span'), {className: 'subtle',
+        textContent: `${step.captured} pair${step.captured === 1 ? '' : 's'} captured` +
+          (step.zoom_commands.length ? ` · zoom ${step.zoom_commands.at(-1).dry_run ? 'dry-run' : step.zoom_commands.at(-1).after ?? '?'}` : '')}));
+      return li;
+    });
+    $('capture-steps').replaceChildren(...rows);
+    $('run-download').disabled = !runState.pairs;
+  }
+  async function runStep(stepId, action, body, label) {
+    if (runBusy) return;
+    runBusy = true; renderRun(); note('Working…');
+    try {
+      const result = await runApi(`/steps/${stepId}/${action}`, body ? {method: 'POST',
+        headers: {'content-type': 'application/json'}, body: JSON.stringify(body)} : {method: 'POST'});
+      runState = result.state || result;
+      note(label + (result.dry_run ? '(dry run: logged, not sent).' : 'done.'));
+    } catch (error) { note(error.message); }
+    finally { runBusy = false; renderRun(); }
+  }
+  $('capture-select').onchange = async event => {
+    try {
+      if (!event.target.value) { await runApi('', {method: 'DELETE'}); runState = null; note(''); }
+      else { runState = await runApi('', {method: 'POST', headers: {'content-type': 'application/json'},
+                                          body: JSON.stringify({procedure: event.target.value})}); note('Run started; nothing is saved on the server.'); }
+    } catch (error) { note(error.message); }
+    renderRun();
+  };
+  $('run-discard').onclick = async () => { $('capture-select').value = ''; $('capture-select').onchange({target: $('capture-select')}); };
+  $('run-download').onclick = async () => {
+    $('run-download').disabled = true;
+    try {
+      const response = await fetch('/api/stereo/capture-run/bundle.zip', {signal: AbortSignal.timeout(30000)});
+      if (!response.ok) throw Error((await response.json().catch(() => ({}))).detail || 'Unable to build the bundle');
+      const url = URL.createObjectURL(await response.blob());
+      const link = Object.assign(document.createElement('a'), {href: url, download: `reachy-capture-${runState.procedure.id}.zip`});
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      note('Saved the capture bundle to your downloads. Send it as described in docs/DATA_CAPTURE.md.');
+    } catch (error) { note(error.message); }
+    finally { renderRun(); }
+  };
+  fetch('/api/stereo/procedures').then(r => r.json()).then(data => {
+    procedures = data.procedures; zoomMode = data.zoom_commands;
+    $('capture-select').append(...procedures.map(p => Object.assign(document.createElement('option'), {value: p.id, textContent: `${p.name} (v${p.version})`})));
+  }).catch(() => note('Procedures unavailable'));
+  setInterval(() => { const can = !!status?.can_capture; if (runState && can !== lastCan) { lastCan = can; renderRun(); } }, 500);
   setInterval(paint, 500);
   poll();
 })();
