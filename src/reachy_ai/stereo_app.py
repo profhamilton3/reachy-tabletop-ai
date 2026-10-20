@@ -11,6 +11,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
+from reachy_ai.camera_zoom import EYES, calibration_id, zoom_status
 from reachy_ai.pair_bundle import BundleTooLarge, build_bundle, json_bytes, viewer_version
 from reachy_ai.perception.pair_detector import (
     DEFAULT_MODEL,
@@ -37,6 +38,14 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
         finally:
             camera.stop()
 
+    def zoom_context(profile):
+        """Zoom read back from the cameras against the profile's; physical cameras only."""
+        if settings.source == "sim":
+            return None
+        with camera.lock:
+            readbacks = {eye: camera.diagnostics.get(eye) for eye in EYES}
+        return zoom_status(profile.get("zoom_level"), readbacks)
+
     app = FastAPI(title="Reachy Stereo View", lifespan=lifespan)
     app.state.stereo = camera
 
@@ -48,7 +57,8 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
     def status():
         profile = depth.status()
         return {**camera.status(), "detector": analyzer.status(), "depth": profile,
-                "calibration_id": profile.get("profile", {}).get("id")}
+                "calibration_id": profile.get("profile", {}).get("id"),
+                "zoom": zoom_context(profile.get("profile", {}))}
 
     @app.get("/stream/{eye}")
     async def stream(eye: Literal["left", "right"], request: Request):
@@ -71,7 +81,10 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
                 pair = camera.capture()
                 record = camera.snapshots[pair["pair_id"]]
                 profile = depth.status().get("profile", {})
-                record["camera_context"]["calibration_id"] = profile.get("id")
+                zoom = zoom_context(profile)
+                record["camera_context"]["zoom"] = zoom
+                record["camera_context"]["calibration_id"] = (calibration_id(profile.get("id"), zoom["captured"])
+                                                                  if zoom else profile.get("id"))
                 record["camera_context"]["analysis_profile"] = dict(profile)
                 return camera.snapshot_metadata(record)
         except ValueError as exc:

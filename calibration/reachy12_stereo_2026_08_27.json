@@ -90,6 +90,8 @@
   ],
   "baseline_m": 0.078,
   "relative_rotation_deg": 2.06,
+  "zoom_level": null,
+  "zoom_level_note": "None = not recorded. Set to the SDK ZoomLevel name (OUT / INTER / IN) when the profile is derived from pictures taken at a known zoom (scripts/zoom_fov_check.py, #28 B).",
   "zoom_caveat": "The camera zoom used for the August pictures was never recorded (see #28 B). This profile is valid at that zoom only; re-derive after any zoom change.",
   "provenance": {
     "date_derived": "2026-10-19",

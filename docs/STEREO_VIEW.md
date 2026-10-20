@@ -304,6 +304,12 @@ Units are metres; `T` maps left-eye to right-eye coordinates. **Zoom caveat:**
 the zoom used for the August pictures was never recorded (#28 B), so the
 profile is valid at that zoom only.
 
+**Zoom policy (#28 B).** Scene capture uses the widest zoom (`OUT`). Every physical capture records the zoom read
+back from both cameras in `camera_context.zoom`, and its `calibration_id` becomes `<profile id>@zoom=<level>`. The
+viewer shows a warning when the capture's zoom is unreadable, differs between the eyes, differs from the profile's
+zoom, is not the scene zoom, or when the profile's zoom was never recorded (true of the current profile). Zoom is read at
+connection, so reconnect the viewer after changing it. The viewer never sets zoom; see `docs/PERCEPTION_STAGE1.md`.
+
 Physical mode refuses a profile that cannot describe this head: baseline
 outside 0.05–0.12 m, a right eye more than 5 cm ahead of or behind the left,
 eyes rotated more than 10° apart, focal lengths more than 25% apart, or
