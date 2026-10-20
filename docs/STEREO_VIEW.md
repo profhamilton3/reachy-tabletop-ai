@@ -295,12 +295,25 @@ metric analysis. Mismatched dimensions return a clear unavailable response
 instead of rescaling or rotating images silently.
 
 For the physical robot, `--stereo-calibration PATH` (or
-`REACHY_STEREO_CALIBRATION`) selects an existing NPZ; the default is
-`scripts/stereo_calibration.npz`. It reads `mtx_l`, `dist_l`, `mtx_r`, `dist_r`,
-`R`, and `T` without refitting or replacing them with values from prose notes.
-Units follow `run_stereo_calibration.ipynb`: metres. The existing archive's
-stored-image size is 480×640; an archive may explicitly supply `image_size`
-as `[width, height]`. The original physical optical frame is retained. Its
+`REACHY_STEREO_CALIBRATION`) selects a profile; the default is
+`calibration/reachy12_stereo_2026_08_27.json`, a versioned file holding both
+eyes' intrinsics (480×640 stored frame, measured principal points), the
+eye-to-eye `R`/`T` and its provenance (source pictures, method, date, RMS).
+`scripts/derive_stereo_calibration.py` re-derives it from `tests/Pictures/`.
+Units are metres; `T` maps left-eye to right-eye coordinates. **Zoom caveat:**
+the zoom used for the August pictures was never recorded (#28 B), so the
+profile is valid at that zoom only.
+
+Physical mode refuses a profile that cannot describe this head: baseline
+outside 0.05–0.12 m, a right eye more than 5 cm ahead of or behind the left,
+eyes rotated more than 10° apart, focal lengths more than 25% apart, or
+distortion beyond physical bounds. The refusal reason is shown in the viewer.
+The previous `.npz` (right focal length 983 px against 444 px, right eye 32 cm
+in front of the left) is kept as
+`calibration/historical/stereo_calibration_2026_08_21_REJECTED.npz` and is
+refused by this check. An `.npz` with `mtx_l`, `dist_l`, `mtx_r`, `dist_r`, `R`
+and `T` can still be passed explicitly, but it is held to the same limits.
+The original physical optical frame is retained. Its
 camera-to-torso mapping is not silently borrowed from the landscape renderer;
 physical mode currently reports camera coordinates only. The simulator's
 neck/shoulder transform remains the chosen URDF model.

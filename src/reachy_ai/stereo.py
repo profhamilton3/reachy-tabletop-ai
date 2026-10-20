@@ -427,7 +427,8 @@ def main():
     parser.add_argument("--sim-lens", choices=("distorted", "pinhole"), default="distorted",
                         help="Match the simulator's --distortion setting (default: distorted)")
     parser.add_argument("--stereo-calibration", default=os.environ.get("REACHY_STEREO_CALIBRATION"),
-                        help="Physical source's existing NPZ calibration; default scripts/stereo_calibration.npz")
+                        help="Physical source's calibration profile (JSON); "
+                             "default calibration/reachy12_stereo_2026_08_27.json")
     args = parser.parse_args()
     if args.source == "robot" and not args.robot_host:
         parser.error("Robot mode requires --robot-host or REACHY_IP")

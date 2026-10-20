@@ -1,0 +1,165 @@
+{
+  "format": "reachy_stereo_physical",
+  "format_version": 1,
+  "id": "reachy12-stereo-2026-08-27-v1",
+  "robot": "Reachy 1.2 head cameras",
+  "image_size": [
+    480,
+    640
+  ],
+  "image_size_note": "width x height of the stored SDK frame (portrait)",
+  "left": {
+    "K": [
+      [
+        407.0,
+        0.0,
+        253.6
+      ],
+      [
+        0.0,
+        408.4,
+        296.4
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "dist": [
+      -0.3163,
+      0.1027,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "right": {
+    "K": [
+      [
+        398.8,
+        0.0,
+        225.6
+      ],
+      [
+        0.0,
+        400.9,
+        331.1
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "dist": [
+      -0.3895,
+      0.1838,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "R": [
+    [
+      0.9997134018685816,
+      0.00043447629564017986,
+      -0.023935859180279344
+    ],
+    [
+      -0.0010735327554584138,
+      0.99964311985136,
+      -0.026692329633517486
+    ],
+    [
+      0.023915719762796057,
+      0.02671037559058136,
+      0.9993570904256592
+    ]
+  ],
+  "T": [
+    -0.07360870249505241,
+    -0.008915488151559882,
+    -0.024052077452059662
+  ],
+  "convention": "X_right = R @ X_left + T; OpenCV optical axes (x right, y down, z forward); metres",
+  "right_centre_in_left_m": [
+    0.0742,
+    0.0096,
+    0.022
+  ],
+  "baseline_m": 0.078,
+  "relative_rotation_deg": 2.06,
+  "zoom_caveat": "The camera zoom used for the August pictures was never recorded (see #28 B). This profile is valid at that zoom only; re-derive after any zoom change.",
+  "provenance": {
+    "date_derived": "2026-10-19",
+    "pictures": "tests/Pictures/ (captured 2026-08-20, 20 left/right screenshot pairs, 480x640)",
+    "intrinsics": "2026-08-27 re-solve, sim scenes/calibration_measured_2026_08_27.yaml: reprojection RMS 0.97 px (left) / 0.84 px (right); measured principal points",
+    "method": "Each eye solved against the taped 3x3 grid (6 in pitch, 5.08 in cells) with cv2.solvePnP on undistorted corners using the fixed intrinsics; right camera placed in the left frame per pair; translation = median over pairs, rotation = rotation mean. Board finder from reachy-1-2-sim photo_check/board_pnp.py (PR #188). Script: scripts/derive_stereo_calibration.py",
+    "pairs_used": [
+      {
+        "pair": "20.08.2026",
+        "rms_left_px": 0.7,
+        "rms_right_px": 0.98,
+        "cells": [
+          6,
+          6
+        ],
+        "right_centre_in_left_m": [
+          0.0763,
+          0.0114,
+          0.0219
+        ]
+      },
+      {
+        "pair": "20.08.2026_4",
+        "rms_left_px": 0.7,
+        "rms_right_px": 1.27,
+        "cells": [
+          6,
+          6
+        ],
+        "right_centre_in_left_m": [
+          0.0735,
+          0.0077,
+          0.0222
+        ]
+      },
+      {
+        "pair": "20.08.2026_5",
+        "rms_left_px": 0.95,
+        "rms_right_px": 0.74,
+        "cells": [
+          9,
+          6
+        ],
+        "right_centre_in_left_m": [
+          0.0748,
+          0.011,
+          0.0256
+        ]
+      },
+      {
+        "pair": "20.08.2026_6",
+        "rms_left_px": 1.23,
+        "rms_right_px": 0.77,
+        "cells": [
+          9,
+          9
+        ],
+        "right_centre_in_left_m": [
+          0.0727,
+          0.0082,
+          0.0217
+        ]
+      }
+    ],
+    "pnp_rms_px_max": 1.27,
+    "spread_mm": [
+      3.6,
+      3.8,
+      3.9
+    ],
+    "replaces": "calibration/historical/stereo_calibration_2026_08_21_REJECTED.npz"
+  }
+}

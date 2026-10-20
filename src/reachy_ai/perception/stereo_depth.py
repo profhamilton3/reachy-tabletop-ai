@@ -2,7 +2,9 @@
 
 Simulator optics follow native_mujoco/calibration.py and distortion.py. Camera
 spacing/axes and neck transform follow the scene's URDF-derived reachy_1_2.xml.
-Physical mode reads the existing NPZ without replacing its fitted extrinsics.
+Physical mode reads the versioned profile in calibration/ (see
+scripts/derive_stereo_calibration.py) and refuses a profile whose geometry cannot
+describe this head. The 2026-08-21 NPZ is kept only as a rejected historical file.
 """
 
 import hashlib
@@ -17,12 +19,55 @@ from scipy.spatial.transform import Rotation
 
 from reachy_ai.perception.pair_detector import DetectorBusy
 
-DEFAULT_CALIBRATION = Path(__file__).resolve().parents[3] / "scripts" / "stereo_calibration.npz"
+DEFAULT_CALIBRATION = Path(__file__).resolve().parents[3] / "calibration" / "reachy12_stereo_2026_08_27.json"
 NEAR_M, FAR_M = 0.15, 3.0
+# Physical limits for this head: two cameras side by side, a few cm apart, similar lenses.
+BASELINE_RANGE_M = (0.05, 0.12)
+MAX_FORWARD_OFFSET_M = 0.05      # right eye ahead of / behind the left eye along the optical axis
+MAX_FOCAL_RATIO = 1.25           # between the eyes, and fx vs fy within an eye
+MAX_RELATIVE_ROTATION_DEG = 10.0
+MAX_RADIAL, MAX_TANGENTIAL = 1.0, 0.05
 
 
 class DepthUnavailable(ValueError):
     pass
+
+
+class ImpossibleGeometry(ValueError):
+    """The saved profile cannot describe this head; the message lists every violated limit."""
+
+
+def check_physical_geometry(K, D, R, T):
+    """Return the reasons a stereo profile is physically impossible for this head (empty if none).
+
+    T is the left-to-right translation, so the right eye sits at -R.T @ T in the left frame.
+    """
+    reasons = []
+    R, T = np.asarray(R, float), np.asarray(T, float).reshape(3)
+    centre = -R.T @ T
+    baseline = float(np.linalg.norm(centre))
+    if not BASELINE_RANGE_M[0] <= baseline <= BASELINE_RANGE_M[1]:
+        reasons.append(f"baseline {baseline:.3f} m is outside {BASELINE_RANGE_M[0]}–{BASELINE_RANGE_M[1]} m")
+    if abs(centre[2]) > MAX_FORWARD_OFFSET_M:
+        reasons.append(f"right eye is {centre[2]:+.3f} m along the optical axis from the left eye "
+                       f"(limit ±{MAX_FORWARD_OFFSET_M} m)")
+    angle = float(np.degrees(np.linalg.norm(Rotation.from_matrix(R).as_rotvec())))
+    if angle > MAX_RELATIVE_ROTATION_DEG:
+        reasons.append(f"eyes are rotated {angle:.1f}° relative to each other (limit {MAX_RELATIVE_ROTATION_DEG}°)")
+    focal = [(k[0, 0], k[1, 1]) for k in K]
+    mean = [sum(f) / 2 for f in focal]
+    if max(mean) / min(mean) > MAX_FOCAL_RATIO:
+        reasons.append(f"focal lengths differ between the eyes ({mean[0]:.0f} vs {mean[1]:.0f} px)")
+    if any(max(f) / min(f) > MAX_FOCAL_RATIO for f in focal):
+        reasons.append("fx and fy differ by more than 25% within one eye")
+    for eye, d in zip(("left", "right"), D):
+        d = np.asarray(d, float).reshape(-1)
+        radial = [d[i] for i in (0, 1, 4) if i < len(d)]
+        tangential = [d[i] for i in (2, 3) if i < len(d)]
+        if any(abs(v) > MAX_RADIAL for v in radial) or any(abs(v) > MAX_TANGENTIAL for v in tangential):
+            reasons.append(f"{eye} distortion {np.round(d, 2).tolist()} is beyond physical bounds "
+                           f"(radial ≤ {MAX_RADIAL}, tangential ≤ {MAX_TANGENTIAL})")
+    return reasons
 
 
 class StereoGeometry:
@@ -50,22 +95,38 @@ class StereoGeometry:
                                       "right_camera_in_head_m": [0.0033, -0.03625, 0.061]})
             else:
                 content = self.path.read_bytes()
-                # Stored SDK images used by the existing notebook are 480w x 640h.
-                with np.load(self.path, allow_pickle=False) as saved:
-                    self.K = [saved[k].copy() for k in ("mtx_l", "mtx_r")]
-                    self.D = [saved[k].copy() for k in ("dist_l", "dist_r")]
-                    self.R, self.T = saved["R"].copy(), saved["T"].reshape(3).copy()
-                    self.size = tuple(int(v) for v in saved["image_size"]) if "image_size" in saved else (480, 640)
+                if self.path.suffix == ".json":
+                    saved = json.loads(content)
+                    if saved.get("format") != "reachy_stereo_physical":
+                        raise ValueError("Not a reachy_stereo_physical profile")
+                    self.K = [np.array(saved[e]["K"], dtype=float) for e in ("left", "right")]
+                    self.D = [np.array(saved[e]["dist"], dtype=float) for e in ("left", "right")]
+                    self.R, self.T = np.array(saved["R"], dtype=float), np.array(saved["T"], dtype=float).reshape(3)
+                    self.size = tuple(int(v) for v in saved["image_size"])
+                    self.identity.update({"profile_id": saved["id"], "zoom_caveat": saved.get("zoom_caveat")})
+                else:  # legacy NPZ: stored SDK images are 480w x 640h
+                    with np.load(self.path, allow_pickle=False) as saved:
+                        self.K = [saved[k].copy() for k in ("mtx_l", "mtx_r")]
+                        self.D = [saved[k].copy() for k in ("dist_l", "dist_r")]
+                        self.R, self.T = saved["R"].copy(), saved["T"].reshape(3).copy()
+                        self.size = (tuple(int(v) for v in saved["image_size"])
+                                     if "image_size" in saved else (480, 640))
                 self.identity.update({"name": self.path.name, "sha256": hashlib.sha256(content).hexdigest(),
                                       "resolution": list(self.size), "lens": "saved physical calibration",
                                       "geometry": "saved stereo R/T; no calibration refit",
-                                      "baseline_m": float(np.linalg.norm(self.T))})
+                                      "baseline_m": round(float(np.linalg.norm(self.T)), 4)})
             arrays = self.K + self.D + [self.R, self.T]
             if (any(not np.isfinite(a).all() for a in arrays) or self.R.shape != (3, 3)
                     or any(k.shape != (3, 3) or k[0, 0] <= 0 or k[1, 1] <= 0 for k in self.K)
                     or not 0 < np.linalg.norm(self.T) < 1):
                 raise ValueError("Invalid saved stereo geometry")
+            if source != "sim":
+                reasons = check_physical_geometry(self.K, self.D, self.R, self.T)
+                if reasons:
+                    raise ImpossibleGeometry("Impossible stereo geometry for this head: " + "; ".join(reasons))
             self.identity["id"] = hashlib.sha256(json.dumps(self.identity, sort_keys=True).encode()).hexdigest()[:16]
+        except ImpossibleGeometry as exc:
+            self.error = f"Saved stereo profile refused. {exc}"
         except (OSError, ValueError, KeyError) as exc:
             self.error = f"Saved stereo profile unavailable ({type(exc).__name__})"
 
@@ -86,6 +147,7 @@ class StereoGeometry:
         if abs(p2[1, 3]) > abs(p2[0, 3]) or p2[0, 3] >= 0:
             raise DepthUnavailable("Saved profile does not describe left-to-right horizontal stereo.")
         self.rect_left = r1
+        self.rectification = (r1, r2, p1, p2)
         self.maps = []
         for i, (k, d, r, p) in enumerate(zip(self.K, self.D, (r1, r2), (p1, p2))):
             mx, my = cv2.initUndistortRectifyMap(k, d, r, p, self.size, cv2.CV_32FC1)
