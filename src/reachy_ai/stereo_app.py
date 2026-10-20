@@ -1,6 +1,7 @@
 """Small camera-only FastAPI application. No task or motion routes are mounted."""
 
 import asyncio
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from importlib.resources import files
@@ -8,7 +9,7 @@ from typing import Literal
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 from reachy_ai.camera_zoom import EYES, calibration_id, zoom_status
@@ -20,8 +21,27 @@ from reachy_ai.perception.pair_detector import (
     PairDetector,
     draw_detections,
 )
+from reachy_ai.perception.procedures import (
+    PROCEDURES,
+    CaptureRun,
+    RunLimit,
+    ZoomNotConfirmed,
+    encode_jpeg,
+    get_procedure,
+)
 from reachy_ai.perception.stereo_depth import DepthUnavailable, PairDepth
 from reachy_ai.stereo import StereoService, StereoSettings
+
+
+class _ServiceZoom:
+    """`ZoomSetter`-shaped front for the SDK process: dry-run unless the viewer allows zoom commands."""
+
+    def __init__(self, service):
+        self.service = service
+        self.dry_run = not service.settings.zoom_commands
+
+    def set_both(self, level):
+        return self.service.request_zoom(level)
 
 
 def create_app(settings: StereoSettings, service: StereoService | None = None, detector_model=None, detector=None,
@@ -74,8 +94,8 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=reachyframe",
                                  headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
-    @app.post("/api/stereo/pairs")
-    def capture():
+    def capture_record():
+        """Freeze the latest pair with its zoom, calibration id and profile. Returns (metadata, record)."""
         try:
             with camera.lock:
                 pair = camera.capture()
@@ -86,9 +106,98 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
                 record["camera_context"]["calibration_id"] = (calibration_id(profile.get("id"), zoom["captured"])
                                                                   if zoom else profile.get("id"))
                 record["camera_context"]["analysis_profile"] = dict(profile)
-                return camera.snapshot_metadata(record)
+                return camera.snapshot_metadata(record), record
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/stereo/pairs")
+    def capture():
+        return capture_record()[0]
+
+    # --- Data capture: operator procedures (camera only; the run lives in memory, nothing is saved) ---
+    run_lock = threading.Lock()
+    app.state.run = None
+
+    def current_run():
+        if app.state.run is None:
+            raise HTTPException(409, "Choose a data-capture procedure first")
+        return app.state.run
+
+    @app.get("/api/stereo/procedures")
+    def procedures():
+        return {"procedures": [p.describe() for p in PROCEDURES.values()],
+                "zoom_commands": "live" if camera.settings.zoom_commands else "dry-run"}
+
+    @app.get("/api/stereo/capture-run")
+    def run_state():
+        return current_run().state()
+
+    @app.post("/api/stereo/capture-run")
+    def run_start(procedure: str = Body(embed=True)):
+        try:
+            run = CaptureRun(get_procedure(procedure))
+        except KeyError as exc:
+            raise HTTPException(404, exc.args[0]) from exc
+        with run_lock:
+            app.state.run = run
+        return run.state()
+
+    @app.delete("/api/stereo/capture-run")
+    def run_discard():
+        with run_lock:
+            app.state.run = None
+        return {"discarded": True}
+
+    @app.post("/api/stereo/capture-run/steps/{step_id}/zoom")
+    def run_zoom(step_id: str, confirm: bool = Body(False, embed=True)):
+        """Set this step's zoom. Refused without the operator's confirm; dry-run unless --allow-zoom-commands."""
+        run = current_run()
+        if settings.source == "sim":
+            raise HTTPException(409, "The simulator has no camera zoom to command")
+        try:
+            records = run.apply_zoom(step_id, _ServiceZoom(camera), confirm)
+        except ZoomNotConfirmed as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, "Unknown step") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except (RuntimeError, TimeoutError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return {"dry_run": not camera.settings.zoom_commands, "records": records, "state": run.state()}
+
+    @app.post("/api/stereo/capture-run/steps/{step_id}/capture")
+    def run_capture(step_id: str):
+        run = current_run()
+        try:
+            run.procedure.step(step_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Unknown step") from exc
+        meta, record = capture_record()
+        try:
+            run.add_capture(step_id, meta, encode_jpeg(record["frames"]["left"].pixels),
+                            encode_jpeg(record["frames"]["right"].pixels))
+        except RunLimit as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        return run.state()
+
+    @app.get("/api/stereo/capture-run/bundle.zip")
+    def run_bundle():
+        """Every pair of the run, step labels, zoom per step and a SHA-256 manifest; built in memory."""
+        run = current_run()
+        with camera.lock:
+            versions = {"viewer": viewer_version(), "sdk": camera.diagnostics.get("sdk_version")}
+        try:
+            data = run.build_zip(versions)
+        except RunLimit as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except BundleTooLarge as exc:
+            raise HTTPException(413, str(exc)) from exc
+        return Response(data, media_type="application/zip", headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="reachy-capture-{run.procedure.id}.zip"'})
 
     @app.get("/api/stereo/pairs/{pair_id}")
     def pair_metadata(pair_id: str):

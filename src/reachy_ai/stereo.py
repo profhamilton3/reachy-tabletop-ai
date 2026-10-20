@@ -2,7 +2,10 @@
 
 The SDK owns its camera streaming threads. A single child process contains that
 connection so its blocking startup/first-frame calls can be stopped on timeout.
-No joint, compliance, zoom, focus, or robot-service commands are issued here.
+No joint, compliance, focus, or robot-service commands are issued here. The one command that
+exists is a camera zoom level, requested only by a data-capture procedure after the operator's
+explicit confirm (camera_zoom.ZoomSetter in the child process); it is dry-run (logged only)
+unless the viewer is started with --allow-zoom-commands.
 """
 
 import argparse
@@ -39,6 +42,7 @@ class StereoSettings:
     stale_seconds: float = 2
     restart_seconds: float = 12
     max_pair_skew_ms: float = 250
+    zoom_commands: bool = False  # False: a requested zoom change is only logged (dry-run)
 
     def __post_init__(self):
         if self.source not in ("sim", "robot") or not self.robot_host:
@@ -87,12 +91,13 @@ class _LatestObservations:
                 self.dropped[_source(message)] = self.dropped.get(_source(message), 0) + 1
 
 
-def _sdk_worker(settings: StereoSettings, messages, control, stop):
+def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None):
     """Reuse the notebooks' ReachySDK + last_frame path, once per application.
 
     Frames and head readbacks go to the bounded `messages` queue, newest kept.
     Ready, error and diagnostics messages go to `control`, which is unbounded:
-    they are few, and a failure report must never be dropped.
+    they are few, and a failure report must never be dropped. `commands` carries explicit
+    zoom requests from a data-capture procedure; results come back on `control`.
     """
     # Ctrl+C belongs to the web-server parent, which disposes this worker.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -174,6 +179,23 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop):
             observe({"kind": "head", "values": head, "observed_ns": read_started})
             stop.wait(.2)
 
+    def zoom_commands():
+        from reachy_ai.camera_zoom import ZoomSetter
+        setter = ZoomSetter(robot, dry_run=not settings.zoom_commands)
+        while not stop.is_set():
+            try:
+                request = commands.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                records = setter.set_both(request["level"])
+            except Exception as exc:  # noqa: BLE001 - report the type only
+                publish({"kind": "zoom_result", "id": request["id"], "error": type(exc).__name__})
+                continue
+            publish({"kind": "zoom_result", "id": request["id"], "dry_run": setter.dry_run, "records": records})
+
+    if commands is not None:
+        threading.Thread(target=zoom_commands, daemon=True).start()
     for eye in EYES:
         threading.Thread(target=read_eye, args=(eye,), daemon=True).start()
         threading.Thread(target=lens_diagnostics, args=(eye,), daemon=True).start()
@@ -212,6 +234,8 @@ class StereoService:
         self.superseded: dict[str, int] = {}  # delivered, skipped for a newer one of the same source
         self.state = "connecting"
         self.head = None
+        self.commands = None
+        self._zoom_waits: dict[str, dict] = {}
 
     def start(self):
         self.thread = threading.Thread(target=self._run, name="stereo-acquisition", daemon=True)
@@ -239,8 +263,11 @@ class StereoService:
             self._new_session()
             messages = context.Queue(maxsize=OBSERVATION_QUEUE)
             control = context.Queue()
+            commands = context.Queue()
+            self.commands = commands
             worker_stop = context.Event()
-            worker = context.Process(target=_sdk_worker, args=(self.settings, messages, control, worker_stop),
+            worker = context.Process(target=_sdk_worker,
+                                     args=(self.settings, messages, control, worker_stop, commands),
                                      daemon=True)
             worker.start()
             started = time.monotonic()
@@ -262,6 +289,7 @@ class StereoService:
                 self._drain_control(control)  # e.g. the error that ended the worker
                 messages.close()
                 control.close()
+                commands.close()
                 with self.lock:
                     self.state = "reconnecting"
                     self.frames.clear()
@@ -308,6 +336,8 @@ class StereoService:
             elif kind == "diagnostics":
                 self.diagnostics[message["section"]] = message["values"]
                 LOG.info("SDK readback %s: %s", message["section"], message["values"])
+            elif kind == "zoom_result":
+                self._apply_zoom_result(message)
             elif kind == "head":
                 self.head = {"joints": message["values"], "observed_ns": message["observed_ns"]}
             elif kind == "error":
@@ -340,6 +370,38 @@ class StereoService:
                 )
                 self.errors.pop(eye, None)
                 self.state = "live"
+
+    def _apply_zoom_result(self, message):
+        """Fold a zoom command's read-back into the diagnostics, so later captures record the real level."""
+        for record in message.get("records", []):
+            if not message.get("dry_run") and record.get("after"):
+                self.diagnostics.setdefault(record["eye"], {})["zoom_level"] = record["after"]
+        wait = self._zoom_waits.get(message["id"])
+        if wait is not None:
+            wait["message"] = message
+            wait["event"].set()
+
+    def request_zoom(self, level: str, timeout_s: float = 30.0) -> list[dict]:
+        """Ask the SDK process to set both eyes to `level` and wait for the result records.
+
+        Live or dry-run is `settings.zoom_commands`; the caller has already checked the confirm."""
+        if self.commands is None or self.state != "live":
+            raise RuntimeError("Camera service is not connected")
+        request_id = uuid.uuid4().hex
+        wait = {"event": threading.Event(), "message": None}
+        with self.lock:
+            self._zoom_waits[request_id] = wait
+        try:
+            self.commands.put({"id": request_id, "level": level})
+            if not wait["event"].wait(timeout_s):
+                raise TimeoutError("No zoom result from the camera service")
+        finally:
+            with self.lock:
+                self._zoom_waits.pop(request_id, None)
+        message = wait["message"]
+        if message.get("error"):
+            raise RuntimeError(f"Zoom command failed ({message['error']})")
+        return message["records"]
 
     def status(self):
         with self.lock:
@@ -426,6 +488,9 @@ def main():
                         help="Existing tabletop TFLite detector; defaults to tests/best.tflite in this checkout")
     parser.add_argument("--sim-lens", choices=("distorted", "pinhole"), default="distorted",
                         help="Match the simulator's --distortion setting (default: distorted)")
+    parser.add_argument("--allow-zoom-commands", action="store_true",
+                        help="let a data-capture procedure send zoom commands to the cameras after the "
+                             "operator's confirm in the page (default: dry-run, logged only)")
     parser.add_argument("--stereo-calibration", default=os.environ.get("REACHY_STEREO_CALIBRATION"),
                         help="Physical source's calibration profile (JSON); "
                              "default calibration/reachy12_stereo_2026_08_27.json")
@@ -436,7 +501,7 @@ def main():
         source=args.source, robot_host=args.robot_host or "localhost",
         sdk_port=args.sdk_port or (50051 if args.source == "sim" else 50055),
         camera_port=args.camera_port or (50051 if args.source == "sim" else 50057),
-        fps=args.fps, preview_width=args.preview_width,
+        fps=args.fps, preview_width=args.preview_width, zoom_commands=args.allow_zoom_commands,
     )
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     uvicorn.run(create_app(settings, detector_model=args.detector_model, sim_lens=args.sim_lens,
