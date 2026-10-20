@@ -68,6 +68,29 @@ def load(source):
     return manifest, files, json.loads(files["capture.json"])
 
 
+def bundle_geometry(capture, files):
+    """(source, sim_lens, where) of the cameras that took a bundle: "robot", or "sim" with its lens.
+
+    Read from capture.json; older bundles fall back to the first pair's camera_context.analysis_profile."""
+    source, lens, where = capture.get("source"), capture.get("sim_lens"), "capture.json"
+    if source is None:
+        where = "pair.json analysis_profile"
+        for step in capture.get("steps", []):
+            for entry in step.get("captures", []):
+                raw = files.get(f"{entry['folder']}/pair.json")
+                profile = ((json.loads(raw).get("camera_context") or {}).get("analysis_profile") or {}) if raw else {}
+                if profile.get("source"):
+                    source, lens = profile["source"], profile.get("lens")
+                    break
+            if source:
+                break
+    if source is None:
+        return "robot", None, "default (bundle does not say)"
+    if source == "sim":
+        lens = lens if lens in ("distorted", "pinhole") else "distorted"
+    return source, (lens if source == "sim" else None), where
+
+
 def decode_pair(files, folder):
     return tuple(cv2.imdecode(np.frombuffer(files[f"{folder}/{eye}.jpg"], np.uint8), cv2.IMREAD_COLOR)
                  for eye in EYES)
@@ -204,7 +227,7 @@ def board_centre_camera(depth, left, right):
     Returns (xyz or None, detail)."""
     g = depth.geometry
     g.prepare(right.shape)
-    found = [grid.board_points(left, "left"), grid.board_points(right, "right")]
+    found = [grid.board_points(left, "left", g), grid.board_points(right, "right", g)]
     if None in found:
         return None, {"reason": "grid not found in " + " and ".join(e for e, f in zip(EYES, found) if f is None)}
     tables = [{(round(o[0] * 1000), round(o[1] * 1000)): px for o, px in zip(obj, img)} for obj, img in found]
@@ -315,7 +338,12 @@ def main():
     if capture["kind"] == "zoom":
         result = analyze_zoom(capture, files)
     else:
-        depth = PairDepth("robot", calibration=args.calibration)
+        source, sim_lens, where = bundle_geometry(capture, files)
+        # --calibration is a robot profile; a sim bundle uses the sim's own geometry.
+        depth = (PairDepth("sim", sim_lens) if source == "sim"
+                 else PairDepth("robot", calibration=args.calibration))
+        print(f"camera geometry: {source}" + (f", {sim_lens} lens" if source == "sim" else
+              f", calibration {Path(args.calibration).name}") + f" (from {where})")
         if depth.geometry.error:
             sys.exit(depth.geometry.error)
         if capture["kind"] == "head":

@@ -524,7 +524,7 @@ def head_fixture_bundle(necks, blank_last=False):
         run.add_capture(step.id, meta(step.id, zoom="OUT", neck=neck), left, right)
     if blank_last:
         blank = proc.encode_jpeg(np.full((640, 480, 3), 200, np.uint8))
-        run.add_capture("head_sweep_56_left", meta("blank", zoom="OUT", neck=(0, 56, 15)), blank, blank)
+        run.add_capture("head_sweep_roll_left_5", meta("blank", zoom="OUT", neck=(5, 64, 0)), blank, blank)
     return run.build_zip({})
 
 

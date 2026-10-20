@@ -135,22 +135,39 @@ Arm at rest at the scene zoom (OUT); do not change the zoom.
 
 See *First robot session* above. Capture once per pose.
 
-### Head sweep (v1)
+### Head sweep (v2)
 
-Arm at rest, the taped board clear and still, nobody near the head. Capture twice at each pose:
+Arm at rest, the taped board clear and still (no objects on it), nobody near the head. Capture twice at each pose:
 
 | Pose | roll, pitch, yaw (deg) |
 |---|---|
 | neutral | 0, 0, 0 |
 | board_view | 0, 64, 0 |
-| sweep_64_right | 0, 64, −15 |
-| sweep_64_left | 0, 64, +15 |
-| sweep_56_right | 0, 56, −15 |
-| sweep_56_centre | 0, 56, 0 |
-| sweep_56_left | 0, 56, +15 |
+| sweep_yaw_right_5 | 0, 64, −5 |
+| sweep_yaw_left_5 | 0, 64, +5 |
+| sweep_yaw_right_8 | 0, 64, −8 |
+| sweep_yaw_left_8 | 0, 64, +8 |
+| sweep_roll_right_5 | −5, 64, 0 |
+| sweep_roll_left_5 | +5, 64, 0 |
 
-Then head to neutral. The five sweep poses are **not yet validated**: a head-sweep run on the simulator must
-first confirm that the board stays in view at each of them. The board is not expected in view at neutral.
+Then head to neutral. Sim re-shoot, 2026-10-20: the grid was found in both eyes at board_view and
+sweep_yaw_left_5, with a board-centre spread of 0.6 mm worst and board_view within 5.4 mm of the scene grid
+centre. Every other sweep pose lost the grid in one eye, because the chest hides part of the near row and the
+finder needs whole rows: tracked in #41. Keep all six sweep poses on the robot; the bundle keeps them, and #41
+re-analyses it with no new robot time. The board is not expected in view at neutral.
+
+Why these poses (render findings, sim head sweep of 2026-10-20, #28 / #39). The v1 poses (yaw ±15° at pitch 64
+and 56, plus 56° centre) were not analysable:
+- **The chest clips the near row.** The robot's own body is a dark mass across the bottom of the frame, so
+  below pitch 64 the near row of cells is cut off. The grid finder needs whole rows of 3 (or a cell touching the
+  image edge), so a clipped row is neither. Pitch 64 is the neck stop, so the sweep varies yaw and roll only.
+- **Frame margin.** At pitch 64, without the chest, the pinhole margin to the frame edge is 66 px at yaw 0,
+  49 at ±5°, 38 at ±8° and only 14 at ±15°.
+- **Floor checker squares and the arm.** The floor's checker squares show up as extra quads, and the arm's
+  fingertip overlaps the right-hand cells in the yaw frames; both disturb the row grouping.
+- Objects left on the board break the finder too (a cell with a cube or cylinder is not a clean white quad).
+  Only `board_view` on a cleared board was found in both eyes.
+- The analyser picks the camera geometry (robot or sim and its lens) from the bundle; sim frames are 640 × 480.
 
 ## Send the bundle
 

@@ -36,7 +36,7 @@ def to_rectified(points, geometry, eye):
     """Pixels of the pinhole-undistorted picture -> rectified-image pixels."""
     r1, r2, p1, p2 = geometry.rectification
     r, p = (r1, p1) if eye == 0 else (r2, p2)
-    k = grid.camera_matrix("left" if eye == 0 else "right")
+    k = grid.lens_for("left" if eye == 0 else "right", geometry)[2]
     out = cv2.undistortPoints(np.asarray(points, float).reshape(-1, 1, 2), k, None, R=r, P=p)
     return out.reshape(-1, 2)
 
