@@ -11,6 +11,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
+from reachy_ai.pair_bundle import BundleTooLarge, build_bundle, json_bytes, viewer_version
 from reachy_ai.perception.pair_detector import (
     DEFAULT_MODEL,
     DetectorBusy,
@@ -95,6 +96,45 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
         if not ok:
             raise HTTPException(500, "Unable to encode snapshot")
         return Response(jpeg.tobytes(), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/stereo/pairs/{pair_id}/bundle.zip")
+    def pair_bundle(pair_id: str):
+        """Everything held for this pair, built on demand in memory (never written to the server's disk)."""
+        with camera.lock:
+            record = camera.snapshots.get(pair_id)
+            if record is None:
+                raise HTTPException(410, "Pair unavailable or expired; capture a new pair")
+            metadata = camera.snapshot_metadata(record)
+            frames = {e: record["frames"][e].pixels for e in ("left", "right")}
+            analysis, depth_result = record.get("analysis"), record.get("depth")
+            depth_png = record.get("depth_image")
+            sdk_version = camera.diagnostics.get("sdk_version")
+            calibration_id = record["camera_context"].get("calibration_id")
+        files = {"pair.json": json_bytes(metadata)}
+        for eye, pixels in frames.items():
+            ok, jpeg = cv2.imencode(".jpg", pixels, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            if not ok:
+                raise HTTPException(500, "Unable to encode snapshot")
+            files[f"{eye}.jpg"] = jpeg.tobytes()
+        if analysis is not None:
+            ok, jpeg = cv2.imencode(".jpg", draw_detections(frames["right"], analysis["detections"]),
+                                    [cv2.IMWRITE_JPEG_QUALITY, 95])
+            if not ok:
+                raise HTTPException(500, "Unable to encode analysis image")
+            files["analysis.json"] = json_bytes(analysis)
+            files["analysis_overlay.jpg"] = jpeg.tobytes()
+        if depth_result is not None and depth_png is not None:
+            files["depth.json"] = json_bytes(depth_result)
+            files["depth.png"] = depth_png
+        versions = {"viewer": viewer_version(), "sdk": sdk_version,
+                    "detector_model": (analysis or {}).get("model")}
+        try:
+            data = build_bundle(files, versions, calibration_id)
+        except BundleTooLarge as exc:
+            raise HTTPException(413, str(exc)) from exc
+        return Response(data, media_type="application/zip", headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="reachy-pair-{pair_id[:8]}.zip"'})
 
     @app.post("/api/stereo/pairs/{pair_id}/analysis")
     def analyze_pair(pair_id: str):

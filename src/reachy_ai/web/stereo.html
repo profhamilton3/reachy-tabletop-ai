@@ -94,7 +94,8 @@
     <div class="actions"><button id="capture" disabled>Capture pair</button><button id="resume" hidden>Return to live</button>
       <button id="analyze" hidden>Analyze captured pair</button><button id="toggle-overlay" hidden>Show raw image</button>
       <button id="depth-button" hidden>Measure in 3D</button>
-      <a class="download" id="metadata" hidden download="stereo-pair.json">Pair details</a></div>
+      <a class="download" id="metadata" hidden download="stereo-pair.json">Pair details</a>
+      <button id="save-zip" hidden title="Download pair.json, both images, and any analysis or depth results as one zip">Save pair (zip)</button></div>
   </section>
   <p id="notice" role="status" aria-live="polite">Connecting to camera service…</p>
   <section id="analysis-panel" hidden aria-label="Captured-pair analysis">
@@ -251,7 +252,7 @@
       $('view-mode').textContent = 'Captured pair';
       $('pair-info').textContent = pair.source.toUpperCase() + ' · Pair ' + pair.pair_id;
       $('notice').textContent = `Observation skew: ${pair.observation_skew_ms.toFixed(1)} ms. Exposure synchronization is unknown.`;
-      $('capture').hidden = true; $('resume').hidden = false; $('metadata').hidden = false;
+      $('capture').hidden = true; $('resume').hidden = false; $('metadata').hidden = false; $('save-zip').hidden = false;
       $('analyze').hidden = false;
       if (!status?.detector?.available) {
         $('analysis-panel').hidden = false;
@@ -408,6 +409,25 @@
     $('right-state').textContent = showingOverlay ? 'Analyzed' : 'Captured';
     $('toggle-overlay').textContent = showingOverlay ? 'Show raw image' : 'Show detections';
   };
+  // The server builds the zip from the pair it holds each time, so it always includes the latest
+  // analysis and depth results. Nothing is written on the server.
+  $('save-zip').onclick = async () => {
+    const pair = activePair;
+    if (!pair) return;
+    $('save-zip').disabled = true;
+    try {
+      const response = await fetch(`/api/stereo/pairs/${pair.pair_id}/bundle.zip`, {signal: AbortSignal.timeout(15000)});
+      if (response.status === 410) throw Error('Pair expired or unavailable. Return to live and capture again.');
+      if (!response.ok) throw Error((await response.json().catch(() => ({}))).detail || 'Unable to build the zip');
+      const url = URL.createObjectURL(await response.blob());
+      const link = Object.assign(document.createElement('a'), {href: url, download: `reachy-pair-${pair.pair_id.slice(0, 8)}.zip`});
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      $('notice').textContent = 'Saved pair zip to your downloads.';
+    } catch (error) {
+      $('notice').textContent = error.message;
+    } finally { $('save-zip').disabled = false; }
+  };
   $('resume').onclick = () => {
     viewGeneration += 1;
     if (analysisRequest) analysisRequest.abort();
@@ -423,7 +443,7 @@
     frozen = false;
     $('view-mode').textContent = 'Live preview';
     $('pair-info').textContent = 'Independent live feeds · capture a pair to inspect fixed images';
-    $('capture').hidden = false; $('resume').hidden = true; $('metadata').hidden = true;
+    $('capture').hidden = false; $('resume').hidden = true; $('metadata').hidden = true; $('save-zip').hidden = true;
     $('metadata').textContent = 'Pair details';
     $('analyze').hidden = true; $('toggle-overlay').hidden = true; $('analysis-panel').hidden = true;
     $('analysis-results').replaceChildren(); $('analysis-provenance').textContent = '';
