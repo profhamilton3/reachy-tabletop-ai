@@ -106,7 +106,8 @@ def v2_bundle():
     run = proc.CaptureRun(proc.get_procedure("head_sweep"))
     for pose in V2_POSES:
         meta = json.loads((FIXTURE_V2 / pose / "pair.json").read_text())
-        run.add_capture(f"head_{pose}", meta, *((FIXTURE_V2 / pose / f"{eye}.jpg").read_bytes() for eye in ("left", "right")))
+        eyes = ((FIXTURE_V2 / pose / f"{eye}.jpg").read_bytes() for eye in ("left", "right"))
+        run.add_capture(f"head_{pose}", meta, *eyes)
     return run.build_zip({})
 
 
