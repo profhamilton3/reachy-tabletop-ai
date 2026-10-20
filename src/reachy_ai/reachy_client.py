@@ -5,7 +5,8 @@ Dry-run by default — set REACHY_ENABLE_MOTION=true to allow motion.
 import logging
 from typing import Any
 
-from reachy_ai.config import REACHY_ENABLE_MOTION, REACHY_IP
+from reachy_ai.config import HEAD_DEFAULT_DURATION_S, REACHY_ENABLE_MOTION, REACHY_IP
+from reachy_ai.motion import primitives
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +59,14 @@ class ReachyClient:
             return
         self._reachy.r_arm.gripper.close()
 
-    def look_at(self, x: float, y: float, z: float, duration: float = 1.0) -> None:
-        if self.dry_run:
-            logger.info("DRY-RUN look_at: (%.2f, %.2f, %.2f)", x, y, z)
-            return
-        self._reachy.head.look_at(x=x, y=y, z=z, duration=duration)
+    def look_at(self, x: float, y: float, z: float, duration: float = HEAD_DEFAULT_DURATION_S,
+                operator_approved: bool = False) -> dict:
+        """Look at (x, y, z), SDK torso frame, through motion.primitives and the head gate.
+
+        There is no other head path: the angles come from the SDK IK before moving, and the move is
+        refused, or only logged, unless the gate passes and this client is not dry-run."""
+        return primitives.look_at_point(self._reachy, x, y, z, duration,
+                                        operator_approved=operator_approved, allow_live=not self.dry_run)
 
     def turn_on_arm(self) -> None:
         if self.dry_run:

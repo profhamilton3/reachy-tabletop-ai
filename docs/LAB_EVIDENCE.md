@@ -96,11 +96,16 @@ The route's backward reach has to be re-tuned against the new height.
 
 These need a tape measure; photographs cannot supply them.
 
-- **Shoulder height to camera height on the robot.** Calibration puts the camera
-  0.553 m above the board, but the official URDF puts it only 0.155 m above the
-  torso, and the reach cross-check (which matches Siva's physical check of the
-  two unreachable cells) pins the torso at 0.26 m above the board. Those three
-  cannot all be right — most likely this rig's head mount is non-stock.
+- ~~**Shoulder height to camera height on the robot.**~~ **Resolved — corrected
+  2026-10-20.** The 0.26 m torso-above-board figure here is the superseded August
+  model. reachy-1-2-sim #185 (camera PnP over 17 views, and Siva's taught poses)
+  and its ADR-0010 put the board surface about **0.41 m** below the shoulder line
+  (0.40–0.42 m; shoulder line about 1.15 m above the floor). With the URDF camera
+  about 0.155 m above the torso, that is about 0.565 m camera-above-board,
+  consistent with the calibration's 0.553 m to about 1 cm, so no non-stock head
+  mount is needed to explain it.
+  The October layout also put the board about 0.24 m closer to the robot (torso
+  at (0.206, 0, 1.15) in the scene frame).
 - **Rig rail profile size and the frame's outer footprint.** Still assumed at
   1.5 in square. The rails' *height* is now resolved (tops at the board's
   underside), as is the absence of a blocking front member.

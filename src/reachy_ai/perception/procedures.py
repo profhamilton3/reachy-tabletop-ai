@@ -1,10 +1,14 @@
 """Operator data-capture procedures (#28): step definitions, the capture run, and its bundle.
 
-Camera-only. A procedure is a list of numbered operator steps; the operator captures a stereo
-pair per step. The only robot command a procedure can ask for is a camera zoom level, and
-only through `camera_zoom.ZoomSetter` after an explicit operator confirm (`CaptureRun.apply_zoom`);
-no arm, head or gripper motion exists here. Nothing is written to disk by this module: the run
-lives in memory and `CaptureRun.build_zip` returns the bundle bytes.
+Camera and neck only, never arms. A procedure is a list of numbered operator steps; the operator
+captures a stereo pair per step. A procedure can ask for two robot commands, each only after an
+explicit operator confirm: a camera zoom level (`CaptureRun.apply_zoom`, through
+`camera_zoom.ZoomSetter`) and a named head pose (`CaptureRun.apply_head`, through
+`motion.primitives` and the head safety gate). Owner decision 2026-10-20: "Neck motion is required
+for vision data capture. Capture procedures may articulate the head through the neck for viewing and
+perception. Arm motion stays forbidden in capture procedures." No arm or gripper command exists
+here. Nothing is written to disk by this module: the run lives in memory and `CaptureRun.build_zip`
+returns the bundle bytes.
 
 The viewer (stereo_app.py) and the CLI fallbacks (scripts/zoom_fov_check.py,
 scripts/ruler_depth_test.py) both drive these same objects; the offline analysers
@@ -17,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from reachy_ai.camera_zoom import SCENE_ZOOM, ZOOM_ORDER
+from reachy_ai.config import HEAD_PRESETS, NECK_JOINTS
 from reachy_ai.pair_bundle import build_bundle, json_bytes
 
 LOG = logging.getLogger(__name__)
@@ -35,6 +40,14 @@ class ZoomNotConfirmed(PermissionError):
     """A zoom command was requested without the operator's explicit confirm."""
 
 
+class HeadNotConfirmed(PermissionError):
+    """A head move was requested without the operator's explicit confirm."""
+
+
+class HeadRefused(PermissionError):
+    """The head safety gate refused the move; nothing was sent."""
+
+
 class RunLimit(ValueError):
     pass
 
@@ -46,6 +59,13 @@ class Step:
     instruction: str
     zoom: str | None = None          # camera zoom level this step asks for (needs operator confirm)
     distance_m: float | None = None  # ruler distance from the right camera's lens face
+    head: str | None = None          # head preset this step points at (config.HEAD_PRESETS; needs confirm)
+    capture: bool = True             # False for a head-only step (e.g. the end of a run)
+
+    def describe(self) -> dict:
+        return {"id": self.id, "label": self.label, "zoom": self.zoom, "distance_m": self.distance_m,
+                "head": self.head, "head_deg": head_deg(self.head), "capture": self.capture,
+                "instruction": self.instruction}
 
 
 @dataclass(frozen=True)
@@ -53,7 +73,7 @@ class Procedure:
     id: str
     name: str
     version: str
-    kind: str                        # "zoom" | "depth": which analyser reads it
+    kind: str                        # "zoom" | "depth" | "head": which analyser reads it
     summary: str
     setup: tuple[str, ...]
     steps: tuple[Step, ...]
@@ -71,8 +91,27 @@ class Procedure:
         return {"id": self.id, "name": self.name, "version": self.version, "kind": self.kind,
                 "summary": self.summary, "captures_per_step": self.captures_per_step,
                 "instructions": [f"{i}. {text}" for i, text in enumerate(numbered, 1)],
-                "steps": [{"id": s.id, "label": s.label, "zoom": s.zoom, "distance_m": s.distance_m,
-                           "instruction": s.instruction} for s in self.steps]}
+                "steps": [s.describe() for s in self.steps]}
+
+
+def head_deg(preset: str | None) -> dict | None:
+    """A preset's neck angles in degrees (roll, pitch, yaw by joint name), or None."""
+    return None if preset is None else dict(zip(NECK_JOINTS, HEAD_PRESETS[preset]))
+
+
+def head_step(preset: str, capture: bool = True, step_id: str | None = None, label: str | None = None,
+              warning: str = "") -> Step:
+    then = "then press Capture." if capture else "nothing to capture."
+    return Step(
+        id=step_id or f"head_{preset}", label=label or f"Head: {preset}", head=preset, capture=capture,
+        instruction=f"Point head at {preset} {HEAD_PRESETS[preset]} (roll, pitch, yaw deg): tick the confirm box "
+                    f"and press 'Move head' (the neck moves; dry-run unless the viewer was started with "
+                    f"--allow-head-motion and REACHY_ENABLE_MOTION=true), wait for the read-back, {then}"
+                    + (f" {warning}" if warning else ""))
+
+
+def end_step() -> Step:
+    return head_step("neutral", capture=False, step_id="end_neutral", label="End: head to neutral")
 
 
 def zoom_fov_procedure(levels=ZOOM_ORDER) -> Procedure:
@@ -82,11 +121,12 @@ def zoom_fov_procedure(levels=ZOOM_ORDER) -> Procedure:
                     f"unless the viewer was started with --allow-zoom-commands), wait for the read-back, "
                     f"then press Capture.") for level in levels)
     return Procedure(
-        id="zoom_fov", name="Zoom field-of-view check", version="1", kind="zoom",
-        summary="Board at each zoom level; the analyser reports the apparent cell pitch per level.",
-        setup=("Robot at rest, head still, the taped 3x3 board fully in view of both cameras.",
+        id="zoom_fov", name="Zoom field-of-view check", version="2", kind="zoom",
+        summary="Head at the board view, board at each zoom level; the analyser reports the apparent cell pitch "
+                "per level.",
+        setup=("Arm at rest on the table; the head is moved only by the head steps below.",
                f"The widest level is expected to be {SCENE_ZOOM}; the analysis confirms it."),
-        steps=steps)
+        steps=(head_step("board_view", capture=False), *steps, end_step()))
 
 
 def depth_ruler_procedure(distances=DISTANCES_M, captures_per_step=3) -> Procedure:
@@ -96,14 +136,48 @@ def depth_ruler_procedure(distances=DISTANCES_M, captures_per_step=3) -> Procedu
                     f"camera, centred in the image, {d:.1f} m from its lens face along its axis, then press "
                     f"Capture {captures_per_step} times.") for d in distances)
     return Procedure(
-        id="depth_ruler", name="Depth ruler test", version="1", kind="depth",
-        summary="Target at known ruler distances; the analyser compares stereo depth with the ruler.",
-        setup=(f"Robot at rest at the scene zoom ({SCENE_ZOOM}); do not change the zoom during this test.",
+        id="depth_ruler", name="Depth ruler test", version="2", kind="depth",
+        summary="Head at neutral, target at known ruler distances; the analyser compares stereo depth with the "
+                "ruler.",
+        setup=(f"Arm at rest at the scene zoom ({SCENE_ZOOM}); do not change the zoom during this test.",
+               "The first step sets the head to neutral; it stays there for the whole test.",
                "Measure each distance from the right camera's lens face along its axis."),
-        steps=steps, captures_per_step=captures_per_step)
+        steps=(head_step("neutral", capture=False), *steps), captures_per_step=captures_per_step)
 
 
-PROCEDURES = {p.id: p for p in (zoom_fov_procedure(), depth_ruler_procedure())}
+#: Head-sweep poses, in order: neutral, the board view, then the sweep around it.
+SWEEP_PRESETS = ("neutral", "board_view", "sweep_64_right", "sweep_64_left",
+                 "sweep_56_right", "sweep_56_centre", "sweep_56_left")
+
+
+def head_sweep_procedure(presets=SWEEP_PRESETS, captures_per_step=2) -> Procedure:
+    return Procedure(
+        id="head_sweep", name="Head sweep", version="1", kind="head",
+        summary="Board captured from each head pose; the analyser places the board centre in the torso frame "
+                "from stereo depth and the recorded neck angles, and reports the spread across poses.",
+        setup=("Arm at rest on the table, the taped 3x3 board clear and still; nobody near the head.",
+               "Run 'Board-view approach' first in the first robot session.",
+               f"At each pose press Capture {captures_per_step} times; a capture is refused until the neck has "
+               "settled on its command."),
+        steps=(*(head_step(p) for p in presets), end_step()), captures_per_step=captures_per_step)
+
+
+def board_view_approach_procedure() -> Procedure:
+    return Procedure(
+        id="board_view_approach", name="Board-view approach", version="2", kind="head",
+        summary="First robot session: step the neck up to the board view (20, 55, 60, then 64 deg pitch) with "
+                "the operator watching, capturing at each pose.",
+        setup=("Arm at rest on the table; Siva watches the head through every move, hand near the Stop button.",
+               "Run this once before any head sweep or zoom check in the first robot session."),
+        steps=(head_step("neutral"),
+               head_step("board_approach_20", warning="The head must tilt DOWN. If it tilts up or sideways, "
+                                                      "press Stop head and report."),
+               *(head_step(p) for p in ("board_approach_55", "board_approach_60", "board_view")),
+               end_step()))
+
+
+PROCEDURES = {p.id: p for p in (zoom_fov_procedure(), depth_ruler_procedure(), board_view_approach_procedure(),
+                                head_sweep_procedure())}
 
 
 def get_procedure(procedure_id: str) -> Procedure:
@@ -127,6 +201,8 @@ class CaptureRun:
     procedure: Procedure
     captures: dict[str, list[dict]] = field(default_factory=dict)
     zoom_commands: dict[str, list[dict]] = field(default_factory=dict)
+    head_commands: dict[str, list[dict]] = field(default_factory=dict)
+    head_events: list[dict] = field(default_factory=list)  # Stop and Release, not tied to a step
 
     def pair_count(self) -> int:
         return sum(len(v) for v in self.captures.values())
@@ -145,9 +221,35 @@ class CaptureRun:
         self.zoom_commands.setdefault(step_id, []).extend(records)
         return records
 
+    def apply_head(self, step_id: str, mover, confirmed: bool) -> dict:
+        """Point the head at this step's preset through `mover` (anything with `move(preset) -> record`).
+
+        Without the confirm nothing is sent and HeadNotConfirmed is raised; a gate refusal raises
+        HeadRefused. Whether a passed move is live or a logged dry run is the mover's. Every attempt,
+        refused ones included, is recorded in the run (and so the bundle)."""
+        step = self.procedure.step(step_id)
+        if step.head is None:
+            raise ValueError(f"step {step_id!r} does not move the head")
+        attempts = self.head_commands.setdefault(step_id, [])
+        if not confirmed:
+            attempts.append({"action": "move", "preset": step.head, "target_deg": head_deg(step.head),
+                             "outcome": "refused", "gate": {"passed": False,
+                                                            "failures": ["Operator approval not given"]}})
+            raise HeadNotConfirmed("A head move needs the operator's explicit confirm.")
+        record = mover.move(step.head)
+        attempts.append(record)
+        if record.get("outcome") == "refused":
+            raise HeadRefused("Head move refused: " + "; ".join(record.get("gate", {}).get("failures", [])))
+        return record
+
+    def record_head_event(self, record: dict) -> None:
+        """A Stop or Release, kept in order with the run."""
+        self.head_events.append(record)
+
     def add_capture(self, step_id: str, meta: dict, left_jpeg: bytes, right_jpeg: bytes) -> dict:
         """Record one captured pair for a step. `meta` is the viewer's pair metadata with its camera_context."""
-        self.procedure.step(step_id)
+        if not self.procedure.step(step_id).capture:
+            raise ValueError(f"step {step_id!r} has nothing to capture")
         taken = self.captures.setdefault(step_id, [])
         if len(taken) >= MAX_CAPTURES_PER_STEP:
             raise RunLimit(f"At most {MAX_CAPTURES_PER_STEP} pairs per step; redo the run to start over.")
@@ -159,11 +261,11 @@ class CaptureRun:
 
     def state(self) -> dict:
         return {"procedure": {k: v for k, v in self.procedure.describe().items() if k != "steps"},
-                "steps": [{"id": s.id, "label": s.label, "zoom": s.zoom, "distance_m": s.distance_m,
-                           "instruction": s.instruction, "captured": len(self.captures.get(s.id, [])),
-                           "zoom_commands": self.zoom_commands.get(s.id, [])}
+                "steps": [{**s.describe(), "captured": len(self.captures.get(s.id, [])),
+                           "zoom_commands": self.zoom_commands.get(s.id, []),
+                           "head_commands": self.head_commands.get(s.id, [])}
                           for s in self.procedure.steps],
-                "pairs": self.pair_count(), "max_pairs": MAX_PAIRS_PER_RUN}
+                "head_events": self.head_events, "pairs": self.pair_count(), "max_pairs": MAX_PAIRS_PER_RUN}
 
     def calibration_id(self) -> Any:
         for taken in self.captures.values():
@@ -185,12 +287,16 @@ class CaptureRun:
                 zoom = context.get("zoom") or {}
                 entries.append({"folder": folder, "pair_id": record["pair_id"],
                                 "zoom_level": zoom.get("captured"), "zoom_levels": zoom.get("levels"),
-                                "observation_skew_ms": record["meta"].get("observation_skew_ms")})
+                                "observation_skew_ms": record["meta"].get("observation_skew_ms"),
+                                "neck_deg": neck_readback(record["meta"]),
+                                "head_command": record["meta"].get("head_command")})
             steps.append({"index": index, "id": step.id, "label": step.label, "instruction": step.instruction,
                           "distance_m": step.distance_m, "requested_zoom": step.zoom,
-                          "zoom_commands": self.zoom_commands.get(step.id, []), "captures": entries})
-        summary = {"schema_version": "1", "procedure": self.identity(), "kind": self.procedure.kind,
-                   "calibration_id": self.calibration_id(), "steps": steps}
+                          "requested_head": step.head, "requested_head_deg": head_deg(step.head),
+                          "zoom_commands": self.zoom_commands.get(step.id, []),
+                          "head_commands": self.head_commands.get(step.id, []), "captures": entries})
+        summary = {"schema_version": "2", "procedure": self.identity(), "kind": self.procedure.kind,
+                   "calibration_id": self.calibration_id(), "steps": steps, "head_events": self.head_events}
         return {"capture.json": json_bytes(summary), **files}
 
     def identity(self) -> dict:
@@ -200,6 +306,15 @@ class CaptureRun:
         if not self.pair_count():
             raise RunLimit("Nothing captured yet.")
         return build_bundle(self.bundle_files(), versions, self.calibration_id(), procedure=self.identity())
+
+
+def neck_readback(meta: dict) -> dict | None:
+    """Neck present angles (deg) frozen with a capture (the viewer's head_context), or None."""
+    joints = (meta.get("head_context") or {}).get("joints") or {}
+    try:
+        return {name: float(joints[name]["present_deg"]) for name in NECK_JOINTS}
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def sensitivity_mm_per_px(z_m: float, focal_px: float = SENSITIVITY_FOCAL_PX,

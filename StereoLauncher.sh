@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
 # StereoLauncher.sh
 # Starts the workstation stereo viewer (reachy-stereo) in the background,
-# against the simulator or the physical Reachy 1.2. The viewer is read-only:
-# it sends no motion or head commands.
+# against the simulator or the physical Reachy 1.2. The viewer can move the
+# neck (never the arms) and command the camera zoom, only after the operator's
+# confirm tick in the page and a passed head safety gate. By default the launcher
+# turns both on (owner decision, 2026-10-20): it passes --allow-head-motion and
+# --allow-zoom-commands and sets REACHY_ENABLE_MOTION=true on the viewer's command
+# line only, never exported. --dry-run starts the viewer without any of them.
 #
 # Usage:
 #   ./StereoLauncher.sh                        # simulator (already running, SDK on :50051)
 #   ./StereoLauncher.sh robot                  # physical robot at $REACHY_IP
 #   ./StereoLauncher.sh robot --ip <address>   # use <address> instead of $REACHY_IP
+#   ./StereoLauncher.sh --dry-run              # rehearsal: head and zoom buttons only log
 #   ./StereoLauncher.sh -KILL                  # stop the viewer
 #
 # Options:
 #   --ip <address>   robot address, for when REACHY_IP is unset or wrong (robot mode only)
 #   --port <port>    web port (default 8081); give -KILL the same --port
+#   --dry-run        no --allow-* flags and no REACHY_ENABLE_MOTION (inherited ones are dropped)
 #   --setup          (re)install the viewer's packages into ./.venv, then launch
 #   -- <args>        passed through to reachy-stereo, e.g. -- --fps 10 --sim-lens pinhole
 #
@@ -39,10 +45,11 @@ ROBOT_IP="${REACHY_IP:-}"
 IP_GIVEN=0
 KILL=0
 SETUP=0
+DRY_RUN=0
 EXTRA=()
 
 usage() {
-    sed -n '7,18p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '/^# Usage:/,/^# Access:/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
 }
 
 fail() {
@@ -55,6 +62,7 @@ while [ $# -gt 0 ]; do
         sim|robot) SOURCE="$1" ;;
         -KILL) KILL=1 ;;
         --setup) SETUP=1 ;;
+        --dry-run) DRY_RUN=1 ;;
         --ip)
             [ $# -ge 2 ] && [ -n "$2" ] || fail "--ip needs an address"
             ROBOT_IP="$2"; IP_GIVEN=1; shift ;;
@@ -186,7 +194,18 @@ if [ "$SOURCE" = robot ]; then
     else
         echo "    robot  : from REACHY_IP"
     fi
-elif ! lsof -iTCP:50051 -sTCP:LISTEN >/dev/null 2>&1; then
+fi
+if [ "$DRY_RUN" = 1 ]; then
+    echo "    head motion : DRY-RUN (logged only; nothing moves)"
+    echo "    zoom        : DRY-RUN"
+else
+    echo "    head motion : LIVE (neck only; each move needs a confirm tick)"
+    echo "    zoom        : LIVE"
+fi
+if [ "$SOURCE" = robot ] && [ "$DRY_RUN" = 0 ]; then
+    echo "    Keep a hand near 'Stop head'. Close any notebook connected to the robot."
+fi
+if [ "$SOURCE" = sim ] && ! lsof -iTCP:50051 -sTCP:LISTEN >/dev/null 2>&1; then
     echo "  ⚠ nothing is listening on :50051; start the simulator first (e.g. ~/reachy-1-2-sim/SivaLabLauncher.sh)"
 fi
 
@@ -195,12 +214,22 @@ stop_viewer
 
 echo "▶ Starting reachy-stereo on :$PORT …"
 cd "$REPO"
-if [ "$SOURCE" = robot ]; then
-    REACHY_IP="$ROBOT_IP" nohup "$BIN" --source robot --port "$PORT" \
+# REACHY_ENABLE_MOTION=true is set on the viewer's command line only, never exported.
+# reachy-stereo reads REACHY_IP even for --source sim, so the sim commands drop it.
+if [ "$DRY_RUN" = 1 ]; then
+    # Rehearsal: no --allow-* flags, and any inherited REACHY_ENABLE_MOTION is dropped.
+    if [ "$SOURCE" = robot ]; then
+        env -u REACHY_ENABLE_MOTION REACHY_IP="$ROBOT_IP" nohup "$BIN" --source robot --port "$PORT" \
+            ${EXTRA[@]+"${EXTRA[@]}"} >"$LOG" 2>&1 &
+    else
+        env -u REACHY_IP -u REACHY_ENABLE_MOTION nohup "$BIN" --source sim --port "$PORT" \
+            ${EXTRA[@]+"${EXTRA[@]}"} >"$LOG" 2>&1 &
+    fi
+elif [ "$SOURCE" = robot ]; then
+    REACHY_IP="$ROBOT_IP" REACHY_ENABLE_MOTION=true nohup "$BIN" --source robot --port "$PORT" --allow-head-motion --allow-zoom-commands \
         ${EXTRA[@]+"${EXTRA[@]}"} >"$LOG" 2>&1 &
 else
-    # reachy-stereo reads REACHY_IP even for --source sim, so drop it here.
-    env -u REACHY_IP nohup "$BIN" --source sim --port "$PORT" \
+    env -u REACHY_IP REACHY_ENABLE_MOTION=true nohup "$BIN" --source sim --port "$PORT" --allow-head-motion --allow-zoom-commands \
         ${EXTRA[@]+"${EXTRA[@]}"} >"$LOG" 2>&1 &
 fi
 PID=$!

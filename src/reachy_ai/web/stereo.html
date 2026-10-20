@@ -47,6 +47,8 @@
     #capture-steps .step-label { min-width: 90px; color: #80cbc4; }
     #capture-steps label { display: flex; gap: 6px; align-items: center; }
     #capture-select { max-width: 360px; }
+    #head-controls { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 10px 0; }
+    #head-stop { background: #b71c1c; border-color: #ef5350; color: #fff; font-weight: 600; }
     #notice { min-height: 24px; margin: 14px 0; color: #ffb74d; font-size: 12px; line-height: 1.6; }
     #pair-info { overflow-wrap: anywhere; }
     #analysis-panel { margin-top: 18px; padding: 18px; background: #16213e;
@@ -110,9 +112,15 @@
   <p id="notice" role="status" aria-live="polite">Connecting to camera service…</p>
   <p id="zoom-warning" role="alert" hidden></p>
   <section id="capture-panel" aria-label="Data capture">
-    <h2>DATA CAPTURE <span class="subtle">· camera only, never arm motion</span></h2>
+    <h2>DATA CAPTURE <span class="subtle">· camera and neck only, never arm motion</span></h2>
     <label class="subtle" for="capture-select">Procedure</label>
     <select id="capture-select"><option value="">None</option></select>
+    <div id="head-controls" aria-label="Head controls">
+      <button id="head-stop" title="Interrupt a head move and hold the present position">Stop head</button>
+      <label class="subtle"><input type="checkbox" id="confirm-release"> I confirm: release the head (motors off, it may sag)</label>
+      <button id="head-release">Release head</button>
+      <span class="subtle" id="head-mode"></span>
+    </div>
     <div id="capture-body" hidden>
       <p class="subtle" id="capture-summary"></p>
       <ol id="capture-instructions"></ol>
@@ -155,7 +163,7 @@
       Snapshot pairs are held in memory; the four most recent are retained.</p>
     <pre id="diagnostics">Waiting for status…</pre>
   </details>
-  <footer class="subtle">Workstation viewer · camera, head, and neck settings remain under the existing robot controls.</footer>
+  <footer class="subtle">Workstation viewer · the neck moves only through data-capture head steps (confirmed, gated); arms never.</footer>
 </main>
 <script>
 (() => {
@@ -482,9 +490,9 @@
     analysisURL = null;
     paint();
   };
-  // --- Data capture (camera only). The run is held in server memory; the bundle is a download. ---
-  let procedures = [], runState = null, zoomMode = 'dry-run', runBusy = false, lastCan = null;
-  const confirmed = {};  // per step; cleared after every zoom command so each one needs a fresh confirm
+  // --- Data capture (camera and neck only, never arms). The run is held in server memory; the bundle is a download. ---
+  let procedures = [], runState = null, zoomMode = 'dry-run', headMode = 'dry-run', runBusy = false, lastCan = null;
+  const confirmed = {};  // per step and command; cleared after every command so each one needs a fresh confirm
   const note = text => { $('capture-note').textContent = text; };
   async function runApi(path, options = {}) {
     const response = await fetch('/api/stereo/capture-run' + path, {...options, signal: AbortSignal.timeout(45000)});
@@ -497,24 +505,40 @@
     if (!runState) return;
     const proc = procedures.find(p => p.id === runState.procedure.id);
     $('capture-summary').textContent = `${runState.procedure.name} v${runState.procedure.version} · ${runState.procedure.summary}`
-      + ` · zoom commands: ${zoomMode}`;
+      + ` · zoom commands: ${zoomMode} · head motion: ${headMode}`;
     $('capture-instructions').replaceChildren(...(proc?.instructions || []).map(t => Object.assign(document.createElement('li'), {textContent: t})));
     const rows = runState.steps.map(step => {
       const li = document.createElement('li');
       li.append(Object.assign(document.createElement('span'), {className: 'step-label', textContent: step.label}));
-      if (step.zoom) {
-        const box = Object.assign(document.createElement('input'), {type: 'checkbox', id: 'confirm-' + step.id, checked: !!confirmed[step.id]});
-        box.onchange = () => { confirmed[step.id] = box.checked; };
+      const confirmBox = (key, text) => {
+        const box = Object.assign(document.createElement('input'), {type: 'checkbox', id: `confirm-${key}-${step.id}`, checked: !!confirmed[key + step.id]});
+        box.onchange = () => { confirmed[key + step.id] = box.checked; };
         const label = document.createElement('label');
-        label.append(box, `I confirm: command zoom ${step.zoom}`);
+        label.append(box, text);
+        return [box, label];
+      };
+      if (step.head) {
+        const [box, label] = confirmBox('head', `I confirm: move head to ${step.head} (${Object.values(step.head_deg).join(', ')}°)`);
+        const move = Object.assign(document.createElement('button'), {textContent: 'Move head', disabled: runBusy});
+        move.onclick = () => { const ok = box.checked; confirmed['head' + step.id] = false; runStep(step.id, 'head', {confirm: ok}, 'Head move '); };
+        li.append(label, move);
+      }
+      if (step.zoom) {
+        const [box, label] = confirmBox('zoom', `I confirm: command zoom ${step.zoom}`);
         const set = Object.assign(document.createElement('button'), {textContent: `Set zoom ${step.zoom}`});
-        set.onclick = () => { const ok = box.checked; confirmed[step.id] = false; runStep(step.id, 'zoom', {confirm: ok}, 'Zoom command '); };
+        set.onclick = () => { const ok = box.checked; confirmed['zoom' + step.id] = false; runStep(step.id, 'zoom', {confirm: ok}, 'Zoom command '); };
         li.append(label, set);
       }
-      const cap = Object.assign(document.createElement('button'), {textContent: 'Capture', disabled: runBusy || !status?.can_capture});
-      cap.onclick = () => runStep(step.id, 'capture', null, 'Captured ');
-      li.append(cap, Object.assign(document.createElement('span'), {className: 'subtle',
-        textContent: `${step.captured} pair${step.captured === 1 ? '' : 's'} captured` +
+      if (step.capture) {
+        const cap = Object.assign(document.createElement('button'), {textContent: 'Capture', disabled: runBusy || !status?.can_capture});
+        cap.onclick = () => runStep(step.id, 'capture', null, 'Captured ');
+        li.append(cap);
+      }
+      const head = step.head_commands.at(-1);
+      const neck = head?.readback_deg ? ` (neck ${Object.values(head.readback_deg).map(v => v.toFixed(1)).join(', ')}°)` : '';
+      li.append(Object.assign(document.createElement('span'), {className: 'subtle',
+        textContent: (step.capture ? `${step.captured} pair${step.captured === 1 ? '' : 's'} captured` : 'no capture') +
+          (head ? ` · head ${head.mode === 'live' ? head.outcome : head.outcome === 'refused' ? 'refused' : 'dry-run'}${neck}` : '') +
           (step.zoom_commands.length ? ` · zoom ${step.zoom_commands.at(-1).dry_run ? 'dry-run' : step.zoom_commands.at(-1).after ?? '?'}` : '')}));
       return li;
     });
@@ -528,7 +552,7 @@
       const result = await runApi(`/steps/${stepId}/${action}`, body ? {method: 'POST',
         headers: {'content-type': 'application/json'}, body: JSON.stringify(body)} : {method: 'POST'});
       runState = result.state || result;
-      note(label + (result.dry_run ? '(dry run: logged, not sent).' : 'done.'));
+      note(label + (result.dry_run ? '(dry run: logged, not sent).' : (result.record?.outcome ?? 'done') + '.'));
     } catch (error) { note(error.message); }
     finally { runBusy = false; renderRun(); }
   }
@@ -554,8 +578,26 @@
     } catch (error) { note(error.message); }
     finally { renderRun(); }
   };
+  async function headCommand(path, body, label) {
+    try {
+      const response = await fetch('/api/stereo/head/' + path, {method: 'POST', headers: {'content-type': 'application/json'},
+        body: JSON.stringify(body || {}), signal: AbortSignal.timeout(30000)});
+      const result = await response.json();
+      if (!response.ok) throw Error(result.detail || 'Request failed');
+      if (result.state) runState = result.state;
+      note(label + (result.dry_run ? ' (dry run: logged, not sent).' : `: ${result.record.outcome}.`));
+    } catch (error) { note(error.message); }
+    renderRun();
+  }
+  $('head-stop').onclick = () => headCommand('stop', null, 'Head stop');
+  $('head-release').onclick = () => {
+    const ok = $('confirm-release').checked; $('confirm-release').checked = false;
+    headCommand('release', {confirm: ok}, 'Head release');
+  };
   fetch('/api/stereo/procedures').then(r => r.json()).then(data => {
-    procedures = data.procedures; zoomMode = data.zoom_commands;
+    procedures = data.procedures; zoomMode = data.zoom_commands; headMode = data.head_motion;
+    $('head-mode').textContent = `head motion: ${headMode}` + (headMode === 'live' ? '' :
+      ' (needs REACHY_ENABLE_MOTION=true and --allow-head-motion)');
     $('capture-select').append(...procedures.map(p => Object.assign(document.createElement('option'), {value: p.id, textContent: `${p.name} (v${p.version})`})));
   }).catch(() => note('Procedures unavailable'));
   setInterval(() => { const can = !!status?.can_capture; if (runState && can !== lastCan) { lastCan = can; renderRun(); } }, 500);

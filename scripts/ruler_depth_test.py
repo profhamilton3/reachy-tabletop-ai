@@ -77,7 +77,7 @@ def main():
     rows = []
     procedure = depth_ruler_procedure(args.distances, args.pairs)
     run = CaptureRun(procedure)
-    for ruler, step in zip(args.distances, procedure.steps):
+    for ruler, step in zip(args.distances, [s for s in procedure.steps if s.distance_m is not None]):
         input(f"{step.instruction.split(' then press')[0]}, then press Enter… ")
         previous, values = (None, None), []
         for i in range(args.pairs):

@@ -113,9 +113,12 @@ def pick_grid(quads, partial, shape):
 
 
 def board_points(path, eye):
-    """Matched (board XYZ, undistorted pixel) corner arrays for one photo, or None."""
+    """Matched (board XYZ, undistorted pixel) corner arrays for one photo (a path or a BGR image), or None."""
     K, D = camera_matrix(eye), distortion(eye)
-    gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if isinstance(path, np.ndarray):
+        gray = cv2.cvtColor(path, cv2.COLOR_BGR2GRAY) if path.ndim == 3 else path
+    else:
+        gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     und = cv2.undistort(gray, K, D)
     quads, partial = detect(und)
     grid = pick_grid(quads, partial, und.shape)
