@@ -13,7 +13,9 @@ kinds of robot command, each only after you tick a confirm box:
 - a **head pose** (neck only): real only if `REACHY_ENABLE_MOTION=true` **and** the viewer was started with
   `--allow-head-motion`.
 
-Without those switches the buttons are a dry run: the command is logged, nothing moves. Nothing is written on
+`StereoLauncher.sh` passes both switches and sets `REACHY_ENABLE_MOTION=true` on the viewer process only
+(owner, 2026-10-20); `./StereoLauncher.sh --dry-run` starts without them to rehearse. Without those switches
+the buttons are a dry run: the command is logged, nothing moves. Nothing is written on
 the server; the zip is a browser download.
 
 ## Safety locks on a head move
@@ -21,8 +23,8 @@ the server; the zip is a browser download.
 A head move is live only when **all** of these hold. Otherwise it is a logged dry run, or a refusal, and
 nothing is sent.
 
-1. `REACHY_ENABLE_MOTION=true` in the viewer's environment.
-2. The viewer was started with `--allow-head-motion`.
+1. `REACHY_ENABLE_MOTION=true` in the viewer's environment (the launcher sets it; not with `--dry-run`).
+2. The viewer was started with `--allow-head-motion` (the launcher passes it; not with `--dry-run`).
 3. A fresh tick of *I confirm: move head to …* for this one move (the tick clears after every press).
 4. The head safety gate (`motion/safety.py`, `head_gate_check`) passes:
    - neck angles inside roll ±15°, pitch −20…+64°, yaw ±45° (the URDF travel is ±45.8° / −45.8…+64.7° / ±159.9°);
@@ -44,12 +46,14 @@ with the neck read-back after the move.
 
 ```sh
 export REACHY_IP=<ip>                       # never type the address into code or the page
-reachy-stereo --source robot                # zoom and head buttons are dry-run
-reachy-stereo --source robot --allow-zoom-commands   # zoom buttons really command the lens
-
-# head moves really move the neck: both switches, with Siva at the robot
-REACHY_ENABLE_MOTION=true reachy-stereo --source robot --allow-zoom-commands --allow-head-motion
+./StereoLauncher.sh robot                   # head and zoom LIVE (each command needs a confirm tick); Siva at the robot
+./StereoLauncher.sh robot --dry-run         # rehearsal: head and zoom buttons only log
+./StereoLauncher.sh --dry-run               # the same against the simulator
 ```
+
+The launcher passes `--allow-head-motion --allow-zoom-commands` and sets `REACHY_ENABLE_MOTION=true` on the
+viewer's command line only (it is never exported). Starting `reachy-stereo` directly stays dry-run unless you
+pass those flags and the variable yourself.
 
 Open http://localhost:8081. The simulator has no zoom, so zoom steps are refused there; head steps work on
 the simulator's neck.

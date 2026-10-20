@@ -39,8 +39,14 @@ install backtracks into a `grpcio-tools` source build that fails.
 ./StereoLauncher.sh                         # simulator
 ./StereoLauncher.sh robot                   # physical robot at $REACHY_IP
 ./StereoLauncher.sh robot --ip <address>    # when REACHY_IP is unset or wrong
+./StereoLauncher.sh --dry-run               # rehearsal: head and zoom buttons only log
 ./StereoLauncher.sh -KILL                   # stop it
 ```
+
+By default the launcher passes `--allow-head-motion --allow-zoom-commands` and sets
+`REACHY_ENABLE_MOTION=true` on the viewer's command line only (owner, 2026-10-20), so the
+operator needs no flags; each move still needs a confirm tick and a passed gate. `--dry-run`
+starts the viewer without them.
 
 `--port` changes the web port (give `-KILL` the same one). Arguments after `--`
 pass through to `reachy-stereo`, e.g. `-- --fps 10`. The log is
