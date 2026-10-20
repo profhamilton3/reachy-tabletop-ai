@@ -115,11 +115,20 @@ def end_step() -> Step:
     return head_step("neutral", capture=False, step_id="end_neutral", label="End: head to neutral")
 
 
+#: Why ZERO cannot be restored: the SDK refuses it as a command (confirmed on the sim, 2026-10-20).
+ZERO_RESTORE_NOTE = ("ZERO cannot be commanded through the SDK; restarting the robot's camera service is expected "
+                     "to re-home the lens (unconfirmed).")
+
+
 def zoom_start_step() -> Step:
     return Step(
-        id="zoom_start", label="Zoom: starting level", zoom_role="start", capture=False,
-        instruction="Read the starting zoom: press 'Read zoom' (read-back only, no zoom command is sent). The "
-                    "last step puts the lens back at this level.")
+        id="zoom_start", label="Zoom: starting level", zoom_role="start", head="board_view", capture=True,
+        instruction=f"Starting zoom, untouched: press 'Read zoom' (read-back only, no zoom command is sent; the first "
+                    f"complete read is the starting level). Then Point head at board_view "
+                    f"{HEAD_PRESETS['board_view']} (roll, pitch, yaw deg): tick the confirm box and press 'Move head' "
+                    f"(dry-run unless the viewer was started with --allow-head-motion and REACHY_ENABLE_MOTION=true), "
+                    f"wait for the read-back, then press Capture. The last step puts the lens back at the starting "
+                    f"level.")
 
 
 def zoom_restore_step() -> Step:
@@ -144,13 +153,13 @@ def zoom_fov_procedure(levels=ZOOM_ORDER) -> Procedure:
                     f"unless the viewer was started with --allow-zoom-commands), wait for the read-back, "
                     f"then press Capture.") for level in levels)
     return Procedure(
-        id="zoom_fov", name="Zoom field-of-view check", version="3", kind="zoom",
+        id="zoom_fov", name="Zoom field-of-view check", version="4", kind="zoom",
         summary="Head at the board view, board at each zoom level; the analyser reports the apparent cell pitch "
-                "per level. The starting zoom is read first and put back at the end.",
+                "per level. The starting zoom is read and captured first, untouched, and put back at the end.",
         setup=("Arm at rest on the table; the head is moved only by the head steps below.",
-               f"The widest level is expected to be {SCENE_ZOOM}; the analysis confirms it."),
-        steps=(zoom_start_step(), head_step("board_view", capture=False), *steps, end_step(),
-               zoom_restore_step()))
+               f"The widest level is expected to be {SCENE_ZOOM}; the analysis confirms it.",
+               "Run this check last in a robot session: it can leave the lens at a level the SDK cannot restore."),
+        steps=(zoom_start_step(), *steps, end_step(), zoom_restore_step()))
 
 
 def depth_ruler_procedure(distances=DISTANCES_M, captures_per_step=3) -> Procedure:
@@ -230,6 +239,8 @@ class CaptureRun:
     zoom_commands: dict[str, list[dict]] = field(default_factory=dict)
     head_commands: dict[str, list[dict]] = field(default_factory=dict)
     head_events: list[dict] = field(default_factory=list)  # Stop and Release, not tied to a step
+    commands_attempted: bool = False  # a zoom command (live or dry-run) has been asked for
+    _start: str | None = None  # the starting zoom: the first complete read, fixed once a command was attempted
 
     def pair_count(self) -> int:
         return sum(len(v) for v in self.captures.values())
@@ -251,12 +262,20 @@ class CaptureRun:
             raise ValueError(f"step {step_id!r} does not change the zoom")
         if not confirmed:
             raise ZoomNotConfirmed("A zoom command needs the operator's explicit confirm.")
+        self.commands_attempted = True
         records = setter.set_both(step.zoom)
         self.zoom_commands.setdefault(step_id, []).extend(records)
         return records
 
     def _read_zoom(self, step: Step, setter, profile_zoom: str | None) -> list[dict]:
         records = [{"action": "read", **r} for r in setter.read_both()]
+        if step.zoom_role == "start":
+            levels = {r["level"] for r in records}
+            if self._start is not None or self.commands_attempted:
+                # an extra read-back: recorded, but it never changes the starting level
+                records = [{**r, "extra": True} for r in records]
+            elif len(levels) == 1 and None not in levels:
+                self._start = levels.pop()
         if step.zoom_role == "check":
             warning = zoom_read_warning(profile_zoom, {r["eye"]: r["level"] for r in records})
             records = [{**r, "profile_zoom": profile_zoom, "warning": warning} for r in records]
@@ -273,13 +292,9 @@ class CaptureRun:
         return None
 
     def start_zoom(self) -> str | None:
-        """The level the "start" step read on both eyes (ZERO included), or None if unread, unreadable or split."""
-        for step in self.procedure.steps:
-            if step.zoom_role == "start":
-                latest = {r["eye"]: r.get("level") for r in self.zoom_commands.get(step.id, [])}
-                levels = set(latest.values())
-                return levels.pop() if len(levels) == 1 and len(latest) == 2 else None
-        return None
+        """The starting level: the first complete read of the run (ZERO included), or None if there was no
+        complete read before the first zoom command. Later reads never change it."""
+        return self._start
 
     def _restore_zoom(self, step: Step, setter, confirmed: bool) -> list[dict]:
         """Put the lens back at the starting level. Unknown start: nothing is sent; the operator sets it by hand."""
@@ -294,11 +309,13 @@ class CaptureRun:
             return records
         if not confirmed:
             raise ZoomNotConfirmed("A zoom command needs the operator's explicit confirm.")
+        self.commands_attempted = True
         records = [{**r, "action": "restore", "target": start} for r in setter.set_both(start)]
         for r in records:
             if not r.get("ok") and not r.get("dry_run"):
-                r.update(manual=True, note=f"The starting zoom {start} could not be commanded or confirmed by "
-                                           f"read-back: set the zoom to {start} by hand.")
+                r.update(manual=True, note=ZERO_RESTORE_NOTE if start == "ZERO" else
+                         f"The starting zoom {start} could not be commanded or confirmed by read-back: "
+                         f"set the zoom to {start} by hand.")
         sent.extend(records)
         return records
 

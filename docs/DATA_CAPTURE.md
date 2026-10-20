@@ -92,6 +92,10 @@ hand ready and the run finished.
 
 neutral → 20° → 55° → 60° → 64° (`board_view`) → back to neutral.
 
+**Order of a robot session:** Board-view approach, then Head sweep, then Depth ruler test, then **Zoom FOV
+check last**. The zoom check can leave the lens at a level the SDK cannot restore (see the restore step
+below), and every other test assumes the scene zoom.
+
 **Neck sign check.** When the viewer connects it computes the SDK head IK (`head._look_at`; nothing moves) for
 two points and requires `neck_pitch > 0` for (0.3, 0.0, −0.4), i.e. looking down, and `neck_yaw > 0` for
 (0.5, 0.3, 0.0), i.e. turning left. Check the result on the page under *Connection & camera diagnostics*
@@ -113,24 +117,29 @@ Capture at each pose. Stop and report if the neck labours, sounds wrong, or read
 3. Run the last step (head to neutral), then press **Download capture bundle**. Choosing "None" or
    **Discard run** forgets the run.
 
-### Zoom field-of-view check (v3)
+### Zoom field-of-view check (v4)
 
-Arm at rest on the table, taped 3x3 board clear.
-1. Step 0: press *Read zoom*. This reads the starting zoom back and records it; no command is sent. The
-   level can be `ZERO`, the SDK's unset level (the simulator starts there). It is recorded as `ZERO`, not
-   mapped to another level.
-2. Point the head at `board_view`.
-3. For each of **OUT, INTER, IN**: tick *I confirm: command zoom X*, press *Set zoom X*, wait for the pause to
-   finish, press *Capture*. The tick must be repeated for every command.
-4. Head to neutral.
-5. Last step: tick *I confirm: command zoom restore* and press *Restore zoom*. This commands the starting
-   level from step 0 (`ZERO` too, if the SDK accepts it as a command) and records the read-back. If the
-   starting level is unknown or cannot be commanded, the step sends nothing (or records the failure) and
-   says to set the zoom by hand; do that before any other test.
+Run this last in a robot session. Arm at rest on the table, taped 3x3 board clear.
+1. Step 0, the starting zoom, untouched: press *Read zoom* (read-back only; no zoom command). The level can be
+   `ZERO`, the SDK's unset level (the simulator starts there); it is recorded as `ZERO`, not mapped to another
+   level. The **first complete read** of the run is the starting level; later reads are kept as extra
+   read-backs and never change it, and it is fixed once any zoom command has been sent. Then tick the confirm
+   box, press *Move head* (to `board_view`), wait for the read-back and press *Capture*: this pair is at the
+   starting zoom.
+2. For each of **OUT, INTER, IN**: tick *I confirm: command zoom X*, press *Set zoom X*, wait for the pause to
+   finish, press *Capture*. Capture is refused until that step's zoom command has completed. The tick must be
+   repeated for every command.
+3. Head to neutral.
+4. Last step: tick *I confirm: command zoom restore* and press *Restore zoom*. This commands the starting
+   level from step 0 and records the read-back. If the starting level is unknown, nothing is sent. If it
+   cannot be commanded, the failure is recorded. `ZERO` cannot be commanded through the SDK; restarting the
+   robot's camera service is expected to re-home the lens (unconfirmed). Any other level: set it by hand.
 
 If the viewer is dry-run, the zoom does not change, and the analyser says so. This also measures whether OUT
-is really the widest view. The analyser reports the starting level and flags a restore that failed, was a dry
-run, was not run, or had no known starting level.
+is really the widest view. The analyser reports the starting level, the cell pitch of the starting pair and
+which tested level it matches within 3% (e.g. "start ZERO matches INTER (ratio 1.00)", or "matches none"), and
+flags a restore that failed, was a dry run, was not run, or had no known starting level. It groups pairs by
+each capture's own zoom read-back, not by step.
 
 ### Depth ruler test (v3)
 

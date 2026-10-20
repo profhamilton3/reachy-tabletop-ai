@@ -42,6 +42,7 @@ from reachy_ai.perception.procedures import (  # noqa: E402
     SENSITIVITY_BASELINE_M,
     SENSITIVITY_FOCAL_PX,
     TOLERANCE_M,
+    ZERO_RESTORE_NOTE,
     sensitivity_mm_per_px,
 )
 from reachy_ai.perception.stereo_depth import DEFAULT_CALIBRATION, PairDepth, camera_to_torso  # noqa: E402
@@ -51,6 +52,8 @@ from reachy_ai.perception.stereo_depth import DEFAULT_CALIBRATION, PairDepth, ca
 SUBPIXEL_LIMIT_PX = 0.5
 #: Pitch ratio to the widest level below which two levels count as the same view.
 ZOOM_CHANGE_MIN = 0.03
+#: The starting pair matches a tested level when its cell pitch is within this fraction of the level's.
+ZOOM_MATCH_TOL = 0.03
 #: Head sweep: a board centre further than this from the mean over poses is a finding. #185's camera check
 #: (17 views, reachy-1-2-sim docs/reviews/2026-10-14-taught-board-poses-185) spread 6 / 4 / 9 mm in x / y / z.
 HEAD_SPREAD_LIMIT_MM = 20.0
@@ -121,8 +124,8 @@ def restore_findings(capture):
             findings.append(f"Restore to {start} ({eye}) was a dry run: nothing was sent.")
         elif not r.get("ok") or r.get("after") != start:
             why = f" ({r['error']})" if r.get("error") else ""
-            findings.append(f"Restore FAILED ({eye}): requested {start}, read back {r.get('after')}{why}; "
-                            f"set the zoom to {start} by hand.")
+            action = ZERO_RESTORE_NOTE if start == "ZERO" else f"set the zoom to {start} by hand."
+            findings.append(f"Restore FAILED ({eye}): requested {start}, read back {r.get('after')}{why}; {action}")
     status = None
     if not findings and last:
         after = sorted({r["after"] for r in last.values()})
@@ -138,6 +141,33 @@ def start_reads(capture):
             return ["/".join(dict.fromkeys(str(r.get("level")) for r in records[n:n + 2]))
                     for n in range(0, len(records), 2)]
     return []
+
+
+def start_match(capture, files, rows):
+    """Which tested level the untouched starting pair matches, from its cell pitch (within ZOOM_MATCH_TOL).
+
+    Returns {"text": ..., "level": matched level or None, "ratio": ...}; the pitch ratio is start / level, per
+    eye where both were found, then averaged."""
+    start = capture.get("start_zoom") or "unknown"
+    entries = [e for s in capture["steps"] if s.get("zoom_role") == "start" for e in s["captures"]]
+    if not entries:
+        return {"text": f"start {start}: no pair captured at the starting zoom.", "level": None, "ratio": None}
+    pair = decode_pair(files, entries[0]["folder"])
+    pitch = {eye: zoom_check.cell_pitch_px(pair[EYES.index(eye)]) for eye in EYES}
+    by_level = {}
+    for r in rows:
+        if r["level"] and r["pitch_px"] and pitch.get(r["eye"]):
+            by_level.setdefault(r["level"], []).append(pitch[r["eye"]] / r["pitch_px"])
+    if not by_level:
+        return {"text": f"start {start}: the board was not found in the starting pair (or at any tested level).",
+                "level": None, "ratio": None}
+    ratios = {level: sum(v) / len(v) for level, v in by_level.items()}
+    level = min(ratios, key=lambda k: abs(ratios[k] - 1))
+    ratio = round(ratios[level], 2)
+    if abs(ratios[level] - 1) <= ZOOM_MATCH_TOL:
+        return {"text": f"start {start} matches {level} (ratio {ratio:.2f})", "level": level, "ratio": ratio}
+    return {"text": f"start {start} matches none of the tested levels (closest {level}, ratio {ratio:.2f})",
+            "level": None, "ratio": ratio}
 
 
 def analyze_zoom(capture, files):
@@ -201,12 +231,13 @@ def analyze_zoom(capture, files):
     reads = start_reads(capture)
     if len(set(reads)) > 1:
         findings.append(f"The starting zoom was read {len(reads)} times with different results "
-                        f"({', '.join(reads)}); the recorded start is the latest read, so the true starting level "
-                        "may be the earlier one.")
+                        f"({', '.join(reads)}); the recorded start is the first complete read, later reads are extra "
+                        "read-backs.")
     status, restore = restore_findings(capture)
     findings.extend(restore)
     return {"kind": "zoom", "rows": rows, "scene_zoom": SCENE_ZOOM, "scene_zoom_is_widest": widest_ok,
-            "start_zoom": capture.get("start_zoom"), "restore_status": status, "findings": findings}
+            "start_zoom": capture.get("start_zoom"), "start_match": start_match(capture, files, rows),
+            "restore_status": status, "findings": findings}
 
 
 def depth_verdict(row):
@@ -370,6 +401,7 @@ def print_report(manifest, capture, result):
           f" · {len(manifest['files'])} files, SHA-256 verified")
     if result["kind"] == "zoom":
         print("starting zoom:", result["start_zoom"] or "unknown (not read in this bundle)")
+        print(result["start_match"]["text"])
         if result["restore_status"]:
             print(result["restore_status"])
         for r in result["rows"]:

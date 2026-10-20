@@ -83,10 +83,11 @@ def test_procedures_describe_numbered_instructions_and_steps():
 
 def test_head_steps_open_and_close_the_procedures():
     zoom, depth = proc.get_procedure("zoom_fov"), proc.get_procedure("depth_ruler")
-    # Zoom check: step 0 reads the zoom, step 1 points the head at the board view, the head returns to
-    # neutral, and the last step restores the starting zoom.
-    assert (zoom.steps[0].zoom_role, zoom.steps[0].capture) == ("start", False)
-    assert (zoom.steps[1].head, zoom.steps[1].capture) == ("board_view", False)
+    # Zoom check: step 0 reads the zoom, points the head at the board view and captures the untouched starting
+    # pair; the head returns to neutral, and the last step restores the starting zoom.
+    assert (zoom.steps[0].zoom_role, zoom.steps[0].head, zoom.steps[0].capture) == ("start", "board_view", True)
+    assert zoom.steps[0].zoom is None  # no zoom command in the start step
+    assert [s.head for s in zoom.steps[1:-2]] == [None, None, None]
     assert (zoom.steps[-2].head, zoom.steps[-2].capture) == ("neutral", False)
     assert (zoom.steps[-1].zoom_role, zoom.steps[-1].capture) == ("restore", False)
     # Depth ruler: step 0 reads the zoom, step 1 sets neutral and nothing moves the head after it.
@@ -126,7 +127,7 @@ def test_zoom_only_after_confirm_and_only_on_zoom_steps():
     by_id = {s["id"]: s for s in run.state()["steps"]}
     assert setter.calls == [] and by_id["zoom_inter"]["zoom_commands"] == []
     run.apply_zoom("zoom_inter", setter, confirmed=True)
-    assert setter.calls == ["INTER"] and len(run.state()["steps"][3]["zoom_commands"]) == 2
+    assert setter.calls == ["INTER"] and len(run.state()["steps"][2]["zoom_commands"]) == 2
     with pytest.raises(ValueError):
         proc.CaptureRun(proc.get_procedure("depth_ruler")).apply_zoom("dist_0_3m", setter, confirmed=True)
 
@@ -185,20 +186,20 @@ def zoom_run():
 def test_bundle_has_every_pair_labels_zoom_calibration_and_sha256():
     data = zoom_run().build_zip({"viewer": "9.9", "sdk": "0.7.0"})
     manifest, files = read_bundle(data)
-    assert manifest["procedure"] == {"id": "zoom_fov", "name": "Zoom field-of-view check", "version": "3"}
+    assert manifest["procedure"] == {"id": "zoom_fov", "name": "Zoom field-of-view check", "version": "4"}
     assert manifest["calibration_id"] == "cal-1" and manifest["versions"]["sdk"] == "0.7.0"
     for n, level in enumerate(("out", "inter", "in")):
-        folder = f"steps/{n + 3:02d}_zoom_{level}/cap1"
+        folder = f"steps/{n + 2:02d}_zoom_{level}/cap1"
         assert {f"{folder}/left.jpg", f"{folder}/right.jpg", f"{folder}/pair.json"} <= set(files)
     capture = json.loads(files["capture.json"])
     assert [s["label"] for s in capture["steps"]] == [
-        "Zoom: starting level", "Head: board_view", "Zoom OUT", "Zoom INTER", "Zoom IN", "End: head to neutral",
+        "Zoom: starting level", "Zoom OUT", "Zoom INTER", "Zoom IN", "End: head to neutral",
         "Zoom: restore starting level"]
-    zoom_steps = capture["steps"][2:5]
+    zoom_steps = capture["steps"][1:4]
     assert [s["captures"][0]["zoom_level"] for s in zoom_steps] == ["OUT", "INTER", "IN"]
-    assert capture["procedure"]["version"] == "3" and capture["calibration_id"] == "cal-1"
+    assert capture["procedure"]["version"] == "4" and capture["calibration_id"] == "cal-1"
     assert zoom_steps[0]["zoom_commands"][0]["requested"] == "OUT"
-    assert capture["steps"][1]["requested_head"] == "board_view" and capture["steps"][1]["captures"] == []
+    assert capture["steps"][0]["requested_head"] == "board_view" and capture["steps"][0]["captures"] == []
     assert {e["name"] for e in manifest["files"]} == set(files)
 
 
@@ -288,7 +289,7 @@ def test_viewer_zoom_needs_confirm_then_is_dry_run_and_capture_and_download_work
         result = client.post(url + "/zoom", json={"confirm": True}).json()
         assert service.zoom_requests == ["INTER"] and result["dry_run"] is True
         state = client.post(url + "/capture").json()
-        assert state["steps"][3]["captured"] == 1 and state["pairs"] == 1
+        assert state["steps"][2]["captured"] == 1 and state["pairs"] == 1
         monkeypatch.chdir(tmp_path)
         real_open = builtins.open
 
@@ -302,8 +303,8 @@ def test_viewer_zoom_needs_confirm_then_is_dry_run_and_capture_and_download_work
         assert response.status_code == 200 and "attachment" in response.headers["content-disposition"]
         manifest, files = read_bundle(response.content)
         capture = json.loads(files["capture.json"])
-        assert capture["steps"][3]["captures"][0]["zoom_level"] == "OUT"  # the real read-back, not the request
-        assert capture["steps"][3]["requested_zoom"] == "INTER"
+        assert capture["steps"][2]["captures"][0]["zoom_level"] == "OUT"  # the real read-back, not the request
+        assert capture["steps"][2]["requested_zoom"] == "INTER"
         assert capture["calibration_id"].endswith("@zoom=OUT") and manifest["procedure"]["id"] == "zoom_fov"
         assert list(tmp_path.iterdir()) == []
         assert client.delete("/api/stereo/capture-run").status_code == 200
@@ -408,7 +409,7 @@ def test_simulator_zoom_bundle_records_source_zero_and_the_start_and_restore_ste
         assert service.zoom_requests == ["OUT", "ZERO"]  # ZERO commanded as the restore target
         capture = json.loads(read_bundle(client.get(base[:-6] + "bundle.zip").content)[1]["capture.json"])
     assert capture["source"] == "sim" and capture["start_zoom"] == "ZERO"
-    assert capture["steps"][2]["captures"][0]["zoom_level"] == "ZERO"  # recorded as ZERO, not unknown
+    assert capture["steps"][1]["captures"][0]["zoom_level"] == "ZERO"  # recorded as ZERO, not unknown
     assert [r["level"] for r in capture["steps"][0]["zoom_commands"]] == ["ZERO", "ZERO"]
     restore = capture["steps"][-1]
     assert restore["zoom_role"] == "restore" and all(r["target"] == "ZERO" for r in restore["zoom_commands"])
@@ -547,9 +548,12 @@ def test_zoom_analyser_notes_a_start_that_was_read_twice_with_different_results(
     run.apply_zoom("zoom_start", RecordingSetter(start="IN"), False)
     run.add_capture("zoom_out", meta("a", zoom="OUT"), jpeg(), jpeg())
     _, files, capture = analyse.load(run.build_zip({}))
-    assert capture["start_zoom"] == "IN"  # the latest read
+    assert capture["start_zoom"] == "ZERO"  # the first complete read; the later one is an extra read-back
+    reads = capture["steps"][0]["zoom_commands"]
+    assert [r.get("extra") for r in reads] == [None, None, True, True]
     findings = analyse.analyze_zoom(capture, files)["findings"]
-    assert any("read 2 times with different results (ZERO, IN)" in f for f in findings)
+    assert any("read 2 times with different results (ZERO, IN)" in f and "first complete read" in f
+               for f in findings)
 
 
 def test_zoom_analyser_reports_a_step_without_captures():
@@ -696,7 +700,12 @@ def test_unknown_start_restore_sends_nothing_and_records_the_manual_step():
     failed = proc.CaptureRun(proc.get_procedure("zoom_fov"))
     failed.apply_zoom("zoom_start", RecordingSetter(start="ZERO"), False)
     refused = failed.apply_zoom("zoom_restore", RecordingSetter(dry_run=False, accepts=False), True)
-    assert all(r["manual"] and "set the zoom to ZERO by hand" in r["note"] for r in refused)
+    assert all(r["manual"] and r["note"] == proc.ZERO_RESTORE_NOTE for r in refused)
+    assert "restarting the robot's camera service is expected to re-home the lens (unconfirmed)" in refused[0]["note"]
+    other = proc.CaptureRun(proc.get_procedure("zoom_fov"))
+    other.apply_zoom("zoom_start", RecordingSetter(start="INTER"), False)
+    manual = other.apply_zoom("zoom_restore", RecordingSetter(dry_run=False, accepts=False), True)
+    assert all("set the zoom to INTER by hand" in r["note"] for r in manual)
 
 
 def test_zoom_analyser_notes_the_simulator_zoom_model():
@@ -744,4 +753,59 @@ def test_a_failed_zoom_command_does_not_open_the_capture_gate():
     assert run.capture_blocker("zoom_in")
     run.apply_zoom("zoom_in", RecordingSetter(), True)
     assert run.capture_blocker("zoom_in") is None
-    assert run.capture_blocker("head_board_view") is None
+    assert run.capture_blocker("end_neutral") is None and run.capture_blocker("zoom_start") is None
+
+
+def test_start_zoom_is_the_first_complete_read_and_is_fixed_once_a_command_was_attempted():
+    run = proc.CaptureRun(proc.get_procedure("zoom_fov"))
+    run.apply_zoom("zoom_start", RecordingSetter(reads={"left": None, "right": "IN"}), False)  # incomplete read
+    assert run.start_zoom() is None
+    run.apply_zoom("zoom_start", RecordingSetter(start="ZERO"), False)
+    run.apply_zoom("zoom_start", RecordingSetter(start="INTER"), False)
+    assert run.start_zoom() == "ZERO"
+    run.apply_zoom("zoom_out", RecordingSetter(), True)
+    run.apply_zoom("zoom_start", RecordingSetter(start="OUT"), False)
+    assert run.start_zoom() == "ZERO"
+    records = run.state()["steps"][0]["zoom_commands"]
+    assert [r.get("extra") for r in records] == [None, None, None, None, True, True, True, True]
+    late = proc.CaptureRun(proc.get_procedure("zoom_fov"))  # read only after a command: no start level
+    late.apply_zoom("zoom_out", RecordingSetter(), True)
+    late.apply_zoom("zoom_start", RecordingSetter(start="OUT"), False)
+    assert late.start_zoom() is None
+
+
+def start_pair_bundle(factor, start="ZERO"):
+    run = proc.CaptureRun(proc.get_procedure("zoom_fov"))
+    run.apply_zoom("zoom_start", RecordingSetter(start=start), False)
+    left, right = "Left Camera_screenshot_20.08.2026.png", "Right Camera_screenshot_20.08.2026.png"
+    run.add_capture("zoom_start", meta("start", zoom=start),
+                    proc.encode_jpeg(scaled(left, factor)), proc.encode_jpeg(scaled(right, factor)))
+    for step, f in zip(steps_with(run.procedure, "zoom"), (1.0, 1.25, 1.5)):
+        run.add_capture(step.id, meta(step.id, zoom=step.zoom), proc.encode_jpeg(scaled(left, f)),
+                        proc.encode_jpeg(scaled(right, f)))
+    return run.build_zip({})
+
+
+def test_zoom_analyser_reports_which_level_the_starting_pair_matches():
+    _, files, capture = analyse.load(start_pair_bundle(1.25))
+    result = analyse.analyze_zoom(capture, files)
+    match = result["start_match"]
+    assert match["level"] == "INTER" and match["text"].startswith("start ZERO matches INTER (ratio 1.0")
+    assert not any(r["step"] == "Zoom: starting level" for r in result["rows"])  # not counted as a level
+    _, files, capture = analyse.load(start_pair_bundle(1.12))
+    none = analyse.analyze_zoom(capture, files)["start_match"]
+    assert none["level"] is None and "matches none of the tested levels (closest" in none["text"]
+    _, files, capture = analyse.load(readback_bundle([["OUT"], ["INTER"], ["IN"]]))
+    assert "no pair captured at the starting zoom" in analyse.analyze_zoom(capture, files)["start_match"]["text"]
+
+
+def test_zoom_analyser_explains_a_refused_zero_restore():
+    run = proc.CaptureRun(proc.get_procedure("zoom_fov"))
+    run.apply_zoom("zoom_start", RecordingSetter(start="ZERO"), False)
+    run.add_capture("zoom_out", meta("a", zoom="OUT"), jpeg(), jpeg())
+    run.apply_zoom("zoom_restore", RecordingSetter(dry_run=False, accepts=False), True)
+    _, files, capture = analyse.load(run.build_zip({}))
+    findings = " | ".join(analyse.analyze_zoom(capture, files)["findings"])
+    assert "Restore FAILED (left): requested ZERO" in findings
+    assert "ZERO cannot be commanded through the SDK; restarting the robot's camera service is expected to " \
+           "re-home the lens (unconfirmed)." in findings
