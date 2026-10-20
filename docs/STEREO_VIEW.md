@@ -50,8 +50,11 @@ refuses to start if another program holds that port.
 
 There is no NUC installation,
 Coral dependency, calibration run, or robot service restart.
-`REACHY_ENABLE_MOTION` is irrelevant to this camera-only application: it mounts
-no motion routes and issues no control commands even if that variable is true.
+The viewer mounts no task, arm or gripper route. Its only motion is the neck, for
+data-capture procedures (owner decision 2026-10-20; see `docs/DATA_CAPTURE.md`):
+a head move is live only with `REACHY_ENABLE_MOTION=true` AND `--allow-head-motion`,
+a fresh operator confirm per move and a passed head safety gate. Otherwise it is
+logged and nothing is sent.
 
 Physical defaults follow ReachySDK v1: SDK 50055, cameras 50057. Simulator
 defaults explicitly set both to 50051. Override with `--sdk-port` and

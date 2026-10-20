@@ -1,4 +1,12 @@
-"""Small camera-only FastAPI application. No task or motion routes are mounted."""
+"""Small stereo-viewer FastAPI application: cameras and, for data-capture procedures, the neck only.
+
+No task, arm or gripper route is mounted. The only motion routes move the head through
+motion.primitives behind the head safety gate (owner decision 2026-10-20: "Neck motion is required
+for vision data capture. Capture procedures may articulate the head through the neck for viewing and
+perception. Arm motion stays forbidden in capture procedures."). They are dry-run unless
+REACHY_ENABLE_MOTION=true and the viewer runs with --allow-head-motion, and each move needs a fresh
+operator confirm.
+"""
 
 import asyncio
 import threading
@@ -13,6 +21,7 @@ from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 from reachy_ai.camera_zoom import EYES, calibration_id, zoom_status
+from reachy_ai.config import HEAD_PRESETS
 from reachy_ai.pair_bundle import BundleTooLarge, build_bundle, json_bytes, viewer_version
 from reachy_ai.perception.pair_detector import (
     DEFAULT_MODEL,
@@ -24,13 +33,15 @@ from reachy_ai.perception.pair_detector import (
 from reachy_ai.perception.procedures import (
     PROCEDURES,
     CaptureRun,
+    HeadNotConfirmed,
+    HeadRefused,
     RunLimit,
     ZoomNotConfirmed,
     encode_jpeg,
     get_procedure,
 )
 from reachy_ai.perception.stereo_depth import DepthUnavailable, PairDepth
-from reachy_ai.stereo import StereoService, StereoSettings
+from reachy_ai.stereo import CommandBusy, StereoService, StereoSettings
 
 
 class _ServiceZoom:
@@ -42,6 +53,16 @@ class _ServiceZoom:
 
     def set_both(self, level):
         return self.service.request_zoom(level)
+
+
+class _ServiceHead:
+    """Head mover for `CaptureRun.apply_head`: the SDK process runs the primitive, gate included."""
+
+    def __init__(self, service):
+        self.service = service
+
+    def move(self, preset):
+        return self.service.request_head("move", preset, approved=True)
 
 
 def create_app(settings: StereoSettings, service: StereoService | None = None, detector_model=None, detector=None,
@@ -94,10 +115,16 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=reachyframe",
                                  headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
-    def capture_record():
-        """Freeze the latest pair with its zoom, calibration id and profile. Returns (metadata, record)."""
+    def capture_record(settled=False):
+        """Freeze the latest pair with its zoom, calibration id and profile. Returns (metadata, record).
+
+        `settled` (procedure captures): refuse frames from before the last zoom/head command ended plus
+        the settle time, or a neck read-back off the last live head command."""
         try:
             with camera.lock:
+                blocker = camera.capture_blocker() if settled else None
+                if blocker:
+                    raise ValueError(blocker)
                 pair = camera.capture()
                 record = camera.snapshots[pair["pair_id"]]
                 profile = depth.status().get("profile", {})
@@ -114,7 +141,7 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
     def capture():
         return capture_record()[0]
 
-    # --- Data capture: operator procedures (camera only; the run lives in memory, nothing is saved) ---
+    # --- Data capture: operator procedures (camera and neck only, never arms; the run lives in memory) ---
     run_lock = threading.Lock()
     app.state.run = None
 
@@ -126,7 +153,9 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
     @app.get("/api/stereo/procedures")
     def procedures():
         return {"procedures": [p.describe() for p in PROCEDURES.values()],
-                "zoom_commands": "live" if camera.settings.zoom_commands else "dry-run"}
+                "zoom_commands": "live" if camera.settings.zoom_commands else "dry-run",
+                "head_motion": camera.head_motion_mode(),
+                "head_presets": {name: list(angles) for name, angles in HEAD_PRESETS.items()}}
 
     @app.get("/api/stereo/capture-run")
     def run_state():
@@ -155,8 +184,9 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
         if settings.source == "sim":
             raise HTTPException(409, "The simulator has no camera zoom to command")
         try:
-            records = run.apply_zoom(step_id, _ServiceZoom(camera), confirm)
-        except ZoomNotConfirmed as exc:
+            with run_lock:
+                records = run.apply_zoom(step_id, _ServiceZoom(camera), confirm)
+        except (ZoomNotConfirmed, CommandBusy) as exc:
             raise HTTPException(409, str(exc)) from exc
         except KeyError as exc:
             raise HTTPException(404, "Unknown step") from exc
@@ -166,22 +196,78 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
             raise HTTPException(503, str(exc)) from exc
         return {"dry_run": not camera.settings.zoom_commands, "records": records, "state": run.state()}
 
+    @app.post("/api/stereo/capture-run/steps/{step_id}/head")
+    def run_head(step_id: str, confirm: bool = Body(False, embed=True)):
+        """Point the head at this step's preset. Refused without the operator's confirm, while another head
+        command runs, or by the gate; dry-run unless REACHY_ENABLE_MOTION=true and --allow-head-motion."""
+        run = current_run()
+        try:
+            with run_lock:
+                record = run.apply_head(step_id, _ServiceHead(camera), confirm)
+        except (HeadNotConfirmed, HeadRefused, CommandBusy) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, "Unknown step") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except (RuntimeError, TimeoutError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return {"dry_run": record.get("mode") != "live", "record": record, "state": run.state()}
+
+    def record_head_event(record):
+        with run_lock:
+            run = app.state.run
+            if run is not None:
+                run.record_head_event(record)
+                return run.state()
+        return None
+
+    @app.post("/api/stereo/head/stop")
+    def head_stop():
+        """Stop: interrupt a running head move and hold the present position. No confirm needed."""
+        try:
+            record = camera.request_head_stop()
+        except (RuntimeError, TimeoutError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return {"dry_run": record.get("mode") != "live", "record": record, "state": record_head_event(record)}
+
+    @app.post("/api/stereo/head/release")
+    def head_release(confirm: bool = Body(False, embed=True)):
+        """Turn the head off smoothly (compliant). Refused without the operator's confirm."""
+        if not confirm:
+            record_head_event({"action": "release", "outcome": "refused",
+                               "gate_failures": ["Operator approval not given"]})
+            raise HTTPException(409, "Releasing the head needs the operator's explicit confirm.")
+        try:
+            record = camera.request_head("release", approved=True)
+        except CommandBusy as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (RuntimeError, TimeoutError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        state = record_head_event(record)
+        if record.get("outcome") == "refused":
+            raise HTTPException(409, "Head release refused: " + "; ".join(record.get("gate_failures", [])))
+        return {"dry_run": record.get("mode") != "live", "record": record, "state": state}
+
     @app.post("/api/stereo/capture-run/steps/{step_id}/capture")
     def run_capture(step_id: str):
         run = current_run()
         try:
-            run.procedure.step(step_id)
+            step = run.procedure.step(step_id)
         except KeyError as exc:
             raise HTTPException(404, "Unknown step") from exc
-        meta, record = capture_record()
-        try:
-            run.add_capture(step_id, meta, encode_jpeg(record["frames"]["left"].pixels),
-                            encode_jpeg(record["frames"]["right"].pixels))
-        except RunLimit as exc:
-            raise HTTPException(409, str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(500, str(exc)) from exc
-        return run.state()
+        if not step.capture:
+            raise HTTPException(409, "This step has nothing to capture")
+        with run_lock:
+            meta, record = capture_record(settled=True)
+            try:
+                run.add_capture(step_id, meta, encode_jpeg(record["frames"]["left"].pixels),
+                                encode_jpeg(record["frames"]["right"].pixels))
+            except RunLimit as exc:
+                raise HTTPException(409, str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(500, str(exc)) from exc
+            return run.state()
 
     @app.get("/api/stereo/capture-run/bundle.zip")
     def run_bundle():

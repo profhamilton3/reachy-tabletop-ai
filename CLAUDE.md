@@ -15,6 +15,9 @@ Never import from `reachy2_sdk` or `reachy2_core`. CI will catch this.
 - Do not move the robot if `safety.gate_check()` returns `False`.
 - Do not skip tests, disable CI, or bypass the safety gate.
 - Do not import from `reachy2_sdk` under any circumstances.
+- OWNER DECISION (2026-10-20): "Neck motion is required for vision data capture. Capture procedures may articulate the head through the neck for viewing and perception. Arm motion stays forbidden in capture procedures."
+  - Head moves go only through `motion/primitives.py` (head-only functions) and `safety.head_gate_check()`: neck limits, minimum duration, operator approval, `REACHY_ENABLE_MOTION`.
+  - In the stereo viewer a head move is live only with ALL of: `REACHY_ENABLE_MOTION=true`, `--allow-head-motion`, a fresh confirm tick per move, and a passed gate. Anything else is a logged dry run.
 
 ## Test commands
 

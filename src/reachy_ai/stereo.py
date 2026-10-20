@@ -1,11 +1,18 @@
-"""Read-only Reachy v1 stereo acquisition, shared by all browser consumers.
+"""Reachy v1 stereo acquisition, shared by all browser consumers. Camera and neck only, never arms.
 
 The SDK owns its camera streaming threads. A single child process contains that
 connection so its blocking startup/first-frame calls can be stopped on timeout.
-No joint, compliance, focus, or robot-service commands are issued here. The one command that
-exists is a camera zoom level, requested only by a data-capture procedure after the operator's
-explicit confirm (camera_zoom.ZoomSetter in the child process); it is dry-run (logged only)
-unless the viewer is started with --allow-zoom-commands.
+No arm, gripper, focus, or robot-service command is issued here. Two commands exist, both requested
+only by a data-capture procedure after the operator's explicit confirm, both run in the child
+process that owns the connection, one at a time (bounded queues of 1):
+
+- a camera zoom level (camera_zoom.ZoomSetter): dry-run (logged only) unless the viewer is started
+  with --allow-zoom-commands;
+- a named head pose, a Stop (hold the present position) and a smooth release
+  (motion.primitives, behind safety.head_gate_check): dry-run unless REACHY_ENABLE_MOTION=true AND
+  the viewer is started with --allow-head-motion. Owner decision 2026-10-20: "Neck motion is
+  required for vision data capture. Capture procedures may articulate the head through the neck for
+  viewing and perception. Arm motion stays forbidden in capture procedures."
 """
 
 import argparse
@@ -29,6 +36,11 @@ import numpy as np
 LOG = logging.getLogger(__name__)
 EYES = ("left", "right")
 OBSERVATION_QUEUE = 4  # frames and head readbacks in flight; the newest are kept
+ZOOM_QUEUE = HEAD_QUEUE = 1  # commands in flight to the SDK process; a second one is refused
+
+
+class CommandBusy(RuntimeError):
+    """A zoom or head command is already pending or running."""
 
 
 @dataclass(frozen=True)
@@ -43,6 +55,7 @@ class StereoSettings:
     restart_seconds: float = 12
     max_pair_skew_ms: float = 250
     zoom_commands: bool = False  # False: a requested zoom change is only logged (dry-run)
+    head_motion: bool = False    # False: a head move is only logged; True still needs REACHY_ENABLE_MOTION
 
     def __post_init__(self):
         if self.source not in ("sim", "robot") or not self.robot_host:
@@ -91,13 +104,14 @@ class _LatestObservations:
                 self.dropped[_source(message)] = self.dropped.get(_source(message), 0) + 1
 
 
-def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None):
+def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None, head=None):
     """Reuse the notebooks' ReachySDK + last_frame path, once per application.
 
     Frames and head readbacks go to the bounded `messages` queue, newest kept.
     Ready, error and diagnostics messages go to `control`, which is unbounded:
     they are few, and a failure report must never be dropped. `commands` carries explicit
-    zoom requests from a data-capture procedure; results come back on `control`.
+    zoom requests from a data-capture procedure; `head` is (requests, halt): head moves and
+    releases, and the Stop event. Results come back on `control`.
     """
     # Ctrl+C belongs to the web-server parent, which disposes this worker.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -190,12 +204,42 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
             try:
                 records = setter.set_both(request["level"])
             except Exception as exc:  # noqa: BLE001 - report the type only
-                publish({"kind": "zoom_result", "id": request["id"], "error": type(exc).__name__})
+                publish({"kind": "zoom_result", "id": request["id"], "error": type(exc).__name__,
+                         "finished_ns": time.monotonic_ns()})
                 continue
-            publish({"kind": "zoom_result", "id": request["id"], "dry_run": setter.dry_run, "records": records})
+            publish({"kind": "zoom_result", "id": request["id"], "dry_run": setter.dry_run, "records": records,
+                     "finished_ns": time.monotonic_ns()})
+
+    def head_commands():
+        # The only thread that commands the neck. Stop is an event, so it reaches a running move.
+        from reachy_ai.motion import primitives
+        requests, halt = head
+        live = settings.head_motion  # primitives also require REACHY_ENABLE_MOTION and a passed gate
+        while not stop.is_set():
+            if halt.is_set():
+                record = primitives.hold_head(robot, allow_live=live)
+                halt.clear()
+                publish({"kind": "head_result", "id": "stop", "record": record, "finished_ns": time.monotonic_ns()})
+                continue
+            try:
+                request = requests.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                if request["action"] == "move":
+                    record = primitives.look_at_preset(robot, request["preset"], operator_approved=request["approved"],
+                                                       allow_live=live, stop_event=halt)
+                else:
+                    record = primitives.release_head(robot, operator_approved=request["approved"], allow_live=live)
+            except Exception as exc:  # noqa: BLE001 - report the type only
+                record = {"action": request["action"], "preset": request.get("preset"), "outcome": "error",
+                          "error": type(exc).__name__}
+            publish({"kind": "head_result", "id": request["id"], "record": record, "finished_ns": time.monotonic_ns()})
 
     if commands is not None:
         threading.Thread(target=zoom_commands, daemon=True).start()
+    if head is not None:
+        threading.Thread(target=head_commands, daemon=True).start()
     for eye in EYES:
         threading.Thread(target=read_eye, args=(eye,), daemon=True).start()
         threading.Thread(target=lens_diagnostics, args=(eye,), daemon=True).start()
@@ -236,6 +280,13 @@ class StereoService:
         self.head = None
         self.commands = None
         self._zoom_waits: dict[str, dict] = {}
+        self.head_requests = None
+        self.head_halt = None
+        self._head_waits: dict[str, dict] = {}
+        self.head_busy = False
+        self.command_done_ns: int | None = None  # when the last zoom or head command finished
+        self.head_target: dict | None = None     # the last live head move's record, until released
+        self.last_head_command: dict | None = None  # the last head command that was not refused, any mode
 
     def start(self):
         self.thread = threading.Thread(target=self._run, name="stereo-acquisition", daemon=True)
@@ -256,6 +307,8 @@ class StereoService:
             self.head = None
             self.dropped = {}
             self.superseded = {}
+            self.head_busy = False
+            self.head_target = self.last_head_command = None  # a new connection knows nothing of earlier commands
 
     def _run(self):
         context = mp.get_context("spawn")
@@ -263,11 +316,13 @@ class StereoService:
             self._new_session()
             messages = context.Queue(maxsize=OBSERVATION_QUEUE)
             control = context.Queue()
-            commands = context.Queue()
-            self.commands = commands
+            commands = context.Queue(maxsize=ZOOM_QUEUE)
+            head_requests, head_halt = context.Queue(maxsize=HEAD_QUEUE), context.Event()
+            self.commands, self.head_requests, self.head_halt = commands, head_requests, head_halt
             worker_stop = context.Event()
             worker = context.Process(target=_sdk_worker,
-                                     args=(self.settings, messages, control, worker_stop, commands),
+                                     args=(self.settings, messages, control, worker_stop, commands,
+                                           (head_requests, head_halt)),
                                      daemon=True)
             worker.start()
             started = time.monotonic()
@@ -290,6 +345,7 @@ class StereoService:
                 messages.close()
                 control.close()
                 commands.close()
+                head_requests.close()
                 with self.lock:
                     self.state = "reconnecting"
                     self.frames.clear()
@@ -338,6 +394,8 @@ class StereoService:
                 LOG.info("SDK readback %s: %s", message["section"], message["values"])
             elif kind == "zoom_result":
                 self._apply_zoom_result(message)
+            elif kind == "head_result":
+                self._apply_head_result(message)
             elif kind == "head":
                 self.head = {"joints": message["values"], "observed_ns": message["observed_ns"]}
             elif kind == "error":
@@ -373,6 +431,7 @@ class StereoService:
 
     def _apply_zoom_result(self, message):
         """Fold a zoom command's read-back into the diagnostics, so later captures record the real level."""
+        self._command_finished(message)
         for record in message.get("records", []):
             if not message.get("dry_run") and record.get("after"):
                 self.diagnostics.setdefault(record["eye"], {})["zoom_level"] = record["after"]
@@ -392,7 +451,10 @@ class StereoService:
         with self.lock:
             self._zoom_waits[request_id] = wait
         try:
-            self.commands.put({"id": request_id, "level": level})
+            try:
+                self.commands.put_nowait({"id": request_id, "level": level})
+            except queue.Full:
+                raise CommandBusy("A zoom command is already pending") from None
             if not wait["event"].wait(timeout_s):
                 raise TimeoutError("No zoom result from the camera service")
         finally:
@@ -402,6 +464,109 @@ class StereoService:
         if message.get("error"):
             raise RuntimeError(f"Zoom command failed ({message['error']})")
         return message["records"]
+
+    def _command_finished(self, message):
+        finished = message.get("finished_ns")
+        if finished is not None:
+            self.command_done_ns = max(self.command_done_ns or 0, finished)
+
+    def _apply_head_result(self, message):
+        """Remember when the command ended and what the head was last live-commanded to."""
+        self._command_finished(message)
+        record = message.get("record") or {}
+        if record.get("outcome") not in ("refused", "error"):
+            self.last_head_command = {k: record.get(k) for k in ("action", "preset", "target_deg", "mode", "outcome")}
+        if record.get("mode") == "live":
+            if record.get("action") == "release":
+                self.head_target = None
+            elif record.get("action") in ("move", "stop") and record.get("outcome") != "refused":
+                self.head_target = record
+        if message["id"] != "stop":
+            self.head_busy = False
+        wait = self._head_waits.get(message["id"])
+        if wait is not None:
+            wait["message"] = message
+            wait["event"].set()
+
+    def head_motion_mode(self) -> str:
+        from reachy_ai import config
+        return "live" if self.settings.head_motion and config.REACHY_ENABLE_MOTION else "dry-run"
+
+    def request_head(self, action: str, preset: str | None = None, approved: bool = False,
+                     timeout_s: float = 60.0) -> dict:
+        """Ask the SDK process for a head move ('move', with a preset) or a smooth 'release'; return its record.
+
+        One at a time: refused with CommandBusy while another is pending or running. Live or dry-run is
+        decided in the SDK process (primitives + gate); the caller has already checked the confirm."""
+        if self.head_requests is None or self.state != "live":
+            raise RuntimeError("Robot connection is not live")
+        request_id = uuid.uuid4().hex
+        wait = {"event": threading.Event(), "message": None}
+        with self.lock:
+            if self.head_busy:
+                raise CommandBusy("A head move is already running; wait for it or press Stop")
+            try:
+                self.head_requests.put_nowait({"id": request_id, "action": action, "preset": preset,
+                                               "approved": bool(approved)})
+            except queue.Full:
+                raise CommandBusy("A head command is already pending") from None
+            self.head_busy = True
+            self._head_waits[request_id] = wait
+        try:
+            if not wait["event"].wait(timeout_s):
+                raise TimeoutError("No head result from the SDK process")
+        finally:
+            with self.lock:
+                self._head_waits.pop(request_id, None)
+        return wait["message"]["record"]
+
+    def request_head_stop(self, timeout_s: float = 10.0) -> dict:
+        """Stop: interrupt a running move and hold the present neck position. Needs no confirm."""
+        if self.head_halt is None:
+            raise RuntimeError("Robot connection is not live")
+        with self.lock:
+            wait = self._head_waits.setdefault("stop", {"event": threading.Event(), "message": None})
+        self.head_halt.set()
+        try:
+            if not wait["event"].wait(timeout_s):
+                raise TimeoutError("No stop result from the SDK process")
+        finally:
+            with self.lock:
+                if self._head_waits.get("stop") is wait:
+                    self._head_waits.pop("stop")
+        return wait["message"]["record"]
+
+    def capture_blocker(self, settle_s: float | None = None, tolerance_deg: float | None = None) -> str | None:
+        """Why a procedure capture must wait, or None: frames (and the neck read-back) must be observed
+        `settle_s` after the last zoom/head command ended, and the neck must read back within
+        `tolerance_deg` of the last live head command."""
+        from reachy_ai import config
+        settle_s = config.CAPTURE_SETTLE_S if settle_s is None else settle_s
+        tolerance_deg = config.NECK_READBACK_TOLERANCE_DEG if tolerance_deg is None else tolerance_deg
+        with self.lock:
+            if self.head_busy:
+                return "A head move is running; capture after it has finished."
+            ready_ns = None if self.command_done_ns is None else self.command_done_ns + int(settle_s * 1e9)
+            if ready_ns is not None and any(f.observed_ns < ready_ns for f in self.frames.values()):
+                return f"Frames predate the last command plus {settle_s} s of settling; try again in a moment."
+            target = self.head_target
+            if target is None:
+                return None
+            if target.get("action") == "stop":
+                return "The head was stopped; move it to a preset before capturing."
+            if target.get("outcome") != "reached":
+                return f"The last head move did not complete ({target.get('outcome')}); move the head again."
+            if self.head is None or (ready_ns is not None and self.head["observed_ns"] < ready_ns):
+                return "No neck read-back since the last head move yet; try again in a moment."
+            off = []
+            for name, goal in target["target_deg"].items():
+                present = (self.head["joints"].get(name) or {}).get("present_deg")
+                if present is None or abs(present - goal) > tolerance_deg:
+                    off.append(f"{name} {present} vs {goal}")
+            if off:
+                return (f"Neck read-back is more than {tolerance_deg} deg off the command ({'; '.join(off)}); "
+                        "capture refused.")
+            return None
 
     def status(self):
         with self.lock:
@@ -425,7 +590,8 @@ class StereoService:
             can_capture = all(eyes[e]["state"] == "live" for e in EYES)
             can_capture = can_capture and skew is not None and skew <= self.settings.max_pair_skew_ms
             return {"schema_version": "1", "source": self.settings.source, "session_id": self.session,
-                    "motion_controls": False, "recording": False, "eyes": eyes,
+                    "motion_controls": "head only", "head_motion": self.head_motion_mode(),
+                    "head_busy": self.head_busy, "recording": False, "eyes": eyes,
                     "observation_skew_ms": round(skew, 1) if skew is not None else None,
                     "can_capture": can_capture, "diagnostics": dict(self.diagnostics),
                     "delivery": {"observation_queue": OBSERVATION_QUEUE, "policy": "newest kept",
@@ -452,6 +618,7 @@ class StereoService:
                                          "settings_at_connection": copy.deepcopy(
                                              {e: self.diagnostics.get(e) for e in EYES})},
                       "frames": dict(self.frames)}
+            record["head_command"] = copy.deepcopy(self.last_head_command)
             # Freeze observed readbacks with the pair; never use later live head angles.
             if self.head:
                 age_ms = (time.monotonic_ns() - self.head["observed_ns"]) / 1e6
@@ -491,6 +658,9 @@ def main():
     parser.add_argument("--allow-zoom-commands", action="store_true",
                         help="let a data-capture procedure send zoom commands to the cameras after the "
                              "operator's confirm in the page (default: dry-run, logged only)")
+    parser.add_argument("--allow-head-motion", action="store_true",
+                        help="let a data-capture procedure move the neck (head only) after the operator's confirm "
+                             "in the page; also needs REACHY_ENABLE_MOTION=true (default: dry-run, logged only)")
     parser.add_argument("--stereo-calibration", default=os.environ.get("REACHY_STEREO_CALIBRATION"),
                         help="Physical source's calibration profile (JSON); "
                              "default calibration/reachy12_stereo_2026_08_27.json")
@@ -502,6 +672,7 @@ def main():
         sdk_port=args.sdk_port or (50051 if args.source == "sim" else 50055),
         camera_port=args.camera_port or (50051 if args.source == "sim" else 50057),
         fps=args.fps, preview_width=args.preview_width, zoom_commands=args.allow_zoom_commands,
+        head_motion=args.allow_head_motion,
     )
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     uvicorn.run(create_app(settings, detector_model=args.detector_model, sim_lens=args.sim_lens,

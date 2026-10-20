@@ -64,9 +64,18 @@ the target whatever the RMS is. If it does, record the measured bound instead of
 
 **Setter.** `ZoomSetter` is an explicit camera-service call (`camera.zoom_level = ZoomLevel.X`), logged
 (`DRY-RUN zoom …` / `ZOOM COMMAND …` / read-back result), **dry-run by default**, with a read-back check after each
-live command. It sends no joint command. Nothing in the viewer or any default path calls it.
+live command. It sends no joint command. Only a data-capture procedure calls it, after the operator's confirm
+(`docs/DATA_CAPTURE.md`).
 
-**Operator script** — `scripts/zoom_fov_check.py` (Siva to run; not run here). Board in view, robot at rest:
+**Head (neck) for capture.** Owner decision 2026-10-20: "Neck motion is required for vision data capture. Capture
+procedures may articulate the head through the neck for viewing and perception. Arm motion stays forbidden in
+capture procedures." The viewer's procedures point the head at named neck poses (`config.HEAD_PRESETS`) through
+`motion/primitives.py` and the head safety gate, so the operator never aims the cameras by hand. The zoom check
+starts at `board_view` (pitch 64°); the ruler test holds the head at neutral. Dry-run unless
+`REACHY_ENABLE_MOTION=true` and `--allow-head-motion`.
+
+**Operator script** — `scripts/zoom_fov_check.py` (Siva to run; not run here; the viewer's procedure is preferred
+because it aims the head). Board in view, arm at rest; the script never moves the head:
 
 ```bash
 export REACHY_IP=<ip>
@@ -84,7 +93,8 @@ Offline now: see LAB_EVIDENCE.md. Only one distance band is covered.
 
 ### Ruler test (operator; Siva to run later; not run here)
 
-Target: error **< 15 mm** at **0.3 / 0.5 / 0.8 / 1.2 m**. Run only when the robot is at rest at the scene zoom
+Target: error **< 15 mm** at **0.3 / 0.5 / 0.8 / 1.2 m**. Run only with the arm at rest, the head held at neutral
+(the viewer's procedure sets it in step 0), at the scene zoom
 (`OUT`); the script refuses if the zoom does not match the profile (`--allow-zoom-mismatch` overrides, results then
 do not apply to the profile).
 
