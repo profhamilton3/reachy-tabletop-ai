@@ -13,6 +13,8 @@ dry-run it stays put and you must have it at `board_view` first.
 
 ## 1. Setup
 
+**Zoom.** Before **Capture empty board**, set the zoom to OUT (wide field of view) first: the T3-Analysis zoom step or the viewer's Set zoom OUT, with a confirm. Sim result, owner, 2026-10-21: the empty board was captured successfully at OUT, and the demo layouts tested successfully. Keep the same zoom for every Analyze; the reader refuses a zoom mismatch. The 2D board reading is valid at any fixed zoom, but 3D depth is not: the sim's calibration profile is for INTER. On the robot, check whether the standard zoom shows the whole board; record the zoom level used in the results table.
+
 **Simulator**
 
 1. Start the simulator: `~/reachy-1-2-sim/SivaLabLauncher.sh`.
@@ -267,31 +269,31 @@ Confirm with the expected text above.
 
 ### Simulator run
 
-| # | Layout | Read correct (yes / corrected squares) | Move as expected (yes / no) | Notes |
-|---|---|---|---|---|
+| # | Layout | Zoom | Read correct (yes / corrected squares) | Move as expected (yes / no) | Notes |
+|---|---|---|---|---|---|
 
-| 1 | Opening: O went first | | | |
-| 2 | Rule 1, win | | | |
-| 3 | Rule 2, block | | | |
-| 4 | Rule 3, fork | | | |
-| 5 | Rule 4, block a fork | | | |
-| 6 | Rule 9, search | | | |
-| 7 | Invalid counts | | | |
-| 8 | A won game | | | |
+| 1 | Opening: O went first | | | | |
+| 2 | Rule 1, win | | | | |
+| 3 | Rule 2, block | | | | |
+| 4 | Rule 3, fork | | | | |
+| 5 | Rule 4, block a fork | | | | |
+| 6 | Rule 9, search | | | | |
+| 7 | Invalid counts | | | | |
+| 8 | A won game | | | | |
 
 ### Robot run
 
-| # | Layout | Read correct (yes / corrected squares) | Move as expected (yes / no) | Notes |
-|---|---|---|---|---|
+| # | Layout | Zoom | Read correct (yes / corrected squares) | Move as expected (yes / no) | Notes |
+|---|---|---|---|---|---|
 
-| 1 | Opening: O went first | | | |
-| 2 | Rule 1, win | | | |
-| 3 | Rule 2, block | | | |
-| 4 | Rule 3, fork | | | |
-| 5 | Rule 4, block a fork | | | |
-| 6 | Rule 9, search | | | |
-| 7 | Invalid counts | | | |
-| 8 | A won game | | | |
+| 1 | Opening: O went first | | | | |
+| 2 | Rule 1, win | | | | |
+| 3 | Rule 2, block | | | | |
+| 4 | Rule 3, fork | | | | |
+| 5 | Rule 4, block a fork | | | | |
+| 6 | Rule 9, search | | | | |
+| 7 | Invalid counts | | | | |
+| 8 | A won game | | | | |
 
 The exit gate for Phase 1 is a correct move on every confirmed board, with the read accuracy reported: squares read
 right first time, out of 9 per layout.
