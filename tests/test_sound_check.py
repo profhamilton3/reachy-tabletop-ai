@@ -65,8 +65,8 @@ def good_baseline():
 class FakeAudio:
     """An AudioClient stand-in: canned replies, optional failures, every call recorded."""
 
-    def __init__(self, tts="espeak-ng", loopback=None, baseline=None, fail=None):
-        self.tts, self.calls, self.fail = tts, [], fail or {}
+    def __init__(self, tts="espeak-ng", loopback=None, baseline=None, fail=None, layout=None):
+        self.tts, self.calls, self.fail, self.layout = tts, [], fail or {}, layout
         self.clips = {"loopback": loopback or good_loopback(), "baseline": baseline or good_baseline()}
 
     def _check(self, op):
@@ -77,8 +77,11 @@ class FakeAudio:
 
     def status(self):
         self._check("status")
-        return {"backend": "alsa", "version": "1", "tts": self.tts, "rate": RATE,
-                "devices": {"playback": ["card 2: ArrayUAC10"], "capture": ["card 2: ArrayUAC10"]}}
+        status = {"backend": "alsa", "version": "1", "tts": self.tts, "rate": RATE,
+                  "devices": {"playback": ["card 2: ArrayUAC10"], "capture": ["card 2: ArrayUAC10"]}}
+        if self.layout:
+            status["channel_layout"] = dict(helper.CHANNEL_LAYOUTS[self.layout], name=self.layout)
+        return status
 
     def tone(self, seconds, freq):
         self._check(("tone", seconds, freq))
@@ -129,6 +132,25 @@ def test_steps_call_the_helper_with_the_tone_phrase_and_recordings():
     loopback = run.sound_results["sound_loopback"][-1]
     assert loopback["outcome"] == "recorded" and loopback["channels"] == 4 and loopback["rate"] == RATE
     assert loopback["seconds"] == 2.0 and loopback["consent"] is True and loopback["take"] == 1
+
+
+@pytest.mark.parametrize("layout, channels", [(None, 4), ("plain", 4), ("respeaker6", 6), ("respeaker1", 1)])
+def test_recordings_take_every_channel_the_helpers_layout_defines(layout, channels):
+    audio = FakeAudio(layout=layout)
+    run = full_run(audio)
+    records = [call for call in audio.calls if call[0] == "record"]
+    assert [c[2] for c in records] == [channels, channels]
+    assert run.sound_results["sound_loopback"][-1]["requested_channels"] == channels
+    capture = json.loads(read_bundle(run.build_zip({}))[1]["capture.json"])
+    assert capture["channel_layout"]["name"] == (layout or "plain")
+    assert capture["record"]["channels"] == channels
+
+
+def test_a_recording_without_a_status_check_first_asks_the_helper_for_its_layout():
+    audio = FakeAudio(layout="respeaker6")
+    run = proc.CaptureRun(proc.get_procedure("sound_check"))
+    run.apply_sound("sound_loopback", audio, confirmed=True)
+    assert audio.calls == ["status", ("record", 2.0, 6, {"seconds": 1.0, "freq": 1000.0})]
 
 
 def test_a_recording_needs_the_consent_tick_and_the_refusal_is_recorded():
@@ -324,6 +346,47 @@ def test_sound_analyser_reports_the_operators_answers_and_a_skipped_phrase():
     assert result["answers"]["sound_phrase"]["outcome"] == "skipped"
     assert any("Speaker: tone: NOT HEARD" in f for f in result["findings"])
     assert any("Speaker: phrase: skipped" in f for f in result["findings"])
+
+
+def respeaker6_clips(reference_tone=True):
+    """ch0 processed (echo-cancelled: the tone mostly removed), ch1-4 the microphones, ch5 the playback reference."""
+    silent = np.zeros(2 * RATE)
+    loopback = make_wav([noise(0.002, seed=0)] + [sine(0.2) + noise(0.001, seed=c) for c in range(1, 5)]
+                        + [sine(0.25) if reference_tone else silent])
+    baseline = make_wav([noise(0.002, seed=9)] + [noise(0.001, seed=10 + c) for c in range(1, 5)] + [silent])
+    return loopback, baseline
+
+
+def test_sound_analyser_reads_the_respeaker6_layout():
+    result = analysed(*respeaker6_clips(), {"layout": "respeaker6"})
+    assert result["channel_layout"] == "respeaker6" and result["channels_found"] == result["channels_expected"] == 6
+    assert [(r["channel"], r["role"]) for r in result["rows"]] == [
+        (0, "processed"), (1, "mic"), (2, "mic"), (3, "mic"), (4, "mic"), (5, "reference")]
+    mics, processed, reference = result["rows"][1:5], result["rows"][0], result["rows"][5]
+    assert all(r["hears_tone"] and r["margin_db"] > 40 for r in mics)
+    assert processed["hears_tone"] is None and not processed["dead"]  # reported, not judged
+    assert reference["carries_tone"] is True and reference["dead"] is None and reference["baseline_rms_dbfs"] is None
+    assert result["findings"] == [] and result["notes"] == [analyse.PROCESSED_NOTE]
+
+
+def test_sound_analyser_flags_a_respeaker6_reference_without_the_tone():
+    result = analysed(*respeaker6_clips(reference_tone=False), {"layout": "respeaker6"})
+    assert result["rows"][5]["carries_tone"] is False
+    assert [f for f in result["findings"] if "Channel 5 (reference) does not carry the tone" in f]
+    assert not [f for f in result["findings"] if "dead" in f]
+
+
+def test_sound_analyser_reads_the_respeaker1_layout_without_a_not_4_flag():
+    result = analysed(make_wav([sine(0.05) + noise(0.001)]), make_wav([noise(0.001, seed=4)]),
+                      {"layout": "respeaker1"})
+    assert result["channels_found"] == result["channels_expected"] == 1
+    assert [(r["channel"], r["role"], r["hears_tone"]) for r in result["rows"]] == [(0, "processed", None)]
+    assert result["findings"] == [] and not any("not 4" in f for f in result["findings"])
+
+
+def test_sound_analyser_flags_a_channel_count_that_does_not_match_the_layout():
+    result = analysed(good_loopback(), good_baseline(), {"layout": "respeaker6"})  # 4 channels recorded
+    assert any("4 channel(s) found, but the respeaker6 layout defines 6" in f for f in result["findings"])
 
 
 def test_sound_analyser_cli_prints_the_report(tmp_path):

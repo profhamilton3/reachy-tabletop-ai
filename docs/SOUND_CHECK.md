@@ -23,15 +23,45 @@ to listen on another address.
    aplay -l      # playback devices
    arecord -l    # capture devices: the ReSpeaker shows as e.g. "card 2: ArrayUAC10"
    ```
-3. Start the helper with those devices (`hw:<card>,<device>`):
+3. Find the ReSpeaker's firmware (§1.1), then start the helper with its devices (`hw:<card>,<device>`) and
+   the matching `--channel-layout`:
    ```bash
-   python3 scripts/reachy_audio_helper.py --backend alsa --play-device hw:2,0 --record-device hw:2,0
+   python3 scripts/reachy_audio_helper.py --backend alsa --play-device hw:2,0 --record-device hw:2,0 \
+       --channel-layout respeaker6
    ```
    Without `--play-device` and `--record-device`, the system default devices are used.
    The other options are `--port` (default 8090), `--rate` (16000, the ReSpeaker's native rate; 44100 or 48000)
    and `--piper-model`.
 4. Leave it running in its own terminal. Each operation and the spoken text are logged; audio never is.
    Nothing is kept on the NUC: a clip lives in a temporary folder that is deleted when the request ends.
+
+### 1.1 Which ReSpeaker firmware: the channel layout
+
+The ReSpeaker USB 4-mic array runs one of two firmwares, and they expose different channels:
+
+| Firmware | Channels | What they carry | `--channel-layout` |
+|---|---|---|---|
+| 6-channel | 6 | ch0 processed (beamformed, echo-cancelled), **ch1–4 the four raw microphones**, ch5 the playback reference | `respeaker6` |
+| 1-channel | 1 | ch0 processed only | `respeaker1` |
+| anything else (another card, the Mac) | — | no claim about the channels; 4 are recorded | `plain` (default) |
+
+To tell them apart, on the NUC:
+
+```bash
+arecord -l                                        # the card and device numbers, e.g. card 2, device 0
+arecord --dump-hw-params -D hw:2,0 -d 1 /dev/null # prints CHANNELS: 6 (6-channel firmware) or 1 (1-channel)
+```
+
+- **Use `hw:` with the layout's channel count, not `plughw:`.** `hw:` hands over the channels exactly as the
+  firmware sends them. `plughw:` converts, and it would silently remix 6 channels into the number asked for, so
+  the microphones could no longer be told apart. `/record` allows up to 6 channels, and the Sound check records
+  every channel the layout defines (6, 1, or 4 for `plain`).
+- **#7's direction finding needs the 6-channel firmware.** Direction of arrival is computed from the time
+  differences between the four raw microphones (ch1–4). The 1-channel firmware only gives the processed
+  mixture, so it cannot be used for #7. If the array runs the 1-channel firmware, record that in the report
+  (#28); flashing the 6-channel firmware is a separate, owner-approved step.
+- The layout is shown by `/status`, recorded in the bundle (`capture.json`, `channel_layout`) and read by the
+  analyser.
 
 **Text-to-speech.** The helper uses **piper** if it is on `PATH` and a voice model is given with
 `--piper-model <voice>.onnx`, otherwise **espeak-ng**. If neither is installed, `/say` answers `unavailable`
@@ -66,10 +96,10 @@ microphone permission prompt for the terminal.
 
 | Route | Body | Does |
 |---|---|---|
-| `GET /status` | — | backend, TTS engine, devices found, limits, version |
+| `GET /status` | — | backend, TTS engine, devices found, channel layout, limits, version |
 | `POST /tone` | `{"seconds": ≤3, "freq": 100–8000}` | plays a sine generated in the helper, at −12 dBFS with 10 ms fades |
 | `POST /say` | `{"text": ≤200 characters}` | speaks the text (the text goes to the engine on stdin) |
-| `POST /record` | `{"seconds": ≤3, "channels": ≤4, "tone": {"seconds", "freq"}?}` | returns a 16-bit WAV; with `tone`, the recording starts first and the tone plays 0.3 s into it |
+| `POST /record` | `{"seconds": ≤3, "channels": ≤6, "tone": {"seconds", "freq"}?}` | returns a 16-bit WAV; with `tone`, the recording starts first and the tone plays 0.3 s into it |
 
 - One operation at a time. A second request while one runs gets **409 busy**; nothing is queued.
 - Every subprocess has a timeout (the operation's length plus 5 s; 30 s for TTS synthesis), and a timeout
@@ -87,8 +117,8 @@ sim). In **Data capture**, choose **Sound check (v1)**.
 | 1. Helper status | **Check helper** | shows the backend, the TTS engine and the devices found | check the ReSpeaker is listed |
 | 2. Speaker: tone | **Play tone** | 1 s at 1 kHz | press **Heard it** or **Not heard**, and type a volume note (quiet, comfortable, loud) |
 | 3. Speaker: phrase | **Say phrase** | Reachy says "Hello, I am Reachy" (skipped with a note if there is no TTS) | **Heard it** / **Not heard**, and a volume note |
-| 4. Microphones: loopback | tick *I confirm: the speaker agreed to this recording*, then **Record loopback** | records 2 s on 4 channels while the tone plays | everyone quiet |
-| 5. Microphones: room baseline | tick the consent box, then **Record baseline** | records 2 s of silence (the noise floor) | everyone quiet, nothing playing |
+| 4. Microphones: loopback | tick *I confirm: the speaker agreed to this recording*, then **Record loopback** | records 2 s on every channel of the layout while the tone plays | everyone quiet |
+| 5. Microphones: room baseline | tick the consent box, then **Record baseline** | records 2 s of silence (the noise floor), on the same channels | everyone quiet, nothing playing |
 
 - **Consent.** A recording is refused unless the consent box is ticked, fresh for each recording, confirming
   that the person (or people) in the room agreed to be recorded. A refusal is recorded in the bundle.
@@ -108,12 +138,32 @@ the room), and send it as described in `docs/DATA_CAPTURE.md`.
 .venv/bin/python scripts/analyze_capture_bundle.py outputs/reachy-capture-sound_check.zip [--json sound.json]
 ```
 
-The analyser prints the backend and TTS engine, the operator's answers, then one line per microphone channel:
+The analyser prints the backend, the TTS engine and the channel layout, the operator's answers, then one
+line per channel. With the `plain` layout the channels are numbered from 1:
 
 ```
 channels found: 4 of 4
 ch1: loopback rms -27.2 peak -19.0 dBFS | baseline rms -50.2 peak -35.7 dBFS | margin +23.0 dB
 ```
+
+With a ReSpeaker layout they use the firmware's own numbering, from 0, with the role of each channel
+(synthetic test data):
+
+```
+channels found: 6 of 6
+ch0 (processed): loopback rms -54.0 peak -40.9 dBFS | baseline rms -54.0 peak -41.4 dBFS | margin +0.0 dB
+ch1 (mic): loopback rms -17.0 peak -13.8 dBFS | baseline rms -60.0 peak -46.2 dBFS | margin +43.0 dB
+...
+ch4 (mic): loopback rms -17.0 peak -13.8 dBFS | baseline rms -60.0 peak -47.6 dBFS | margin +43.0 dB
+ch5 (reference): loopback rms -15.1 peak -12.0 dBFS | baseline rms silent peak silent dBFS | margin n/a | carries the tone
+```
+
+- **respeaker6.** The loopback margin is judged on **ch1–4**, the four microphones. **ch0 (processed)** is
+  reported but not judged: the firmware's echo cancellation can remove Reachy's own tone from it.
+  **ch5 (reference)** should carry the tone. If it does not, the tone did not play through the ReSpeaker's own
+  output (the speaker is on another sound card), and the reference cannot serve echo cancellation. Silence on
+  ch5 in the baseline is expected and is not flagged as dead.
+- **respeaker1.** One processed channel, reported but not judged, and no "not 4" flag.
 
 - **loopback / baseline RMS and peak** (dBFS, 0 = full scale): how loud the channel was with the tone
   playing, and in the quiet room. "silent" means digital silence.
@@ -123,7 +173,8 @@ ch1: loopback rms -27.2 peak -19.0 dBFS | baseline rms -50.2 peak -35.7 dBFS | m
 - **DEAD**: the channel stays below −80 dBFS in every recording: an unconnected or broken input.
 - **CLIPPED**: more than 0.1 % of its samples are at full scale. Lower the speaker volume or the capture gain
   and run the check again.
-- **channels found against 4**: fewer than 4 means the capture device is not the ReSpeaker's 4-channel input.
+- **channels found against the layout** (4 for `plain`, 6 or 1 for the ReSpeaker layouts): a mismatch means the
+  firmware or `--record-device` does not match `--channel-layout`.
 
 Notes also flag a tone or phrase the operator did not hear, a step that was not answered, a skipped phrase,
 a missing recording, a missing status check, and the fake backend (synthetic recordings).
@@ -134,7 +185,7 @@ a missing recording, a missing status check, and the fake backend (synthetic rec
 |---|---|
 | "the audio helper is unreachable at REACHY_AUDIO_URL" | The helper is not running, or the tunnel is closed. Start both (§1). Check `curl -s http://127.0.0.1:8090/status` on the workstation. |
 | `arecord ... failed: ... No such file or directory` / `audio open error` | Wrong device. List the cards with `arecord -l` and pass the ReSpeaker's `hw:<card>,<device>`. Card numbers can change after a reboot or replug. |
-| `Channels count non available` (asking for 4) | The `hw:` device does not offer 4 channels. Some ReSpeaker firmware has 1 or 6 channels: try `plughw:<card>,<device>`, which converts, and note the firmware in the report (#7). |
+| `Channels count non available` | The `hw:` device does not offer the channel count asked for. Check the firmware (§1.1) and start the helper with the matching `--channel-layout` (`respeaker6` or `respeaker1`). Keep `hw:`; don't switch to `plughw:`, which remixes the channels. |
 | `Device or resource busy` | Another program holds the card (a notebook, the voice bridge, PulseAudio). Close it, or stop the program that has the device open (`fuser -v /dev/snd/*`). |
 | `Permission denied` on `/dev/snd/...` | The user is not in the `audio` group: `sudo usermod -aG audio $USER`, then log in again. |
 | 409 "another audio operation is running" | One operation at a time: wait for the current one to end. |

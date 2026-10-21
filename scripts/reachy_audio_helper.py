@@ -7,12 +7,13 @@ sim work) and the stereo viewer calls it through an SSH tunnel. Standard library
     python3 scripts/reachy_audio_helper.py --backend mac           # sim work on the Mac
     ssh -L 8090:127.0.0.1:8090 <user>@<robot>                      # on the workstation (docs/SOUND_CHECK.md)
 
-It binds to 127.0.0.1 only; there is no option to listen elsewhere.
+It binds to 127.0.0.1 only; there is no option to listen elsewhere. --channel-layout names what the capture
+channels are (plain, or the ReSpeaker USB array's respeaker6 / respeaker1 firmware); /status reports it.
 
     GET  /status                                  backend, devices found, TTS engine, limits, version
     POST /tone   {"seconds": <=3, "freq": Hz}     play a test tone (generated here, capped at -12 dBFS)
     POST /say    {"text": <=200 chars}            speak a phrase (piper, else espeak-ng; "unavailable" if neither)
-    POST /record {"seconds": <=3, "channels": <=4, "tone": {"seconds", "freq"}?}
+    POST /record {"seconds": <=3, "channels": <=6, "tone": {"seconds", "freq"}?}
                                                   record and return a WAV; with "tone", the recording starts
                                                   first and the tone plays during it (the loopback check)
 
@@ -43,7 +44,14 @@ HOST = "127.0.0.1"  # local only; the workstation reaches it through an SSH tunn
 DEFAULT_PORT = 8090
 DEFAULT_RATE = 16000  # the ReSpeaker's native rate
 MAX_SECONDS = 3.0
-MAX_CHANNELS = 4
+MAX_CHANNELS = 6  # the ReSpeaker USB array's 6-channel firmware
+#: What each capture channel carries. The ReSpeaker USB 4-mic array has two firmwares: 6 channels (ch0 processed,
+#: ch1-4 the raw microphones, ch5 the playback reference) or 1 (processed only). "plain" makes no claim.
+CHANNEL_LAYOUTS = {
+    "plain": {"channels": 4, "roles": ["mic", "mic", "mic", "mic"]},
+    "respeaker6": {"channels": 6, "roles": ["processed", "mic", "mic", "mic", "mic", "reference"]},
+    "respeaker1": {"channels": 1, "roles": ["processed"]},
+}
 MAX_TEXT = 200
 MIN_FREQ, MAX_FREQ = 100.0, 8000.0
 TONE_DBFS = -12.0
@@ -373,14 +381,17 @@ def tone_args(body):
 class AudioHelper:
     """The operations behind the routes; one at a time."""
 
-    def __init__(self, backend):
-        self.backend = backend
+    def __init__(self, backend, channel_layout="plain"):
+        if channel_layout not in CHANNEL_LAYOUTS:
+            raise ValueError("unknown channel layout {!r}".format(channel_layout))
+        self.backend, self.channel_layout = backend, channel_layout
         self.lock = threading.Lock()
 
     def status(self):
         return {"helper": "reachy_audio_helper", "version": VERSION, "backend": self.backend.name,
                 "rate": self.backend.rate, "tts": self.backend.tts(), "devices": self.backend.devices(),
                 "busy": self.lock.locked(), "tone_dbfs": TONE_DBFS,
+                "channel_layout": dict(CHANNEL_LAYOUTS[self.channel_layout], name=self.channel_layout),
                 "limits": {"seconds": MAX_SECONDS, "channels": MAX_CHANNELS, "text": MAX_TEXT,
                            "freq": [MIN_FREQ, MAX_FREQ], "request_bytes": MAX_REQUEST_BYTES,
                            "response_bytes": MAX_RESPONSE_BYTES}}
@@ -507,9 +518,9 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(200, result)
 
 
-def make_server(port, backend):
+def make_server(port, backend, channel_layout="plain"):
     """The HTTP server, bound to 127.0.0.1. Port 0 picks a free port (tests)."""
-    handler = type("BoundHandler", (Handler,), {"helper": AudioHelper(backend)})
+    handler = type("BoundHandler", (Handler,), {"helper": AudioHelper(backend, channel_layout)})
     server = ThreadingHTTPServer((HOST, port), handler)
     server.daemon_threads = True
     return server
@@ -533,11 +544,14 @@ def main(argv=None):
     parser.add_argument("--rate", type=int, default=DEFAULT_RATE, choices=(16000, 44100, 48000),
                         help="sample rate in Hz (default %(default)s)")
     parser.add_argument("--piper-model", help="piper voice model (.onnx); without it, espeak-ng is used")
+    parser.add_argument("--channel-layout", choices=sorted(CHANNEL_LAYOUTS), default="plain",
+                        help="what the capture channels carry: respeaker6 (ch0 processed, ch1-4 microphones, ch5 "
+                             "playback reference), respeaker1 (processed only) or plain (default)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    server = make_server(args.port, build_backend(args))
-    LOG.info("audio helper v%s, backend %s, listening on %s:%d (local only)", VERSION, args.backend,
-             HOST, server.server_address[1])
+    server = make_server(args.port, build_backend(args), args.channel_layout)
+    LOG.info("audio helper v%s, backend %s, channel layout %s, listening on %s:%d (local only)", VERSION,
+             args.backend, args.channel_layout, HOST, server.server_address[1])
     try:
         server.serve_forever()
     except KeyboardInterrupt:

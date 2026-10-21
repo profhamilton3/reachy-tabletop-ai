@@ -85,7 +85,8 @@ def test_status_reports_backend_devices_tts_limits_and_version(serve):
     status = client.status()
     assert status["backend"] == "fake" and status["version"] == helper.VERSION and status["tts"] == "fake-tts"
     assert status["devices"]["capture"] == ["fake array (4 ch)"] and status["busy"] is False
-    assert status["limits"]["seconds"] == 3.0 and status["limits"]["channels"] == 4
+    assert status["limits"]["seconds"] == 3.0 and status["limits"]["channels"] == 6
+    assert status["channel_layout"] == {"name": "plain", "channels": 4, "roles": ["mic"] * 4}
     assert status["limits"]["text"] == 200 and status["tone_dbfs"] == -12.0
 
 
@@ -114,11 +115,43 @@ def test_tone_say_and_record_through_the_client(serve):
                              ("record", 2.0, 4), ("play", 1.0)]  # the loopback: recording first, then the tone
 
 
+def test_record_allows_up_to_six_channels_for_the_respeaker_6_channel_firmware(serve):
+    backend = helper.FakeBackend()
+    server, client = serve(backend)
+    assert wav(client.record(1.0, 6))[0] == 6
+    status, payload = post(server, "/record", {"seconds": 1, "channels": 7})
+    assert status == 400 and "channels must be a number from 1 to 6" == payload["detail"]
+    assert backend.calls == [("record", 1.0, 6)]
+
+
+@pytest.mark.parametrize("layout, channels, roles", [
+    ("respeaker6", 6, ["processed", "mic", "mic", "mic", "mic", "reference"]),
+    ("respeaker1", 1, ["processed"]),
+    ("plain", 4, ["mic", "mic", "mic", "mic"]),
+])
+def test_the_channel_layout_is_reported_in_status(layout, channels, roles):
+    server = helper.make_server(0, helper.FakeBackend(), layout)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status = AudioClient(f"http://127.0.0.1:{server.server_address[1]}").status()
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert status["channel_layout"] == {"name": layout, "channels": channels, "roles": roles}
+
+
+def test_an_unknown_channel_layout_is_refused():
+    with pytest.raises(SystemExit):
+        helper.main(["--channel-layout", "respeaker4"])
+    with pytest.raises(ValueError):
+        helper.AudioHelper(helper.FakeBackend(), "respeaker4")
+
+
 @pytest.mark.parametrize("path, body", [
     ("/tone", {"seconds": 3.5}), ("/tone", {"seconds": 0}), ("/tone", {"seconds": True}),
     ("/tone", {"seconds": 1, "freq": 50}), ("/tone", {"seconds": 1, "freq": 20000}), ("/tone", {}),
     ("/say", {"text": "x" * 201}), ("/say", {"text": "   "}), ("/say", {"text": 7}), ("/say", {}),
-    ("/record", {"seconds": 2, "channels": 5}), ("/record", {"seconds": 2, "channels": 2.5}),
+    ("/record", {"seconds": 2, "channels": 7}), ("/record", {"seconds": 2, "channels": 2.5}),
     ("/record", {"seconds": 4, "channels": 1}), ("/record", {"seconds": 2, "channels": 0}),
     ("/record", {"seconds": 2, "channels": 4, "tone": {"seconds": 2, "freq": 1000}}),
     ("/record", {"seconds": 2, "channels": 4, "tone": "loud"}),

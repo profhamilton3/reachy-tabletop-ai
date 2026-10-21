@@ -43,7 +43,7 @@ SENSITIVITY_BASELINE_M = 0.078
 SOUND_PHRASE = "Hello, I am Reachy"
 SOUND_TONE = {"seconds": 1.0, "freq": 1000.0}
 SOUND_RECORD_S = 2.0
-SOUND_CHANNELS = 4
+SOUND_CHANNELS = 4  # without a channel layout from the helper ("plain")
 MAX_TAKES_PER_STEP = 3
 MAX_NOTE_CHARS = 200
 RECORDING_SOUNDS = ("loopback", "baseline")
@@ -240,7 +240,8 @@ def board_view_approach_procedure() -> Procedure:
 
 def sound_check_procedure() -> Procedure:
     tone = f"{SOUND_TONE['seconds']:g} s at {SOUND_TONE['freq']:g} Hz"
-    record = f"{SOUND_RECORD_S:g} s on {SOUND_CHANNELS} channels"
+    record = (f"{SOUND_RECORD_S:g} s on every channel of the helper's layout: 4 plain, 6 for the ReSpeaker's "
+              f"6-channel firmware, 1 for its 1-channel firmware")
     consent = "tick 'I confirm: the speaker agreed to this recording'"
     return Procedure(
         id="sound_check", name="Sound check", version="1", kind="sound",
@@ -446,7 +447,10 @@ class CaptureRun:
             return {"op": "say", "outcome": "spoken", "text": SOUND_PHRASE, "tts": reply.get("tts"),
                     "backend": reply.get("backend"), "elapsed_s": reply.get("elapsed_s")}
         tone = SOUND_TONE if step.sound == "loopback" else None
-        data = client.record(SOUND_RECORD_S, SOUND_CHANNELS, tone=tone)
+        if self.helper_status is None:
+            self.helper_status = client.status()  # the channel layout decides how many channels to record
+        channels = self.layout_channels()
+        data = client.record(SOUND_RECORD_S, channels, tone=tone)
         try:
             with wave.open(io.BytesIO(data), "rb") as clip:
                 info = {"channels": clip.getnchannels(), "rate": clip.getframerate(),
@@ -457,7 +461,15 @@ class CaptureRun:
         takes = self.clips.setdefault(step.id, [])
         takes.append(data)
         return {"op": step.sound, "outcome": "recorded", "consent": True, "take": len(takes),
-                "requested_seconds": SOUND_RECORD_S, "requested_channels": SOUND_CHANNELS, "tone": tone, **info}
+                "requested_seconds": SOUND_RECORD_S, "requested_channels": channels, "tone": tone, **info}
+
+    def channel_layout(self) -> dict:
+        """The helper's channel layout ({name, channels, roles}); "plain" with 4 channels if it reports none."""
+        layout = (self.helper_status or {}).get("channel_layout")
+        return layout or {"name": "plain", "channels": SOUND_CHANNELS, "roles": ["mic"] * SOUND_CHANNELS}
+
+    def layout_channels(self) -> int:
+        return int(self.channel_layout()["channels"])
 
     def record_answer(self, step_id: str, heard: bool, note: str = "") -> dict:
         """The operator's answer for a tone or phrase step: heard or not heard, and a volume note."""
@@ -551,7 +563,8 @@ class CaptureRun:
         if self.procedure.kind == "sound":
             summary.update(helper_status=self.helper_status, backend=(self.helper_status or {}).get("backend"),
                            answers=self.answers, phrase=SOUND_PHRASE, tone=SOUND_TONE,
-                           record={"seconds": SOUND_RECORD_S, "channels": SOUND_CHANNELS},
+                           record={"seconds": SOUND_RECORD_S, "channels": self.layout_channels()},
+                           channel_layout=self.channel_layout(),
                            consent="The operator ticked 'the speaker agreed to this recording' before each "
                                    "recording.")
         profile = self.analysis_profile()

@@ -20,9 +20,11 @@ against its SHA-256 manifest first. Which analyser runs follows the procedure ki
          with the profile and carried into the torso frame with the RECORDED neck angles
          (stereo_depth.camera_to_torso, the URDF head transform). The spread of that centre across head
          poses is the consistency of the head/neck calibration: the board does not move.
-  sound  (Sound check, #59) per microphone channel: RMS and peak in dBFS for the loopback recording (the
-         tone playing) and the room baseline, the loopback-minus-baseline margin, the channel count found
-         against 4, and a dead or clipped channel flag; plus the operator's heard / not heard answers.
+  sound  (Sound check, #59) per channel: RMS and peak in dBFS for the loopback recording (the tone playing)
+         and the room baseline, the loopback-minus-baseline margin, the channel count found against the
+         helper's channel layout (4 plain; the ReSpeaker's respeaker6: ch0 processed, ch1-4 the microphones,
+         ch5 the playback reference, which should carry the tone; respeaker1: one processed channel), and a
+         dead or clipped channel flag; plus the operator's heard / not heard answers.
 """
 
 import argparse
@@ -66,8 +68,11 @@ ZOOM_MATCH_TOL = 0.03
 HEAD_SPREAD_LIMIT_MM = 20.0
 #: Head sweep: neck read-backs closer than this (deg) on every joint count as the same pose.
 SAME_POSE_DEG = 0.5
-#: Sound check: the channel count the ReSpeaker loopback should show.
+#: Sound check: the channel count the loopback should show without a channel layout ("plain").
 SOUND_CHANNELS_EXPECTED = 4
+#: Why a processed channel's tone margin is reported but not judged.
+PROCESSED_NOTE = ("The processed channel's levels are reported, but its tone margin is not judged: the firmware's "
+                  "processing (echo cancellation included) can remove Reachy's own tone.")
 #: A channel whose RMS stays below this in every recording is dead (an unconnected input reads ~ -inf).
 DEAD_DBFS = -80.0
 #: Samples within this of full scale count as clipped; a channel with more than CLIP_FRACTION of them is clipped.
@@ -489,9 +494,17 @@ def analyze_sound(capture, files):
                             "seconds": round(len(samples) / rate, 3), "channels": samples.shape[1],
                             "levels": channel_levels(samples)}
     found = max((c["channels"] for c in clips.values()), default=0)
-    rows = []
+    layout = capture.get("channel_layout") or (capture.get("helper_status") or {}).get("channel_layout") or {}
+    layout_name = layout.get("name") or "plain"
+    plain = layout_name == "plain"
+    roles = [] if plain else list(layout.get("roles") or [])
+    expected = SOUND_CHANNELS_EXPECTED if plain else int(layout.get("channels") or len(roles))
+    rows, notes = [], []
     for index in range(found):
-        row = {"channel": index + 1}
+        role = roles[index] if index < len(roles) else "mic"
+        # The ReSpeaker firmware numbers its channels from 0; a plain layout counts from 1, as before.
+        row = {"channel": index + (1 if plain else 0), "role": role}
+        name = f"Channel {row['channel']}" + ("" if plain else f" ({role})")
         for sound in ("loopback", "baseline"):
             levels = clips.get(sound, {}).get("levels") or []
             level = levels[index] if index < len(levels) else {}
@@ -500,28 +513,40 @@ def analyze_sound(capture, files):
         loud, quiet = row["loopback_rms_dbfs"], row["baseline_rms_dbfs"]
         row["margin_db"] = round(loud - quiet, 1) if loud is not None and quiet is not None else None
         heard = [row[f"{s}_rms_dbfs"] for s in ("loopback", "baseline") if s in clips]
-        row["dead"] = all(v is None or v < DEAD_DBFS for v in heard)
+        both = {"loopback", "baseline"} <= set(clips)
+        tone_margin = loud is not None and (quiet is None or loud - quiet >= MIN_MARGIN_DB)
+        # The reference is silent in the baseline by design: it is judged only on carrying the tone.
+        row["dead"] = None if role == "reference" else all(v is None or v < DEAD_DBFS for v in heard)
         row["clipped"] = any((row[f"{s}_clipped_fraction"] or 0) > CLIP_FRACTION for s in ("loopback", "baseline"))
-        row["hears_tone"] = None if not {"loopback", "baseline"} <= set(clips) or row["dead"] else (
-            loud is not None and (quiet is None or loud - quiet >= MIN_MARGIN_DB))
+        row["hears_tone"] = tone_margin if role == "mic" and both and not row["dead"] else None
+        row["carries_tone"] = tone_margin if role == "reference" and both else None
         rows.append(row)
         if row["dead"]:
-            findings.append(f"Channel {row['channel']} is dead: below {DEAD_DBFS:.0f} dBFS in every recording.")
+            findings.append(f"{name} is dead: below {DEAD_DBFS:.0f} dBFS in every recording.")
         if row["clipped"]:
-            findings.append(f"Channel {row['channel']} clips (more than {CLIP_FRACTION:.1%} of samples at full "
+            findings.append(f"{name} clips (more than {CLIP_FRACTION:.1%} of samples at full "
                             "scale): lower the speaker volume or the capture gain.")
         if row["hears_tone"] is False:
-            findings.append(f"Channel {row['channel']} barely hears the tone: the loopback is "
+            findings.append(f"{name} barely hears the tone: the loopback is "
                             f"{row['margin_db']:+.1f} dB over the baseline (needs {MIN_MARGIN_DB:+.0f} dB).")
-    if clips and found != SOUND_CHANNELS_EXPECTED:
+        if row["carries_tone"] is False:
+            findings.append(f"{name} does not carry the tone: the tone did not play through the ReSpeaker's own "
+                            "output (is the speaker on another sound card?), so the reference cannot serve echo "
+                            "cancellation.")
+        if role == "processed" and PROCESSED_NOTE not in notes:
+            notes.append(PROCESSED_NOTE)
+    if clips and found != expected:
         findings.append(f"{found} channel(s) found, not {SOUND_CHANNELS_EXPECTED}: the capture device is not the "
-                        "4-channel ReSpeaker input (see docs/SOUND_CHECK.md).")
+                        "4-channel ReSpeaker input (see docs/SOUND_CHECK.md)." if plain else
+                        f"{found} channel(s) found, but the {layout_name} layout defines {expected}: the firmware "
+                        "or --record-device does not match --channel-layout (see docs/SOUND_CHECK.md).")
     if len({c["channels"] for c in clips.values()}) > 1:
         findings.append("The loopback and the baseline have different channel counts.")
     return {"kind": "sound", "backend": backend, "tts": (capture.get("helper_status") or {}).get("tts"),
-            "channels_expected": SOUND_CHANNELS_EXPECTED, "channels_found": found, "min_margin_db": MIN_MARGIN_DB,
+            "channel_layout": layout_name, "channels_expected": expected, "channels_found": found,
+            "min_margin_db": MIN_MARGIN_DB,
             "recordings": {k: {key: v for key, v in c.items() if key != "levels"} for k, c in clips.items()},
-            "rows": rows, "answers": answers, "findings": findings}
+            "rows": rows, "answers": answers, "notes": notes, "findings": findings}
 
 
 def level_text(value):
@@ -541,7 +566,8 @@ def print_report(manifest, capture, result):
                   f"{'not found' if r['pitch_px'] is None else str(r['pitch_px']) + ' px'}  "
                   f"x{r['pitch_vs_widest']} vs widest  ({r['found']}/{r['captures']} pairs)")
     elif result["kind"] == "sound":
-        print(f"backend: {result['backend'] or 'unknown'} · TTS: {result['tts'] or 'none'}")
+        print(f"backend: {result['backend'] or 'unknown'} · TTS: {result['tts'] or 'none'} · channel layout: "
+              f"{result['channel_layout']}")
         for a in result["answers"].values():
             said = "no answer" if a["heard"] is None else "heard it" if a["heard"] else "NOT HEARD"
             print(f"{a['label']}: {a['outcome'] or 'not run'}, {said}"
@@ -551,9 +577,12 @@ def print_report(manifest, capture, result):
         print(f"channels found: {result['channels_found']} of {result['channels_expected']}")
         for r in result["rows"]:
             flags = [f for f, on in (("DEAD", r["dead"]), ("CLIPPED", r["clipped"]),
-                                     ("tone not heard", r["hears_tone"] is False)) if on]
+                                     ("tone not heard", r["hears_tone"] is False),
+                                     ("carries the tone", r["carries_tone"]),
+                                     ("NO TONE on the reference", r["carries_tone"] is False)) if on]
             margin = "n/a" if r["margin_db"] is None else f"{r['margin_db']:+.1f} dB"
-            print(f"ch{r['channel']}: loopback rms {level_text(r['loopback_rms_dbfs'])} peak "
+            role = "" if result["channel_layout"] == "plain" else f" ({r['role']})"
+            print(f"ch{r['channel']}{role}: loopback rms {level_text(r['loopback_rms_dbfs'])} peak "
                   f"{level_text(r['loopback_peak_dbfs'])} dBFS | baseline rms {level_text(r['baseline_rms_dbfs'])} "
                   f"peak {level_text(r['baseline_peak_dbfs'])} dBFS | margin {margin}"
                   + (f" | {', '.join(flags)}" if flags else ""))
@@ -575,6 +604,8 @@ def print_report(manifest, capture, result):
                 f"= {r['implied_disparity_px']} px of disparity")
             print(f"{r['ruler_m']:.1f} m: {measured} | 1 px = {r['sensitivity_mm_per_px']} mm, 15 mm needs "
                   f"{r['target_needs_disparity_px']} px | {r['verdict']}")
+    for info in result.get("notes", []):
+        print("info:", info)
     for finding in result.get("findings", []):
         print("NOTE:", finding)
 
