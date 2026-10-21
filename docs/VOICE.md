@@ -52,6 +52,10 @@ Anything that does not start with "reachy" is ignored (except "stop"). Cells are
    changed it is not confirmed.
 4. "Stop" during a run cancels it; the panel reports "Stopping" until the arm is at rest.
 
+**Voice "stop" only cancels runs started by voice.** The panel keeps tasks per browser session, and the
+voice client has its own session, so it cannot see a run started by typing or clicking in the browser.
+Stop those with the panel's own **Stop** button.
+
 Settings: `--min-confidence` (default 0.6), `--confirm-timeout` (15), `REACHY_PANEL_URL`, `REACHY_VOSK_MODEL`.
 Every panel call has a 5 s timeout, one attempt, and a plain error message.
 
