@@ -12,12 +12,14 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
 DEFAULT_AUDIO_URL = "http://127.0.0.1:8090"
 STATUS_TIMEOUT_S = 8.0  # /status lists the sound devices
 SAY_TIMEOUT_S = 40.0  # longer than the helper's own TTS timeout (30 s)
+PROBE_TIMEOUT_S = 25.0  # the longest probe (imu) is 5 s + 8 s of commands in the helper
 #: Added to an operation's own length; longer than the helper's subprocess margin (5 s).
 MARGIN_S = 8.0
 MAX_WAV_BYTES = 2 * 1024 * 1024  # the helper's response limit
@@ -36,7 +38,7 @@ def audio_url() -> str:
 
 
 class AudioClient:
-    """status(), tone(), say() and record() against the helper's four routes."""
+    """status(), tone(), say(), record() and probe() against the helper's routes."""
 
     def __init__(self, base_url: Optional[str] = None):
         self.base_url = (base_url or audio_url()).rstrip("/")
@@ -84,6 +86,10 @@ class AudioClient:
 
     def say(self, text: str) -> dict:
         return self._json("POST", "/say", {"text": text}, SAY_TIMEOUT_S)
+
+    def probe(self, name: str) -> dict:
+        """One of the helper's fixed NUC probes (#62); `name` is from its allow-list, never operator text."""
+        return self._json("GET", "/probe/" + urllib.parse.quote(name, safe=""), None, PROBE_TIMEOUT_S)
 
     def record(self, seconds: float, channels: int, tone: Optional[dict] = None) -> bytes:
         """WAV bytes. With `tone` ({seconds, freq}) the helper starts recording, then plays the tone."""

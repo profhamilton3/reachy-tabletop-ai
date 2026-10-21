@@ -6,6 +6,7 @@ for vision data capture. Capture procedures may articulate the head through the 
 perception. Arm motion stays forbidden in capture procedures."). They are dry-run unless
 REACHY_ENABLE_MOTION=true and the viewer runs with --allow-head-motion, and each move needs a fresh
 operator confirm. The Sound check's routes call only the audio helper (REACHY_AUDIO_URL, #59): no motion.
+The Robot inventory's route (#62) only reads: the SDK through the SDK process, the helper's fixed NUC probes.
 """
 
 import asyncio
@@ -37,6 +38,7 @@ from reachy_ai.perception.procedures import (
     CaptureRun,
     HeadNotConfirmed,
     HeadRefused,
+    InventoryFailed,
     RecordingNotConsented,
     RunLimit,
     SoundFailed,
@@ -181,7 +183,9 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
     @app.post("/api/stereo/capture-run")
     def run_start(procedure: str = Body(embed=True)):
         try:
-            run = CaptureRun(get_procedure(procedure))
+            # the robot host is one more name the inventory's redaction pass removes
+            run = CaptureRun(get_procedure(procedure),
+                             redact_hosts=(settings.robot_host,) if settings.source == "robot" else ())
         except KeyError as exc:
             raise HTTPException(404, exc.args[0]) from exc
         with run_lock:
@@ -321,6 +325,24 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         return run.state()
+
+    @app.post("/api/stereo/capture-run/steps/{step_id}/inventory")
+    def run_inventory(step_id: str, arm_resting: bool | None = Body(None, embed=True),
+                      note: str = Body("", embed=True)):
+        """Robot inventory: this step's SDK reads (in the SDK process), NUC probes (the audio helper) or operator
+        answers. Reads only: nothing moves and nothing is written, here or on the robot."""
+        run = current_run()
+        try:
+            with run_lock:
+                record = run.apply_inventory(step_id, reader=camera.request_inventory, client=audio,
+                                             arm_resting=arm_resting, note=note)
+        except InventoryFailed as exc:
+            raise HTTPException(409 if isinstance(exc.__cause__, CommandBusy) else 503, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, "Unknown step") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"record": record, "state": run.state()}
 
     @app.get("/api/stereo/capture-run/bundle.zip")
     def run_bundle():

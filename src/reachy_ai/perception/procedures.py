@@ -6,7 +6,10 @@ explicit operator confirm: a camera zoom level (`CaptureRun.apply_zoom`, through
 `camera_zoom.ZoomSetter`) and a named head pose (`CaptureRun.apply_head`, through
 `motion.primitives` and the head safety gate). The Sound check (#59) moves nothing at all: its steps call
 the audio helper (`CaptureRun.apply_sound`, through `audio.audio_client`), and its recordings need an
-operator tick that the speaker agreed. Owner decision 2026-10-20: "Neck motion is required
+operator tick that the speaker agreed. The Robot inventory (#62) moves nothing and writes nothing either: it
+reads the SDK through the viewer's SDK process (`robot_inventory.sdk_inventory`), runs the audio helper's fixed
+NUC probes, and takes the operator's answers; the NUC output is redacted by the helper and again here.
+Owner decision 2026-10-20: "Neck motion is required
 for vision data capture. Capture procedures may articulate the head through the neck for viewing and
 perception. Arm motion stays forbidden in capture procedures." No arm or gripper command exists
 here. Nothing is written to disk by this module: the run lives in memory (pairs and audio clips alike) and
@@ -28,6 +31,7 @@ from reachy_ai.audio.audio_client import AudioHelperError
 from reachy_ai.camera_zoom import SCENE_ZOOM, ZOOM_ORDER, zoom_read_warning
 from reachy_ai.config import HEAD_PRESETS, NECK_JOINTS
 from reachy_ai.pair_bundle import build_bundle, json_bytes
+from reachy_ai.robot_inventory import count_replacements, redact, topic_lines, workstation_names
 
 LOG = logging.getLogger(__name__)
 
@@ -47,6 +51,10 @@ SOUND_CHANNELS = 4  # without a channel layout from the helper ("plain")
 MAX_TAKES_PER_STEP = 3
 MAX_NOTE_CHARS = 200
 RECORDING_SOUNDS = ("loopback", "baseline")
+#: Robot inventory (#62): the audio helper's probe allow-list, in the order they run.
+INVENTORY_PROBES = ("audio_devices", "audio_hw_params", "usb", "system", "ros2_topics", "imu")
+PROBE_OUTCOMES = ("ok", "failed", "not_run")
+HELPER_UNREACHABLE = "helper unreachable"
 
 
 class ZoomNotConfirmed(PermissionError):
@@ -69,6 +77,10 @@ class RecordingNotConsented(PermissionError):
     """A recording was requested without the operator's tick that the speaker agreed."""
 
 
+class InventoryFailed(RuntimeError):
+    """The SDK reads could not be taken (no connection, a timeout, busy); the cause is chained."""
+
+
 class SoundFailed(RuntimeError):
     """The audio helper refused or failed an operation; `code` is the helper's (busy, timeout, ...)."""
 
@@ -88,11 +100,13 @@ class Step:
     capture: bool = True             # False for a head-only step (e.g. the end of a run)
     zoom_role: str | None = None     # "start" (read-back only), "check" (read-back vs the profile) or "restore"
     sound: str | None = None         # "status", "tone", "say", "loopback" or "baseline" (the audio helper)
+    inventory: str | None = None     # "sdk", "nuc" or "answers" (the Robot inventory, #62)
 
     def describe(self) -> dict:
         return {"id": self.id, "label": self.label, "zoom": self.zoom, "distance_m": self.distance_m,
                 "head": self.head, "head_deg": head_deg(self.head), "capture": self.capture,
-                "zoom_role": self.zoom_role, "sound": self.sound, "instruction": self.instruction}
+                "zoom_role": self.zoom_role, "sound": self.sound, "inventory": self.inventory,
+                "instruction": self.instruction}
 
 
 @dataclass(frozen=True)
@@ -100,7 +114,7 @@ class Procedure:
     id: str
     name: str
     version: str
-    kind: str                        # "zoom" | "depth" | "head" | "sound": which analyser reads it
+    kind: str                        # "zoom" | "depth" | "head" | "sound" | "inventory": which analyser reads it
     summary: str
     setup: tuple[str, ...]
     steps: tuple[Step, ...]
@@ -271,8 +285,34 @@ def sound_check_procedure() -> Procedure:
                                 f"'Record baseline' ({record} of silence: the noise floor).")))
 
 
+def robot_inventory_procedure() -> Procedure:
+    return Procedure(
+        id="robot_inventory", name="Robot inventory", version="1", kind="inventory",
+        summary="Read-only facts for #6, #7, #59 and #28 in one bundle: the SDK reads, the audio helper's fixed NUC "
+                "probes, and two operator answers. The analyser answers the open questions (ReSpeaker and its "
+                "firmware, the speaker device, the IMU topic, system versions).",
+        setup=("No motion and no writes of any kind: the SDK is only read, and the NUC runs only the helper's "
+               "fixed probes (nothing typed here is run).",
+               "On the NUC, start the audio helper from a terminal with ROS sourced (with --imu-topic if the IMU "
+               "topic is known), and open the SSH tunnel (docs/SOUND_CHECK.md). Without the helper the SDK step "
+               "still runs and the NUC step is marked 'not run (helper unreachable)'.",
+               "Host names, IP and MAC addresses, the user name and serial numbers are removed from the NUC output, "
+               "by the helper and again by the viewer, before the bundle is built."),
+        steps=(Step(id="inventory_sdk", label="SDK reads", inventory="sdk", capture=False,
+                    instruction="Press 'Read robot': the SDK version, every joint's position and compliance, the "
+                                "gripper, force sensor, fans, the cameras' zoom and focus, and the neck sign check "
+                                "(IK only). Reads only; nothing moves."),
+               Step(id="inventory_nuc", label="NUC probes", inventory="nuc", capture=False,
+                    instruction="Press 'Run NUC probes': audio devices, the record device's hardware parameters, "
+                                "USB devices, system versions, ROS 2 topics and the IMU topic, each with its own "
+                                "result (ok, failed or not run, with the reason)."),
+               Step(id="inventory_answers", label="Operator answers", inventory="answers", capture=False,
+                    instruction="Answer 'Is the arm resting on the table?' (for the record only; nothing depends "
+                                "on it), add a free note if you like, and press 'Save answers'.")))
+
+
 PROCEDURES = {p.id: p for p in (zoom_fov_procedure(), depth_ruler_procedure(), board_view_approach_procedure(),
-                                head_sweep_procedure(), sound_check_procedure())}
+                                head_sweep_procedure(), sound_check_procedure(), robot_inventory_procedure())}
 
 
 def get_procedure(procedure_id: str) -> Procedure:
@@ -302,6 +342,11 @@ class CaptureRun:
     answers: dict[str, dict] = field(default_factory=dict)  # the operator's heard / not heard per step
     clips: dict[str, list[bytes]] = field(default_factory=dict)  # WAV takes per step, in memory only
     helper_status: dict | None = None  # the helper's last /status
+    sdk_inventory: dict | None = None  # Robot inventory: the SDK reads
+    probes: dict[str, dict] = field(default_factory=dict)  # Robot inventory: each NUC probe's reply or why not run
+    inventory_results: dict[str, list[dict]] = field(default_factory=dict)  # every inventory attempt per step
+    inventory_answers: dict | None = None  # Robot inventory: the operator's answers
+    redact_hosts: tuple[str, ...] = ()  # extra names the viewer's redaction pass removes (the robot host)
     commands_attempted: bool = False  # a zoom command (live or dry-run) has been asked for
     _start: str | None = None  # the starting zoom: the first complete read, fixed once a command was attempted
 
@@ -463,6 +508,82 @@ class CaptureRun:
         return {"op": step.sound, "outcome": "recorded", "consent": True, "take": len(takes),
                 "requested_seconds": SOUND_RECORD_S, "requested_channels": channels, "tone": tone, **info}
 
+    def apply_inventory(self, step_id: str, reader=None, client=None, arm_resting: bool | None = None,
+                        note: str = "") -> dict:
+        """Run a Robot inventory step; reads only. `reader()` returns the SDK reads (the viewer's SDK process);
+        `client` (an `AudioClient`) runs the NUC probes. Every attempt is recorded in the run (and the bundle)."""
+        step = self.procedure.step(step_id)
+        if step.inventory is None:
+            raise ValueError(f"step {step_id!r} is not a Robot inventory step")
+        attempts = self.inventory_results.setdefault(step_id, [])
+        if step.inventory == "sdk":
+            try:
+                inventory = reader()
+            except Exception as exc:  # noqa: BLE001 - recorded, then raised for the route's status code
+                attempts.append({"op": "sdk", "outcome": "failed", "error": str(exc)})
+                raise InventoryFailed(f"SDK reads failed: {exc}") from exc
+            self.sdk_inventory = inventory
+            record = {"op": "sdk", "outcome": "ok", "sdk_version": inventory.get("sdk_version"),
+                      "joint_count": inventory.get("joint_count"), "read_errors": len(inventory.get("errors") or []),
+                      "neck_sign_check": (inventory.get("neck_sign_check") or {}).get("result")}
+        elif step.inventory == "nuc":
+            record = self._run_probes(client)
+        else:
+            self.inventory_answers = {"arm_resting": None if arm_resting is None else bool(arm_resting),
+                                      "note": str(note or "").strip()[:MAX_NOTE_CHARS]}
+            record = {"op": "answers", "outcome": "saved", **self.inventory_answers}
+        attempts.append(record)
+        return record
+
+    def _run_probes(self, client) -> dict:
+        """Every probe of INVENTORY_PROBES; an unreachable helper marks them all 'not run', never guessed."""
+        probes: dict[str, dict] = {}
+        try:
+            self.helper_status = client.status()
+            reachable, reason = True, None
+        except AudioHelperError as exc:
+            reachable = False
+            reason = HELPER_UNREACHABLE if exc.code == "unreachable" else f"helper status failed: {exc}"
+        for name in INVENTORY_PROBES:
+            if not reachable:
+                probes[name] = {"probe": name, "outcome": "not_run", "reason": reason}
+                continue
+            try:
+                reply = client.probe(name)
+            except AudioHelperError as exc:
+                if exc.code == "unreachable":
+                    reachable, reason = False, HELPER_UNREACHABLE
+                    probes[name] = {"probe": name, "outcome": "not_run", "reason": reason}
+                elif exc.code == "not_found":
+                    probes[name] = {"probe": name, "outcome": "not_run",
+                                    "reason": "the helper has no such probe: update scripts/reachy_audio_helper.py "
+                                              "on the NUC"}
+                else:
+                    probes[name] = {"probe": name, "outcome": "failed", "reason": str(exc)}
+                continue
+            if reply.get("outcome") not in PROBE_OUTCOMES:
+                reply = {**reply, "outcome": "failed", "reason": f"unexpected probe reply ({reply.get('outcome')})"}
+            probes[name] = reply
+        self.probes = probes
+        outcomes = {p["outcome"] for p in probes.values()}
+        overall = "ok" if outcomes == {"ok"} else "not_run" if outcomes == {"not_run"} else "partial"
+        return {"op": "nuc", "outcome": overall,
+                "probes": {n: {"outcome": p["outcome"], "reason": p.get("reason")} for n, p in probes.items()}}
+
+    def inventory_count(self) -> int:
+        return sum(len(v) for v in self.inventory_results.values())
+
+    def redacted_nuc(self) -> tuple[list, int]:
+        """The viewer's redaction pass over the NUC output, the helper status, the operator's answers and the
+        step records: ([probes, helper_status, answers, {step: records}], replacements the helper had missed)."""
+        hosts, users = workstation_names(self.redact_hosts)
+        keep = {(self.helper_status or {}).get("imu_topic")}
+        for command in (self.probes.get("ros2_topics") or {}).get("commands") or []:
+            keep |= topic_lines(command.get("stdout"))
+        before = [self.probes, self.helper_status, self.inventory_answers, self.inventory_results]
+        after = redact(before, hosts, users, keep)
+        return after, count_replacements(before, after)
+
     def channel_layout(self) -> dict:
         """The helper's channel layout ({name, channels, roles}); "plain" with 4 channels if it reports none."""
         layout = (self.helper_status or {}).get("channel_layout")
@@ -508,10 +629,11 @@ class CaptureRun:
                 "steps": [{**s.describe(), "captured": len(self.captures.get(s.id, [])),
                            "zoom_commands": self.zoom_commands.get(s.id, []),
                            "head_commands": self.head_commands.get(s.id, []),
-                           "sound_results": self.sound_results.get(s.id, []), "answer": self.answers.get(s.id)}
+                           "sound_results": self.sound_results.get(s.id, []), "answer": self.answers.get(s.id),
+                           "inventory_results": self.inventory_results.get(s.id, [])}
                           for s in self.procedure.steps],
                 "head_events": self.head_events, "pairs": self.pair_count(), "max_pairs": MAX_PAIRS_PER_RUN,
-                "can_download": bool(self.pair_count() or self.sound_count())}
+                "can_download": bool(self.pair_count() or self.sound_count() or self.inventory_count())}
 
     def calibration_id(self) -> Any:
         for taken in self.captures.values():
@@ -555,6 +677,8 @@ class CaptureRun:
                     files[clips[-1]] = data
                 row.update(sound=step.sound, sound_results=self.sound_results.get(step.id, []),
                            answer=self.answers.get(step.id), clips=clips)
+            if step.inventory:
+                row.update(inventory=step.inventory, inventory_results=self.inventory_results.get(step.id, []))
             steps.append(row)
         summary = {"schema_version": "2", "procedure": self.identity(), "kind": self.procedure.kind,
                    "calibration_id": self.calibration_id(), "steps": steps, "head_events": self.head_events}
@@ -567,6 +691,18 @@ class CaptureRun:
                            channel_layout=self.channel_layout(),
                            consent="The operator ticked 'the speaker agreed to this recording' before each "
                                    "recording.")
+        if self.procedure.kind == "inventory":
+            (probes, helper_status, answers, results), missed = self.redacted_nuc()
+            for name, reply in probes.items():
+                files[f"probes/{name}.json"] = json_bytes(reply)
+            for row in summary["steps"]:  # the step records carry probe reasons and the note too
+                row["inventory_results"] = results.get(row["id"], [])
+            summary.update(sdk=self.sdk_inventory, helper_status=helper_status, operator=answers,
+                           probes={n: {"outcome": p["outcome"], "reason": p.get("reason"),
+                                       "file": f"probes/{n}.json"} for n, p in probes.items()},
+                           # replies built here (helper unreachable) carry no commands and need no helper pass
+                           redaction={"helper": all(p.get("redacted") for p in probes.values() if "commands" in p),
+                                      "viewer_pass": True, "viewer_replacements": missed})
         profile = self.analysis_profile()
         if profile.get("source"):
             summary["source"] = profile["source"]  # which camera geometry the analysers must use
@@ -578,7 +714,7 @@ class CaptureRun:
         return {"id": self.procedure.id, "name": self.procedure.name, "version": self.procedure.version}
 
     def build_zip(self, versions: dict) -> bytes:
-        if not self.pair_count() and not self.sound_count():
+        if not self.pair_count() and not self.sound_count() and not self.inventory_count():
             raise RunLimit("Nothing captured yet.")
         return build_bundle(self.bundle_files(), versions, self.calibration_id(), procedure=self.identity())
 

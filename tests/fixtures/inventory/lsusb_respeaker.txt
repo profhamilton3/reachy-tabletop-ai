@@ -1,0 +1,4 @@
+Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 001 Device 004: ID 2886:0018 SEEED ReSpeaker 4 Mic Array (UAC1.0)
+Bus 001 Device 003: ID 18d1:9302 Google Inc.
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
