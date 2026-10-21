@@ -181,7 +181,18 @@ If no row matches, the builder emits the object with `bounds_provisional=True` a
 
 So every #186 row is **provisional**. With OD-2's default minimum of 30 distinct sightings per row, provisional bounds can refuse a move but never permit one.
 
-**The surface correction** (`class-half-extent.v1`) moves the stereo median away from the camera along the view ray by the class prior's half-extent along that ray. The priors are owner-confirmed: cube 6 cm; cylinder 7 cm × 10 cm (sim `docs/scene-object-dimensions.md`). At `board_view` the ray is steep but not vertical, so part of the −24 mm along-ray bias lands in x. The correction may therefore remove much of the 10.9 mm horizontal error. **That is a hypothesis.** It becomes a bounds row only after it is re-graded (P1b), and the uncorrected #186 rows do not carry over to it.
+**The surface correction** (`class-half-extent.v1`) moves the stereo median away from the camera along the view ray by the class prior's half-extent along that ray. The size priors are a per-rig table (below), not one value per class. At `board_view` the ray is steep but not vertical, so part of the −24 mm along-ray bias lands in x. The correction may therefore remove much of the 10.9 mm horizontal error. **That is a hypothesis.** It becomes a bounds row only after it is re-graded (P1b), and the uncorrected #186 rows do not carry over to it.
+
+**Per-rig size table.** The class prior is looked up by rig and kind. Sources: the FWD Center lab pieces are owner-measured (sim `docs/scene-object-dimensions.md`, 2026-10-19, #201); the sim's `red_cube` and `blue_cylinder` sizes come from the same file (owner confirmation, 2026-10-06).
+
+| Kind | Piece | Size | Half-extents (radius / half-height for a cylinder) |
+|---|---|---|---|
+| cube | FWD Center lab pieces (sim `pool_box_*`) | 50.8 mm on a side | 25.4 mm |
+| cube | sim `red_cube` | 60 mm on a side | 30.0 mm |
+| cylinder | FWD Center lab pieces (sim `pool_cyl_*`) | 45.7 mm dia × 71.1 mm | 22.85 mm / 35.55 mm |
+| cylinder | sim `blue_cylinder` | 70 mm dia × 100 mm | 35.0 mm / 50.0 mm |
+
+**When a class has more than one known size,** the surface correction uses the midpoint of the half-extents and adds the half-extent range (half the spread between the smallest and largest known half-extent) to the bound. For the table above: cube half-extent 27.7 mm, range ±2.3 mm; cylinder radius 28.9 mm, range ±6.1 mm; cylinder half-height 42.8 mm, range ±7.2 mm. A rig whose class has a single known size uses that size and adds no range.
 
 ## 2. #182 stage 2: a perceived grasp target
 
@@ -195,7 +206,7 @@ So every #186 row is **provisional**. With OD-2's default minimum of 30 distinct
    - `id`: the requested id;
    - `kind`: `cube` → `box`, `cylinder` → `cylinder`;
    - `center`: `centre_m` + `ARM_BASE_IN_WORLD`;
-   - `size`: from `size_m`, or the class prior with `size_source` recorded;
+   - `size`: from `size_m`, or the per-rig class size (§1.6: the midpoint when a class has several sizes) with `size_source` recorded;
    - `quat`: from `quat_wxyz`.
 
    It is placed into a `SceneModel.copy()`. The unmodified scene is never edited.
@@ -249,9 +260,9 @@ The recommendation (OD-3) has two parts:
 
 The precheck builds a `SceneModel.copy()` and adds one `SceneObject` per perceived object, **inflated by its bounds**:
 - **Box:** size + 2·bounds per axis, with yaw unknown taken as the worst case. For an unknown yaw, a box's footprint becomes the circle around its diagonal.
-- **Cylinder:** radius + max(bₓ, b_y); height + 2·b_z.
+- **Cylinder:** radius + max(bₓ, b_y); height + 2·b_z. When the size comes from a class with several known sizes, the §1.6 half-extent range is added to each bound.
 - **`unknown` cell:** the envelope of the largest object the rig is known to hold, standing on that cell. The soda can, 12.2 cm, sets the height.
-- **Unknown size:** the class prior, then inflated.
+- **Unknown size:** the per-rig class size (§1.6), then inflated.
 
 The existing whole-arm checks then run on that model with the target excluded: `SceneModel.clearances` over `kinematics.link_capsules`, plus each skill's own neighbour clearance (`neighbour_clearance_m`, 10 mm). The target's own uncertainty is the tolerance gate's job (2.2). Inflating the target would break the straddle geometry.
 
@@ -382,17 +393,21 @@ Two rules for the record, and nothing more:
 
 Robot transfer (#182 stage 5, EPIC 9 Phase 4) is out of this plan. It needs the robot's torso-frame conversion: `stereo_depth` produces `xyz_torso_m` only for the sim source today.
 
+**Prerequisite for any robot use, including the demo:** the robot torso-frame conversion in `stereo_depth`. Until it exists, no perceived position may feed a robot move.
+
 ## 8. Open decisions for the owner
+
+OD-1 to OD-10 are **Accepted (owner, 2026-10-21)**.
 
 | | Decision | Recommended default |
 |---|---|---|
-| OD-1 | How the sim consumes the contract. Both repos ship a package named `reachy_ai`, so one cannot import the other. | JSON wire contract; the sim vendors a pinned validator; shared golden fixtures keep the two in step |
-| OD-2 | Bounds coverage and the minimum evidence for a non-provisional row | p95; ≥ 30 distinct sightings per (kind, distance band, head pose); provisional rows only refuse |
-| OD-3 | Stage 2 scope in the sim | Perceived plan input with truth-fed corrections, labelled `correction_source`; perception-fed corrections in stage 3 |
-| OD-4 | Who sets each skill's `PerceptionTolerance` | The skill's module, derived from its own constants and reviewed like a cap change |
-| OD-5 | Yaw | Boxes refused while yaw is unknown; yaw estimation is a later, graded addition |
-| OD-6 | When a competing memory candidate supersedes an entry | K = 3 confirmations, with none for the original over the same span |
-| OD-7 | Rig-moved threshold | 10 mm on the board centre (the test bound; the robot's spread reached 9 mm in #185); re-check after robot bundles |
-| OD-8 | What a pipeline change does to memory | Entries stay, their effective count restarts under the new pipeline, and the old count is kept for audit |
-| OD-9 | Where Phase 2's precheck runs first | The sim, where `SceneModel` and the kinematics live; the robot port goes with stage 5 |
-| OD-10 | Start P0, P0b, P1 and P1b before #28's detector decision | Yes: none of them depends on the detector, and P1b answers the bias question with data already captured |
+| OD-1 | How the sim consumes the contract. Both repos ship a package named `reachy_ai`, so one cannot import the other. | JSON wire contract; the sim vendors a pinned validator; shared golden fixtures keep the two in step; Accepted (owner, 2026-10-21) |
+| OD-2 | Bounds coverage and the minimum evidence for a non-provisional row | p95; ≥ 30 distinct sightings per (kind, distance band, head pose); provisional rows only refuse; Accepted (owner, 2026-10-21) |
+| OD-3 | Stage 2 scope in the sim | Perceived plan input with truth-fed corrections, labelled `correction_source`; perception-fed corrections in stage 3; Accepted (owner, 2026-10-21) |
+| OD-4 | Who sets each skill's `PerceptionTolerance` | The skill's module, derived from its own constants and reviewed like a cap change; Accepted (owner, 2026-10-21) |
+| OD-5 | Yaw | Boxes refused while yaw is unknown; yaw estimation is a later, graded addition; Accepted (owner, 2026-10-21) |
+| OD-6 | When a competing memory candidate supersedes an entry | K = 3 confirmations, with none for the original over the same span; Accepted (owner, 2026-10-21) |
+| OD-7 | Rig-moved threshold | 10 mm on the board centre (the test bound; the robot's spread reached 9 mm in #185); re-check after robot bundles; Accepted (owner, 2026-10-21), re-check after robot head-sweep bundles |
+| OD-8 | What a pipeline change does to memory | Entries stay, their effective count restarts under the new pipeline, and the old count is kept for audit; Accepted (owner, 2026-10-21) |
+| OD-9 | Where Phase 2's precheck runs first | The sim, where `SceneModel` and the kinematics live; the robot port goes with stage 5; Accepted (owner, 2026-10-21) |
+| OD-10 | Start P0, P0b, P1 and P1b before #28's detector decision | Yes: none of them depends on the detector, and P1b answers the bias question with data already captured; Accepted (owner, 2026-10-21) |
