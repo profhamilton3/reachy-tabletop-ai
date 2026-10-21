@@ -34,6 +34,7 @@ python scripts/run_perception_offline.py --image tests/fixtures/images/table_01.
 ```bash
 export REACHY_IP=<ip>
 python scripts/smoke_test_all.py                         # read-only checks
+python scripts/probe_sdk1.py                             # read-only SDK probe (IK/FK only, no writes)
 export REACHY_ENABLE_MOTION=true
 pytest tests/ -m hardware_motion                         # motion tests — human must be present
 ```
@@ -45,6 +46,8 @@ Python 3.10
 ROS 2
 
 See `scripts/probe_sdk1.py` for confirmed API surface from the physical robot.
+It and `scripts/smoke_test_all.py` must stay read-only (no goals, look_at, turn_on/off,
+compliance, gripper or camera setters); `tests/test_probe_read_only.py` enforces it (#61).
 
 ## Architecture
 

@@ -2,7 +2,10 @@
 
 Connects to a physical (or simulated) Reachy 1.2, reads every subsystem,
 and prints a structured report confirming which SDK calls succeed and what
-values the robot returns.  No motion is commanded.
+values the robot returns.  It never writes to the robot: no goal positions,
+no look_at/goto, no turn_on/turn_off, no compliance, gripper or camera setters.
+Kinematics sections call the SDK's IK/FK services only, which compute angles
+and move nothing (issue #61).
 
 Usage:
     python scripts/probe_sdk1.py                    # connects to localhost
@@ -73,17 +76,20 @@ def probe_joints(reachy: ReachySDK):
 
 
 def probe_head_kinematics(reachy: ReachySDK):
-    print("\n[3] Head kinematics (look_at)")
+    print("\n[3] Head kinematics (IK only)")
     head = getattr(reachy, "head", None)
     if head is None:
         print(f"  {SKIP}  head not present")
         return
     try:
-        # look_at straight ahead — read-only kinematics call
-        result = head.look_at(x=1.0, y=0.0, z=0.0, duration=0.0)
-        print(f"  {PASS}  head.look_at(forward) returned: {result}")
+        # IK only (a kinematics-service call), as primitives.neck_sign_check does; nothing moves.
+        # head.look_at would command the neck, so it is never called here.
+        goals = head._look_at(1.0, 0.0, 0.0)
+        angles = {joint.name: float(angle) for joint, angle in goals.items()}
+        shown = "  ".join(f"{name}={angle:+.2f}°" for name, angle in angles.items())
+        print(f"  {PASS}  head._look_at(forward) neck angles: {shown}")
     except Exception as e:
-        print(f"  {FAIL}  head.look_at: {e}")
+        print(f"  {FAIL}  head._look_at: {e}")
 
     print("\n[3b] Antenna joints")
     for ant in ("l_antenna", "r_antenna"):
@@ -114,7 +120,8 @@ def probe_arm_kinematics(reachy: ReachySDK):
 
     print("\n[4b] Arm inverse kinematics")
     import numpy as np
-    # Neutral reach-forward target for right arm (safe, reachable)
+    # IK only (a kinematics-service call): the angles are printed, never sent as goals.
+    # Neutral reach-forward target for the right arm (reachable)
     target_r = np.array([
         [0, 0, -1, 0.3],
         [0, 1,  0, -0.2],
@@ -189,32 +196,27 @@ def probe_fans(reachy: ReachySDK):
             print(f"  {FAIL}  {fan_name}: {e}")
 
 
-def probe_compliant_toggle(reachy: ReachySDK):
-    """Verify turn_on/turn_off round-trip without moving the robot."""
-    print("\n[8] Compliant toggle (turn_on / turn_off — no motion)")
-    for part in ("r_arm", "head"):
+def probe_compliance(reachy: ReachySDK):
+    """Report each part's current compliance. Read-only: turn_on/turn_off are never called,
+    because turn_off makes the motors limp (an arm off the table drops, the head sags)."""
+    print("\n[8] Compliance (read-only)")
+    for part_name in ("r_arm", "l_arm", "head"):
+        part = getattr(reachy, part_name, None)
+        if part is None:
+            print(f"  {SKIP}  {part_name}: not present")
+            continue
         try:
-            reachy.turn_on(part)
-            time.sleep(0.2)
-            # Sample one joint
-            sample_joint = None
-            if part == "r_arm" and reachy.r_arm:
-                sample_joint = reachy.r_arm.r_shoulder_pitch
-            elif part == "head" and reachy.head:
-                sample_joint = reachy.head.neck_roll
-            stiff = not sample_joint.compliant if sample_joint else None
-
-            reachy.turn_off(part)
-            time.sleep(0.2)
-            relaxed = sample_joint.compliant if sample_joint else None
-
-            if stiff and relaxed:
-                print(f"  {PASS}  {part}: turn_on→stiff, turn_off→compliant")
+            states = {name: joint.compliant for name, joint in part.joints.items()}
+            compliant = [name for name, c in states.items() if c]
+            if not compliant:
+                state = "stiff"
+            elif len(compliant) == len(states):
+                state = "compliant"
             else:
-                print(f"  {FAIL}  {part}: toggle did not work as expected "
-                      f"(stiff={stiff}, relaxed={relaxed})")
+                state = f"mixed (compliant: {', '.join(compliant)})"
+            print(f"  {PASS}  {part_name}: {state}")
         except Exception as e:
-            print(f"  {FAIL}  {part}: {e}")
+            print(f"  {FAIL}  {part_name}: {e}")
 
 
 def summary(results: dict):
@@ -259,7 +261,7 @@ def main():
     run("Cameras",             probe_cameras)
     run("Force sensors",       probe_force_sensors)
     run("Fans",                probe_fans)
-    run("Compliant toggle",    probe_compliant_toggle)
+    run("Compliance",          probe_compliance)
 
     summary(results)
 

@@ -146,9 +146,9 @@ are observed, never changed automatically.
 - Existing classifier artifacts and `scripts/IITG_Training_Generating_tfLite.ipynb`
   preserve completed training/export work for later perception integration.
 
-Do not automatically run the whole `scripts/probe_sdk1.py` as a read-only health
-check: despite its description, it calls `head.look_at()`. This viewer only reads
-the head joints and never invokes that probe.
+`scripts/probe_sdk1.py` is read-only since #61: its head section uses the IK-only
+`head._look_at()` and its compliance section only reads. This viewer still only
+reads the head joints and never invokes that probe.
 
 ## Lightweight handoff check
 

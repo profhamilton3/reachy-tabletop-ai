@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 Smoke test all hardware channels on the physical Reachy 1.2.
+Read-only: it connects and reads; nothing is written to the robot (no goals,
+turn_on/turn_off, compliance, gripper or camera setters).
 Run with: python scripts/smoke_test_all.py
 Requires: REACHY_IP set in environment.
 """
