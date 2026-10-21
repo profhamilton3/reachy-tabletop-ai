@@ -7,11 +7,15 @@ the right eye (from derive_stereo_calibration.board_points_detail) and the refer
 
   a) the square's visible region (eroded, inside the frame) is compared with the reference after a small shift
      alignment; the result is a normalised change score (mean absolute difference of the z-scored patches);
-  b) a cube or cylinder detection whose box centre is inside the square's quad gives X or O, if the square changed;
+  b) a changed square gets a shape cue: the largest blob of the aligned difference inside the square, classified
+     "square" (cube, X), "round" (cylinder, O) or "unsure" from its rectangularity (area / minimum-area rectangle);
+     circularity is recorded too. X or O needs the detector's label (confidence >= min_label_confidence) AND the shape
+     to agree;
   c) no change and no cube or cylinder detection: empty (whatever the detector's "empty" class says);
-  d) anything else is unknown, never empty: a change with no usable detection, only "empty" detections on a changed
-     square, a cube and a cylinder on one square, a piece detected on an unchanged square, or too little of the square
-     visible to judge. The operator decides unknowns (1c).
+  d) anything else is unknown, never empty, and carries a `suggested` piece for the operator: the shape's piece
+     when it is clear, else a confident detector's. Unknown covers: detector and shape disagree, a low-confidence
+     label, a clear shape with no usable detection (nothing, or "empty" on a changed square), a cube and a cylinder on
+     one square, a piece detected on an unchanged square, an unsure shape, or too little of the square visible.
 
 Pixel spaces: the detector's boxes are raw right-camera pixels; board_points gives undistorted (pinhole) pixels. Images
 are undistorted for the comparison, box centres are converted raw -> undistorted, and to_raw() goes back (round trip is
@@ -49,10 +53,19 @@ class BoardReadRefused(Exception):
 @dataclass(frozen=True)
 class ReaderSettings:
     erode_px: int = 4                 # shrink each square's quad inside its edges
-    shift_px: int = 10                # head-pose repeatability: search +-this many px
+    shift_px: int = 10                # head-pose repeatability: the whole-frame shift is clamped to +-this many px
+    refine_px: int = 3                # per-square search around the whole-frame shift
     change_threshold: float = 0.35    # change score at or above this = the square changed
     min_visible_fraction: float = 0.35  # of the eroded quad that is inside the frame, else unknown
     min_confidence: float = 0.30      # a detection below this is not usable
+    min_label_confidence: float = 0.75  # X or O needs a detector label at least this sure (and the shape to agree)
+    diff_threshold: float = 50.0      # gray levels of aligned difference that count as changed, for the shape blob
+    blob_kernel_px: int = 7           # opening/closing kernel that cleans the change mask
+    blob_margin_px: int = 8           # the blob is looked for this far outside the square's quad (sides, below)
+    blob_margin_up_px: int = 15       # ... and this far above it (a piece is tall)
+    min_blob_area_px: float = 1000.0  # a smaller blob is unsure
+    square_min_rect: float = 0.865    # rectangularity at or above this is "square" (cube)
+    round_max_rect: float = 0.845     # at or below this is "round" (cylinder); between the two is unsure
     pose_tolerance_deg: float = 3.0   # neck read-back may differ from the reference's by this much
 
 
@@ -79,6 +92,9 @@ class SquareEvidence:
     visible_fraction: float
     detections: tuple                 # ({"label", "confidence", "box_xywh"}, ...) with centres inside the quad
     reason: str
+    shape: Optional[dict] = None      # {"class", "area", "circularity", "rectangularity"} of the change blob
+    suggested: Optional[str] = None   # t3.X / t3.O for an unknown square, when there is something to go on
+    suggested_by: Optional[str] = None  # "shape" or "detector"
 
 
 @dataclass(frozen=True)
@@ -226,11 +242,22 @@ def _zscore(values: np.ndarray) -> np.ndarray:
     return (values - values.mean()) / max(values.std(), 1.0)
 
 
-def change_score(reference: np.ndarray, current: np.ndarray, mask: np.ndarray, shift_px: int) -> float:
-    """Mean absolute difference of the z-scored patches, minimised over shifts (coarse, then fine)."""
+def global_shift(reference: np.ndarray, current: np.ndarray, shift_px: int) -> tuple:
+    """(dy, dx): the whole-image shift of `current` from `reference` (phase correlation, clamped to +-shift_px).
+
+    One shift for the whole frame, so a piece on a square cannot drag that square's alignment."""
+    window = cv2.createHanningWindow((reference.shape[1], reference.shape[0]), cv2.CV_32F)
+    (dx, dy), _ = cv2.phaseCorrelate(reference.astype(np.float32), current.astype(np.float32), window)
+    clamp = lambda v: int(max(-shift_px, min(shift_px, round(v))))  # noqa: E731
+    return clamp(dy), clamp(dx)
+
+
+def align(reference: np.ndarray, current: np.ndarray, mask: np.ndarray, centre: tuple = (0, 0), radius: int = 3):
+    """(score, dy, dx): the mean absolute difference of the z-scored patches, minimised over shifts of the current image
+    within `radius` of `centre`. None when no shift keeps the square inside the frame."""
     ys, xs = np.nonzero(mask)
     if len(ys) == 0:
-        return float("nan")
+        return None
     ref = _zscore(reference[ys, xs].astype(float))
     height, width = current.shape
 
@@ -241,19 +268,17 @@ def change_score(reference: np.ndarray, current: np.ndarray, mask: np.ndarray, s
         return float(np.abs(_zscore(current[y, x].astype(float)) - ref).mean())
 
     best = (float("inf"), 0, 0)
-    for dy in range(-shift_px, shift_px + 1, 2):
-        for dx in range(-shift_px, shift_px + 1, 2):
+    for dy in range(centre[0] - radius, centre[0] + radius + 1):
+        for dx in range(centre[1] - radius, centre[1] + radius + 1):
             value = score(dy, dx)
             if value is not None and value < best[0]:
                 best = (value, dy, dx)
-    if best[0] == float("inf"):
-        return float("nan")
-    for dy in range(best[1] - 1, best[1] + 2):
-        for dx in range(best[2] - 1, best[2] + 2):
-            value = score(dy, dx)
-            if value is not None and value < best[0]:
-                best = (value, dy, dx)
-    return best[0]
+    return None if best[0] == float("inf") else best
+
+
+def change_score(reference: np.ndarray, current: np.ndarray, mask: np.ndarray, centre: tuple, radius: int) -> float:
+    found = align(reference, current, mask, centre, radius)
+    return float("nan") if found is None else found[0]
 
 
 # ---------------------------------------------------------------- read
@@ -294,6 +319,8 @@ def read_board(pair_bundle, reference: Reference, settings: ReaderSettings = Rea
     geometry = _geometry(identity)
     current = _undistort_gray(pair.right, geometry)
     detections = _detections(pair, geometry)
+    centre = global_shift(reference.gray, current, settings.shift_px)
+    diff = difference_image(reference.gray, current, centre)
     squares = []
     for name in t3.CELLS:
         quad = reference.quads[name]
@@ -304,35 +331,105 @@ def read_board(pair_bundle, reference: Reference, settings: ReaderSettings = Rea
             if cv2.pointPolygonTest(quad.astype(np.float32), (float(centre[0]), float(centre[1])), False) >= 0)
         score = None
         if visible >= settings.min_visible_fraction and mask.any():
-            score = change_score(reference.gray, current, mask, settings.shift_px)
+            score = change_score(reference.gray, current, mask, centre, settings.refine_px)
             score = None if np.isnan(score) else score
-        squares.append(_judge(name, score, visible, inside, settings))
+        changed = score is not None and score >= settings.change_threshold
+        shape = shape_cue(diff, quad, mask, settings) if changed else None
+        squares.append(_judge(name, score, visible, inside, shape, settings))
     return BoardRead(tuple(s.state for s in squares), tuple(squares), asdict(settings), reference.pose,
                      reference.pair_path, pair.path)
 
 
-def _judge(name: str, score: Optional[float], visible: float, inside: tuple,
+def difference_image(reference: np.ndarray, current: np.ndarray, shift: tuple) -> np.ndarray:
+    """|current (moved by the whole-frame shift) - reference|, less its median (a global brightness offset)."""
+    moved = cv2.warpAffine(current, np.float32([[1, 0, -shift[1]], [0, 1, -shift[0]]]),
+                           (current.shape[1], current.shape[0]), borderMode=cv2.BORDER_REPLICATE)
+    diff = np.abs(moved.astype(float) - reference.astype(float))
+    return np.abs(diff - np.median(diff))
+
+
+def shape_cue(diff: np.ndarray, quad: np.ndarray, mask: np.ndarray, settings: ReaderSettings) -> dict:
+    """Shape of the largest change blob touching the square: {"class", "area", "circularity", "rectangularity"}.
+
+    The blob is the thresholded, cleaned aligned difference inside the quad grown by the blob margins (a piece is tall
+    and its top leans out of the square). No blob, or one under min_blob_area_px, is "unsure"."""
+    x0, y0 = quad.min(axis=0)
+    x1, y1 = quad.max(axis=0)
+    window = np.zeros(diff.shape, bool)
+    window[max(int(y0 - settings.blob_margin_up_px), 0):int(y1 + settings.blob_margin_px),
+           max(int(x0 - settings.blob_margin_px), 0):int(x1 + settings.blob_margin_px)] = True
+    changed = ((diff > settings.diff_threshold) & window).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (settings.blob_kernel_px,) * 2)
+    changed = cv2.morphologyEx(cv2.morphologyEx(changed, cv2.MORPH_OPEN, kernel), cv2.MORPH_CLOSE, kernel)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(changed)
+    touching = [i for i in range(1, count) if (mask & (labels == i)).any()]
+    if not touching:
+        return {"class": "unsure", "area": 0.0, "circularity": None, "rectangularity": None}
+    blob = (labels == max(touching, key=lambda i: stats[i, cv2.CC_STAT_AREA])).astype(np.uint8)
+    contour = max(cv2.findContours(blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0], key=cv2.contourArea)
+    area, perimeter = cv2.contourArea(contour), cv2.arcLength(contour, True)
+    (_, _), (width, height), _ = cv2.minAreaRect(contour)
+    circularity = 4 * np.pi * area / perimeter ** 2 if perimeter > 0 else 0.0
+    rectangularity = area / (width * height) if width * height > 0 else 0.0
+    if area < settings.min_blob_area_px:
+        kind = "unsure"
+    elif rectangularity >= settings.square_min_rect:
+        kind = "square"
+    elif rectangularity <= settings.round_max_rect:
+        kind = "round"
+    else:
+        kind = "unsure"
+    return {"class": kind, "area": round(float(area), 1), "circularity": round(float(circularity), 3),
+            "rectangularity": round(float(rectangularity), 3)}
+
+
+_SHAPE_PIECE = {"square": t3.X, "round": t3.O}
+_LABEL_PIECE = {"cube": t3.X, "cylinder": t3.O}
+
+
+def _label_of(pieces) -> str:
+    return " and ".join("cube" if p == t3.X else "cylinder" for p in sorted(pieces))
+
+
+def _judge(name: str, score: Optional[float], visible: float, inside: tuple, shape: Optional[dict],
            settings: ReaderSettings) -> SquareEvidence:
-    def done(state, reason):
+    def done(state, reason, suggested=None, by=None):
         return SquareEvidence(name, state, None if score is None else round(score, 4), round(visible, 3), inside,
-                              reason)
+                              reason, shape, suggested, by)
 
     if score is None:
         return done(t3.UNKNOWN, f"only {visible:.0%} of the square is visible (needs "
                                 f"{settings.min_visible_fraction:.0%}) so no change score")
     changed = score >= settings.change_threshold
     usable = [d for d in inside if d["confidence"] >= settings.min_confidence]
-    pieces = {d["label"] for d in usable if d["label"] in ("cube", "cylinder")}
-    if len(pieces) == 2:
-        return done(t3.UNKNOWN, "a cube and a cylinder are both detected on this square")
+    pieces = {_LABEL_PIECE[d["label"]] for d in usable if d["label"] in _LABEL_PIECE}
     if not changed:
         if pieces:
-            return done(t3.UNKNOWN, f"a {next(iter(pieces))} is detected but the square did not change")
+            return done(t3.UNKNOWN, f"a {_label_of(pieces)} is detected but the square did not change")
         return done(t3.EMPTY, "no change from the empty board and no cube or cylinder detected")
-    if pieces:
-        label = next(iter(pieces))
-        best = max((d for d in usable if d["label"] == label), key=lambda d: d["confidence"])
-        return done(t3.X if label == "cube" else t3.O, f"changed; {label} detected ({best['confidence']:.2f})")
-    if any(d["label"] == "empty" for d in usable):
-        return done(t3.UNKNOWN, "the square changed but the detector calls it empty")
-    return done(t3.UNKNOWN, "the square changed but nothing was detected on it")
+
+    seen = _SHAPE_PIECE.get(shape["class"]) if shape else None
+    cue = f"shape {shape['class']}" if shape else "no shape"
+    if len(pieces) == 2:
+        return done(t3.UNKNOWN, f"a cube and a cylinder are both detected on this square; {cue}", seen,
+                    "shape" if seen else None)
+    if not pieces:
+        if any(d["label"] == "empty" for d in usable):
+            why = "the square changed but the detector calls it empty"
+        else:
+            why = "the square changed but nothing was detected on it"
+        return done(t3.UNKNOWN, f"{why}; {cue}", seen, "shape" if seen else None)
+
+    piece = next(iter(pieces))
+    best = max((d for d in usable if _LABEL_PIECE.get(d["label"]) == piece), key=lambda d: d["confidence"])
+    confident = best["confidence"] >= settings.min_label_confidence
+    label = f"{_label_of({piece})} {best['confidence']:.2f}"
+    if confident and seen == piece:
+        return done(piece, f"changed; detector ({label}) and shape ({shape['class']}) agree")
+    if seen is not None and seen != piece:
+        return done(t3.UNKNOWN, f"the detector says {label} but the shape is {shape['class']}", seen, "shape")
+    if seen is None:
+        return done(t3.UNKNOWN, f"the detector says {label} but the shape is unsure", piece if confident else None,
+                    "detector" if confident else None)
+    return done(t3.UNKNOWN, f"the detector's {label} is below {settings.min_label_confidence}; the shape is "
+                            f"{shape['class']}", seen, "shape")

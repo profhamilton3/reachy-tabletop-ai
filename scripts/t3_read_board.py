@@ -42,7 +42,8 @@ def main(argv=None) -> int:
     for square in read.squares:
         seen = ", ".join(f"{d['label']} {d['confidence']:.2f}" for d in square.detections) or "none"
         score = "n/a" if square.change_score is None else f"{square.change_score:.2f}"
-        print(f"  {square.cell}  {square.state:<7} change {score:>5}  seen: {seen}  - {square.reason}")
+        hint = f"  (suggest {square.suggested} by {square.suggested_by})" if square.suggested else ""
+        print(f"  {square.cell}  {square.state:<7} change {score:>5}  seen: {seen}  - {square.reason}{hint}")
     if result is not None:
         print(result.text)
     return 0
