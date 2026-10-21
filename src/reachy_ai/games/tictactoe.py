@@ -12,9 +12,10 @@ recommend() applies the rules in order and the first that applies decides:
 Rule 4 is the standard refinement: when the opponent has one fork square, take it; when it has several, make two in a
 row whose forced reply gives the opponent neither a win nor a fork (this is why a side beats a corner when the
 opponent holds two opposite corners and you hold the centre).
-Rule 9 (search) is a guard, not a strategy: the eight rules never lose a game played from the start, but after an
-opponent error they can miss a win or throw away a draw. When the rules' move is not minimax-optimal the first optimal
-cell is recommended instead and labelled rule 9, so the hint stays honest. (Decision flagged on the PR for the owner.)
+Owner ruling (PR #54): the first applicable rule's move can give up value after an opponent error. So the rules are
+tried in order and the first whose candidate cell is minimax-optimal is used, with that rule's label. Only when none
+is optimal is rule 9 (search) used; its text names the overridden rule-of-thumb move and what it would cost. Rule 3
+also covers "fork in two moves": a forcing two in a row after which a fork is certain.
 Ties between equal cells are broken in the fixed order r1c1, r1c2, r1c3, r2c1 ... r3c3, and lines in LINES order.
 """
 from __future__ import annotations
@@ -42,6 +43,7 @@ _OPPOSITE_CORNER = {0: 8, 2: 6, 6: 2, 8: 0}
 
 RULE_NAMES = {1: "win", 2: "block", 3: "fork", 4: "block a fork", 5: "centre", 6: "opposite corner",
               7: "corner", 8: "side", 9: "search"}
+FORK_IN_TWO = "fork in two moves"  # rule 3 when the fork needs a forcing move first
 
 Board = tuple  # nine of X, O, EMPTY, UNKNOWN, OTHER in CELLS order
 
@@ -194,46 +196,56 @@ class Result:
         }
 
 
-def _pick(board: Board, me: str) -> tuple:
-    """(cell, rule, lines, detail) for the side to move on a valid in-progress board."""
+def _candidates(board: Board, me: str) -> list:
+    """[(cell, rule, name, lines, detail)]: each rule's candidate move, in rule order (rule 3 has two forms)."""
     opp = _other(me)
     empties = _empties(board)
+    found = []
 
-    for cell, line in _threat_cells(board, me):  # 1 win
-        return cell, 1, (line,), f"completes {line_name(line)}."
-    for cell, line in _threat_cells(board, opp):  # 2 block
-        return cell, 2, (line,), f"{opp} threatens {line_name(line)}."
-    for cell in empties:  # 3 fork
+    for cell, line in _threat_cells(board, me)[:1]:
+        found.append((cell, 1, RULE_NAMES[1], (line,), f"completes {line_name(line)}."))
+    for cell, line in _threat_cells(board, opp)[:1]:
+        found.append((cell, 2, RULE_NAMES[2], (line,), f"{opp} threatens {line_name(line)}."))
+    for cell in empties:
         lines = _fork_lines(board, cell, me)
         if lines:
-            return cell, 3, tuple(lines), f"makes two threats, {' and '.join(line_name(ln) for ln in lines)}."
-
-    for cell, reply, line, replied in _forcing_moves(board, me):  # 3, forced: reply leaves no threat, then fork
+            found.append((cell, 3, RULE_NAMES[3], tuple(lines),
+                          f"makes two threats, {' and '.join(line_name(ln) for ln in lines)}."))
+            break
+    for cell, reply, line, replied in _forcing_moves(board, me):
         if not _threat_cells(replied, opp) and any(_fork_lines(replied, c, me) for c in _empties(replied)):
-            return cell, 3, (line,), f"forces {opp} to {CELLS[reply]}, then forks."
+            found.append((cell, 3, FORK_IN_TWO, (line,), f"forces {opp} to {CELLS[reply]}, then forks."))
+            break
 
-    opp_forks = [c for c in empties if _fork_lines(board, c, opp)]  # 4 block a fork
+    opp_forks = [c for c in empties if _fork_lines(board, c, opp)]
     if opp_forks:
         names = ", ".join(CELLS[c] for c in opp_forks)
+        chosen = None
         if len(opp_forks) > 1:  # several fork squares: force a reply that gives the opponent no fork
             for cell, reply, line, replied in _forcing_moves(board, me):
                 if len({c for c, _ in _threat_cells(replied, opp)}) < 2:
-                    return cell, 4, (line,), f"{opp} could fork at {names}; this forces {opp} to {CELLS[reply]}."
-        cell = opp_forks[0]
-        return cell, 4, tuple(_fork_lines(board, cell, opp)), f"{opp} could fork at {names}; take {CELLS[cell]}."
+                    chosen = (cell, (line,), f"{opp} could fork at {names}; this forces {opp} to {CELLS[reply]}.")
+                    break
+        if chosen is None:
+            cell = opp_forks[0]
+            chosen = (cell, tuple(_fork_lines(board, cell, opp)), f"{opp} could fork at {names}; take {CELLS[cell]}.")
+        found.append((chosen[0], 4, RULE_NAMES[4], chosen[1], chosen[2]))
 
-    if board[CENTRE] == EMPTY:  # 5 centre
-        return CENTRE, 5, (), "take the centre."
-    for corner in CORNERS:  # 6 opposite corner
+    if board[CENTRE] == EMPTY:
+        found.append((CENTRE, 5, RULE_NAMES[5], (), "take the centre."))
+    for corner in CORNERS:
         if board[corner] == opp and board[_OPPOSITE_CORNER[corner]] == EMPTY:
-            return _OPPOSITE_CORNER[corner], 6, (), f"opposite {opp} at {CELLS[corner]}."
-    for corner in CORNERS:  # 7 empty corner
+            found.append((_OPPOSITE_CORNER[corner], 6, RULE_NAMES[6], (), f"opposite {opp} at {CELLS[corner]}."))
+            break
+    for corner in CORNERS:
         if board[corner] == EMPTY:
-            return corner, 7, (), "take an empty corner."
-    for side in SIDES:  # 8 empty side
+            found.append((corner, 7, RULE_NAMES[7], (), "take an empty corner."))
+            break
+    for side in SIDES:
         if board[side] == EMPTY:
-            return side, 8, (), "take an empty side."
-    raise AssertionError("no empty square on an in-progress board")
+            found.append((side, 8, RULE_NAMES[8], (), "take an empty side."))
+            break
+    return found
 
 
 @functools.lru_cache(maxsize=None)
@@ -249,13 +261,26 @@ def _value(board: Board, mover: str) -> int:
     return max(values) if mover == X else min(values)
 
 
-def _search_fallback(board: Board, me: str, cell: int) -> Optional[int]:
-    """Rule 9: the first optimal cell when the rules' move gives up value (the eight rules never lose a game played
-    from the start, but after an opponent error they can miss a win, or a draw when the position is already worse)."""
+def _pick(board: Board, me: str) -> tuple:
+    """(cell, rule, name, lines, detail): the first rule whose candidate is minimax-optimal; rule 9 if none is.
+
+    The first applicable rule's move can give up value after an opponent error, so the later rules are tried before
+    searching. Rule 9 names the rule-of-thumb move it overrides and says what it would have cost."""
     best = max if me == X else min
     scores = {c: _value(_play(board, c, me), _other(me)) for c in _empties(board)}
-    return next((c for c in _empties(board) if scores[c] == best(scores.values())), None) \
-        if scores[cell] != best(scores.values()) else None
+    top = best(scores.values())
+    candidates = _candidates(board, me)
+    for candidate in candidates:
+        if scores[candidate[0]] == top:
+            return candidate
+    first = candidates[0]  # a rule always applies on an in-progress board
+    sign = 1 if me == X else -1
+    verdict = "win" if sign * top == 1 else "draw"
+    verb = "miss the win" if verdict == "win" else "give up the draw"
+    cell = next(c for c in _empties(board) if scores[c] == top)
+    detail = (f"the rule-of-thumb move {CELLS[first[0]]} (rule {first[1]}, {first[2]}) would {verb}; "
+              f"{CELLS[cell]} {'wins' if verdict == 'win' else 'draws'}.")
+    return cell, 9, RULE_NAMES[9], (), detail
 
 
 def recommend(board: Board) -> Result:
@@ -272,12 +297,8 @@ def recommend(board: Board) -> Result:
         return Result(True, (), None, "draw", None, None, None, None, None, (),
                       "Draw: the board is full with no winner. No move.")
     me = turn(board)
-    cell, rule, lines, detail = _pick(board, me)
-    better = _search_fallback(board, me, cell)
-    if better is not None:
-        cell, rule, lines = better, 9, ()
-        detail = "the move the rules 1-8 would pick gives up a win or a draw; this one does not."
+    cell, rule, name, lines, detail = _pick(board, me)
     text = (f"{me}'s turn: place a {PIECE_NAMES[me]} ({me}) at {CELLS[cell]}. "
-            f"Rule {rule}, {RULE_NAMES[rule]}: {detail}")
-    return Result(True, (), me, "in_progress", None, None, CELLS[cell], rule, RULE_NAMES[rule],
+            f"Rule {rule}, {name}: {detail}")
+    return Result(True, (), me, "in_progress", None, None, CELLS[cell], rule, name,
                   tuple(tuple(CELLS[i] for i in line) for line in lines), text)

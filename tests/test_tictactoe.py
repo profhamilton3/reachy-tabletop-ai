@@ -183,6 +183,35 @@ def test_rule_8_side():
     assert (result.move_cell, result.rule_number, result.rule_name) == ("r3c2", 8, "side")
 
 
+def test_rule_3_fork_in_two_moves():
+    result = rec(".../.../.OX")
+    assert (result.move_cell, result.rule_number, result.rule_name) == ("r1c3", 3, "fork in two moves")
+    assert result.text == ("X's turn: place a cube (X) at r1c3. "
+                           "Rule 3, fork in two moves: forces O to r2c3, then forks.")
+
+
+def test_later_rule_used_when_first_rule_is_not_optimal():
+    # rule 1-8 order: a later rule's cell is optimal, so it keeps its own label instead of rule 9
+    results = [t.recommend(b) for b in map(t.parse, ["X../.O./..X", ".../..O/OXX"])]
+    assert all(r.rule_number != 9 for r in results)
+
+
+def test_rule_9_text_miss_the_win():
+    result = rec(".../..X/O..")
+    assert (result.move_cell, result.rule_number, result.rule_name) == ("r3c3", 9, "search")
+    assert result.text == ("X's turn: place a cube (X) at r3c3. Rule 9, search: the rule-of-thumb move r2c2 "
+                           "(rule 5, centre) would miss the win; r3c3 wins.")
+
+
+def test_rule_9_text_give_up_the_draw(monkeypatch):
+    # no legal board reaches this form, so force a losing rule-of-thumb move on a drawn position
+    monkeypatch.setattr(t, "_candidates", lambda board, me: [(t.CELLS.index("r1c3"), 5, "centre", (), "x")])
+    result = rec("X../.O./..X")
+    assert result.rule_number == 9
+    assert result.text == ("O's turn: place a cylinder (O) at r1c2. Rule 9, search: the rule-of-thumb move r1c3 "
+                           "(rule 5, centre) would give up the draw; r1c2 draws.")
+
+
 # --- minimax oracle -------------------------------------------------------------------------------------------------
 
 @functools.lru_cache(maxsize=None)
@@ -233,7 +262,7 @@ def test_oracle_every_reachable_position():
         checked += 1
         guarded += result.rule_number == 9
     print(f"oracle: {len(positions)} reachable positions, {checked} in progress checked, {guarded} by rule 9")
-    assert (len(positions), checked, guarded) == (8533, 6617, 34)  # rule 9 only after an opponent error
+    assert (len(positions), checked, guarded) == (8533, 6617, 15)  # rule 9 only after an opponent error
 
 
 # --- the CLI and the import guard -----------------------------------------------------------------------------------
