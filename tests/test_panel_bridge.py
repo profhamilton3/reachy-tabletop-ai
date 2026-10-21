@@ -1,7 +1,10 @@
 """Voice -> sim panel bridge, against a fake panel on loopback (issue #29). No external network."""
 import json
+import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +12,7 @@ from reachy_ai.audio.panel_bridge import PanelClient, PanelError, VoicePanelBrid
 from reachy_ai.audio.voice_commands import build_grammar, degraded_grammar
 
 COOKIE = "reachy_panel_session"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 
 class FakePanel:
@@ -267,3 +271,101 @@ def test_panel_bridge_origin_and_cookie_are_sent(panel):
         urllib.request.urlopen(req, timeout=2)
     assert err.value.code == 403
     assert PanelClient(panel.url).submit("pick up the cube")["state"] == "awaiting_confirmation"
+
+
+# --- Reachy speaks the replies (#59 part 2): --speak and the self-hearing filter -----------------------------------
+
+class FakeSpeaker:
+    """Records what would be said; `talking` is the self-hearing flag. `hush` notes how many panel POSTs came first."""
+
+    def __init__(self, panel):
+        self.panel, self.said, self.hushes, self.talking = panel, [], [], False
+
+    def say(self, text):
+        self.said.append(text)
+
+    def speaking(self):
+        return self.talking
+
+    def hush(self):
+        self.hushes.append(len(posts(self.panel)))
+        return {"ok": True}
+
+
+def test_panel_bridge_voice_speaks_the_proposal_and_the_refusal(panel):
+    speaker = FakeSpeaker(panel)
+    bridge, lines, _ = make_bridge(panel, speaker=speaker)
+    bridge.handle("reachy pick up the cube and put it back", 0.9)
+    assert speaker.said == ["I'd lift the red cube and put it back. Say Reachy, yes to go ahead."]
+    assert not any(p.endswith("/confirm") for p, _ in posts(panel))  # speaking never confirms
+    bridge.handle("reachy rotate the joint", 0.9)
+    assert speaker.said[-1] == "I can't do that: I will not move joints."
+
+
+def test_panel_bridge_voice_ignores_all_but_stop_while_speaking(panel, caplog):
+    speaker = FakeSpeaker(panel)
+    bridge, _, _ = make_bridge(panel, speaker=speaker)
+    bridge.handle("reachy pick up the cube", 0.9)
+    speaker.talking = True  # Reachy is saying "... Say Reachy, yes to go ahead."
+    with caplog.at_level("INFO", logger="reachy_ai.audio.panel_bridge"):
+        assert bridge.handle("reachy yes", 0.95) == "ignored_while_speaking"
+        assert bridge.handle("reachy no", 0.95) == "ignored_while_speaking"
+        assert bridge.handle("reachy pick up the cube", 0.95) == "ignored_while_speaking"
+    assert "ignored while speaking: 'reachy yes'" in caplog.text
+    assert bridge.pending and posts(panel)[-1][0] == "/tasks"  # no confirm, no cancel, no new request
+    before = len(posts(panel))
+    assert bridge.handle("stop", 0.2) == "stop"
+    assert speaker.hushes == [before]  # hush first ...
+    assert posts(panel)[-1][0] == "/tasks/t1/cancel"  # ... then the panel's cancel
+    assert speaker.said[-1] == "Stopping."
+    speaker.talking = False
+    assert bridge.handle("reachy yes", 0.95) == "nothing_pending"  # heard again once Reachy is quiet
+
+
+def test_panel_bridge_voice_stop_hushes_even_with_nothing_to_stop(panel):
+    speaker = FakeSpeaker(panel)
+    speaker.talking = True
+    bridge, _, _ = make_bridge(panel, speaker=speaker)
+    assert bridge.handle("reachy stop", 0.9) == "nothing_to_stop"
+    assert speaker.hushes == [0] and speaker.said == []
+
+
+def test_panel_bridge_voice_speak_is_off_by_default(panel):
+    import voice_panel
+    assert voice_panel.build_parser().parse_args(["--mic"]).speak is False
+    assert voice_panel.build_parser().parse_args(["--mic", "--speak"]).speak is True
+    bridge, _, _ = make_bridge(panel)
+    assert bridge.speaker is None
+    bridge.handle("reachy pick up the cube", 0.9)
+    assert bridge.handle("reachy yes", 0.9) == "confirmed"  # no speaker, no filter
+
+
+def test_panel_bridge_voice_stop_cuts_real_speech_through_the_helper(panel):
+    import reachy_audio_helper as helper
+
+    from reachy_ai.audio.audio_client import AudioClient
+    from reachy_ai.audio.speech import Speaker
+
+    backend = helper.FakeBackend(playback_s=30)  # a long (silent) playback subprocess
+    server = helper.make_server(0, backend)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        audio = AudioClient(f"http://127.0.0.1:{server.server_address[1]}")
+        speaker = Speaker(audio, tail_s=0)
+        bridge, _, _ = make_bridge(panel, speaker=speaker)
+        bridge.handle("reachy pick up the cube", 0.9)
+        deadline = time.monotonic() + 5
+        while not audio.status()["speaking"]:
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        assert bridge.handle("reachy yes", 0.95) == "ignored_while_speaking"
+        backend.playback_s = None  # the proposal's 30 s playback is running; "Stopping." itself is short
+        started = time.monotonic()
+        assert bridge.handle("stop", 0.9) == "stop"
+        assert posts(panel)[-1][0] == "/tasks/t1/cancel" and time.monotonic() - started < 3
+        speaker._thread.join(5)
+        assert speaker.last["text"] == "Stopping." and time.monotonic() - started < 5
+        assert ("say", "I'd lift the red cube and put it back. Say Reachy, yes to go ahead.") in backend.calls
+    finally:
+        server.shutdown()
+        server.server_close()

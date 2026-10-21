@@ -2,6 +2,7 @@
 
 Offline: the helper runs on 127.0.0.1 with the fake backend; nothing plays and nothing is recorded."""
 
+import array
 import ast
 import http.client
 import io
@@ -55,6 +56,29 @@ def post(server, path, body, headers=None):
 def wav(data):
     with wave.open(io.BytesIO(data), "rb") as clip:
         return clip.getnchannels(), clip.getsampwidth(), clip.getframerate(), clip.readframes(clip.getnframes())
+
+
+def peak(data):
+    """The largest absolute sample of 16-bit WAV bytes."""
+    samples = array.array("h", wav(data)[3])
+    return max(abs(v) for v in samples)
+
+
+def full_scale_wav(path, seconds=0.2, rate=22050):
+    """A 16-bit square wave at full scale (the loudest a TTS engine could hand over)."""
+    frames = int(seconds * rate)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(array.array("h", [32767 if (n // 20) % 2 else -32768 for n in range(frames)]).tobytes())
+
+
+def wait_for(predicate, seconds=5.0):
+    deadline = time.monotonic() + seconds
+    while not predicate():
+        assert time.monotonic() < deadline, "timed out waiting"
+        time.sleep(0.02)
 
 
 # --- the helper's own constraints ------------------------------------------------------------------
@@ -235,12 +259,14 @@ def test_an_oversized_recording_is_refused(serve):
 
 
 def test_alsa_commands_use_the_devices_and_send_text_on_stdin(monkeypatch):
-    calls = []
+    calls, played = [], []
 
-    def fake_run(argv, timeout, stdin_text=None):
+    def fake_run(argv, timeout, stdin_text=None, playback=None):
         calls.append((argv, timeout, stdin_text))
         if "-w" in argv:  # espeak-ng writes its WAV
             Path(argv[-1]).write_bytes(helper.tone_wav(0.5, 440))
+        if argv[0] == "aplay":
+            played.append(Path(argv[-1]).read_bytes())
         return ""
 
     monkeypatch.setattr(helper, "run_command", fake_run)
@@ -252,6 +278,7 @@ def test_alsa_commands_use_the_devices_and_send_text_on_stdin(monkeypatch):
     assert synth[0][:2] == ["espeak-ng", "--stdin"] and synth[2] == "Hello; rm -rf /"
     assert "Hello; rm -rf /" not in " ".join(synth[0]) and synth[1] == helper.TTS_TIMEOUT_S
     assert play[0][:4] == ["aplay", "-q", "-D", "hw:2,0"] and play[1] == pytest.approx(0.5 + helper.COMMAND_MARGIN_S)
+    assert play[0][-1].endswith("say-capped.wav") and peak(played[0]) <= 0.5 * 32767  # the volume cap
 
 
 def test_piper_is_used_only_with_a_model_then_espeak_ng_then_nothing(monkeypatch):
@@ -273,6 +300,142 @@ def test_the_helper_logs_the_text_and_operation_never_audio(serve, caplog):
     text = caplog.text
     assert "say: 'Hello, I am Reachy'" in text and "record: 1.00 s on 4 channel(s) with a 0.50 s tone" in text
     assert "RIFF" not in text and "\\x00" not in text
+
+
+# --- Reachy speaks (part 2): hush, the speaking flag, mute, the volume cap ---------------------------
+
+def test_audio_hush_during_say_ends_a_long_playback_at_once(serve):
+    backend = helper.FakeBackend(playback_s=30)  # a real (silent) subprocess that would run for 30 s
+    _, client = serve(backend)
+    replies = []
+    speaker = threading.Thread(target=lambda: replies.append(client.say("It's X's turn.")))
+    started = time.monotonic()
+    speaker.start()
+    wait_for(lambda: backend.playback._process is not None)
+    status = client.status()
+    assert status["busy"] and status["speaking"] and status["speaking_since"].endswith("Z")
+    assert client.hush()["stopped"] is True  # /say holds the lock; /hush does not wait for it
+    speaker.join(5)
+    assert not speaker.is_alive() and time.monotonic() - started < 5
+    assert replies[0]["ok"] and replies[0]["hushed"] is True and replies[0]["text"] == "It's X's turn."
+    status = client.status()
+    assert not status["busy"] and status["speaking"] is False and status["speaking_since"] is None
+    assert client.hush()["stopped"] is False  # idempotent: nothing is sounding now
+    backend.playback_s = None
+    assert client.say("Hello, I am Reachy")["hushed"] is False  # an earlier hush does not cut the next phrase
+
+
+def test_audio_hush_ends_a_tone_and_needs_no_body(serve):
+    backend = helper.FakeBackend(playback_s=30)
+    server, client = serve(backend)
+    replies = []
+    tone = threading.Thread(target=lambda: replies.append(client.tone(1.0, 1000)))
+    tone.start()
+    wait_for(lambda: backend.playback._process is not None)
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    connection.request("POST", "/hush")  # a bare POST, as `curl -X POST .../hush` sends it
+    response = connection.getresponse()
+    assert response.status == 200 and json.loads(response.read())["stopped"] is True
+    tone.join(5)
+    assert replies[0]["hushed"] is True and not client.status()["speaking"]
+
+
+def test_audio_speaking_flag_is_up_only_while_a_phrase_sounds(serve):
+    backend = helper.FakeBackend(delay=0.5)
+    _, client = serve(backend)
+    assert client.status()["speaking"] is False
+    speaker = threading.Thread(target=client.say, args=("Stopping.",))
+    speaker.start()
+    wait_for(lambda: client.status()["speaking"])
+    speaker.join()
+    assert client.status()["speaking"] is False
+    client.record(1.0, 4)  # a recording is not speech
+    assert client.status()["speaking"] is False
+
+
+def test_audio_mute_makes_say_and_tone_no_ops():
+    backend = helper.FakeBackend()
+    server = helper.make_server(0, backend, muted=True)  # --mute
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        client = AudioClient(f"http://127.0.0.1:{server.server_address[1]}")
+        assert client.status()["muted"] is True
+        said = client.say("It's a draw.")
+        assert said["ok"] and said["muted"] is True and said["text"] == "It's a draw."
+        assert client.tone(1.0, 1000)["muted"] is True
+        assert backend.calls == []  # nothing reached the speaker
+        with pytest.raises(AudioHelperError) as muted:
+            client.record(1.0, 4, tone={"seconds": 0.5, "freq": 1000})  # the loopback tone would be silent
+        assert muted.value.code == "muted" and muted.value.status == 409
+        assert client.record(1.0, 4)  # recording alone is not affected
+        assert post(server, "/mute", {"on": "yes"})[0] == 400
+        assert client.mute(False)["muted"] is False and client.status()["muted"] is False
+        assert client.say("It's a draw.")["muted"] is False and ("say", "It's a draw.") in backend.calls
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_audio_mute_during_speech_ends_it(serve):
+    backend = helper.FakeBackend(playback_s=30)
+    _, client = serve(backend)
+    replies = []
+    speaker = threading.Thread(target=lambda: replies.append(client.say("It's O's turn.")))
+    speaker.start()
+    wait_for(lambda: backend.playback._process is not None)
+    assert client.mute(True)["muted"] is True
+    speaker.join(5)
+    assert replies[0]["hushed"] is True
+
+
+@pytest.mark.parametrize("gain", [1.0, 0.5, 0.1])
+def test_audio_speech_is_scaled_to_the_max_gain(tmp_path, gain):
+    full_scale_wav(tmp_path / "say.wav")
+    seconds = helper.scale_wav(str(tmp_path / "say.wav"), str(tmp_path / "capped.wav"), gain)
+    data = (tmp_path / "capped.wav").read_bytes()
+    channels, width, rate, _ = wav(data)
+    assert (channels, width, rate) == (1, 2, 22050) and seconds == pytest.approx(0.2, abs=0.001)
+    assert peak(data) <= gain * 32767
+    assert peak(data) >= gain * 32767 - 1  # scaled, not silenced
+
+
+def test_audio_max_gain_flag_default_and_limits():
+    assert helper.DEFAULT_MAX_GAIN == 0.5 and helper.FakeBackend().max_gain == 0.5
+    for bad in ("0", "1.5", "-0.2", "loud"):
+        with pytest.raises(SystemExit):
+            helper.main(["--backend", "fake", "--max-gain", bad])
+    with pytest.raises(ValueError):
+        helper.FakeBackend(max_gain=2)
+
+
+def test_audio_an_8_bit_synthesis_is_refused(tmp_path):
+    with wave.open(str(tmp_path / "say.wav"), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(1)
+        w.setframerate(8000)
+        w.writeframes(b"\x80" * 800)
+    with pytest.raises(helper.HelperError, match="only 16-bit"):
+        helper.scale_wav(str(tmp_path / "say.wav"), str(tmp_path / "capped.wav"), 0.5)
+
+
+def test_audio_mac_renders_say_to_a_wav_then_afplays_it_at_the_cap(monkeypatch):
+    calls, played = [], []
+
+    def fake_run(argv, timeout, stdin_text=None, playback=None):
+        calls.append((argv, stdin_text))
+        if argv[0] == "say":
+            full_scale_wav(argv[argv.index("-o") + 1])
+        if argv[0] == "afplay":
+            played.append(Path(argv[-1]).read_bytes())
+        return ""
+
+    monkeypatch.setattr(helper, "run_command", fake_run)
+    monkeypatch.setattr(helper.shutil, "which", lambda name: "/usr/bin/say" if name == "say" else None)
+    assert helper.MacBackend(max_gain=0.3).speak("It's a draw.") == "say"
+    (synth, text), (play, _) = calls
+    assert synth[:2] == ["say", "-o"] and "--file-format=WAVE" in synth and text == "It's a draw."
+    assert "It's a draw." not in " ".join(synth)  # the text goes on stdin
+    assert play[0] == "afplay" and play[-1].endswith("say-capped.wav") and peak(played[0]) <= 0.3 * 32767
 
 
 # --- the client ------------------------------------------------------------------------------------

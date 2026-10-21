@@ -31,7 +31,7 @@ to listen on another address.
    ```
    Without `--play-device` and `--record-device`, the system default devices are used.
    The other options are `--port` (default 8090), `--rate` (16000, the ReSpeaker's native rate; 44100 or 48000),
-   `--piper-model`, and `--imu-topic` (the Robot inventory's IMU probe, §5).
+   `--piper-model`, `--max-gain`, `--mute` (§1.2) and `--imu-topic` (the Robot inventory's IMU probe, §5).
    Device names must look like ALSA names (`hw:2,0`, `plughw:2,0`, `hw:CARD=ArrayUAC10,DEV=0`, `default`).
    The helper refuses to start on anything else.
 4. Leave it running in its own terminal. Each operation and the spoken text are logged; audio never is.
@@ -64,6 +64,21 @@ arecord --dump-hw-params -D hw:2,0 -d 1 /dev/null # prints CHANNELS: 6 (6-channe
   (#28); flashing the 6-channel firmware is a separate, owner-approved step.
 - The layout is shown by `/status`, recorded in the bundle (`capture.json`, `channel_layout`) and read by the
   analyser.
+
+### 1.2 Speech: the volume cap, mute and hush
+
+Reachy speaks the T3 move and the voice panel's replies through `/say` (`docs/T3_ANALYSIS.md`, `docs/VOICE.md`).
+
+| Flag or route | Does |
+|---|---|
+| `--max-gain <g>` | **Volume cap.** Speech is rendered to a 16-bit WAV, every sample is scaled by `g` (more than 0, at most 1; default **0.5**, about −6 dBFS at most), then played (`aplay` on the NUC; on the Mac, `say -o` renders the WAV and `afplay` plays it at the same cap). The test tone keeps its own −12 dBFS cap. The system mixer is still never touched. |
+| `--mute` | Start **muted**: `/say` and `/tone` answer `{"ok": true, "muted": true}` and play nothing. A `/record` with a loopback tone answers **409 muted** (the check would be meaningless); a plain recording still works. |
+| `POST /mute {"on": true\|false}` | The mute switch at run time. Muting also ends the current speech or tone. |
+| `POST /hush` | Ends the current speech or tone **at once** (the playback is terminated). It never waits for the one-at-a-time lock, so it works while `/say` runs; the `/say` then answers `{"hushed": true}`. Idempotent: with nothing sounding it answers `{"stopped": false}`. The body is optional. |
+| `GET /status` | adds `speaking` (true while a phrase or tone sounds), `speaking_since` (UTC), `muted` and `max_gain`. |
+
+`/say` answers when the speech ends. Muting and the cap apply to every client (the viewer, the voice bridge, the
+Sound check). From a terminal: `curl -s -X POST http://127.0.0.1:8090/hush`.
 
 **Text-to-speech.** The helper uses **piper** if it is on `PATH` and a voice model is given with
 `--piper-model <voice>.onnx`, otherwise **espeak-ng**. If neither is installed, `/say` answers `unavailable`
@@ -100,11 +115,14 @@ microphone permission prompt for the terminal.
 |---|---|---|
 | `GET /status` | — | backend, TTS engine, devices found, channel layout, limits, version |
 | `POST /tone` | `{"seconds": ≤3, "freq": 100–8000}` | plays a sine generated in the helper, at −12 dBFS with 10 ms fades |
-| `POST /say` | `{"text": ≤200 characters}` | speaks the text (the text goes to the engine on stdin) |
+| `POST /say` | `{"text": ≤200 characters}` | speaks the text (the text goes to the engine on stdin), scaled to `--max-gain`; answers when it ends, with `hushed` and `muted` |
+| `POST /hush` | — (optional `{}`) | ends the current speech or tone at once; bypasses the lock (§1.2) |
+| `POST /mute` | `{"on": bool}` | the mute switch; bypasses the lock (§1.2) |
 | `POST /record` | `{"seconds": ≤3, "channels": ≤6, "tone": {"seconds", "freq"}?}` | returns a 16-bit WAV; with `tone`, the recording starts first and the tone plays 0.3 s into it |
 | `GET /probe/<name>` | — | one read-only NUC probe from a fixed list (§5); any other name answers **404** |
 
-- One operation at a time. A second request while one runs gets **409 busy**; nothing is queued.
+- One operation at a time. A second request while one runs gets **409 busy**; nothing is queued. `/hush`, `/mute`
+  and `/status` never wait for it.
 - Every subprocess has a timeout (the operation's length plus 5 s; 30 s for TTS synthesis), and a timeout
   answers **504**.
 - Requests over 4 KiB are refused (413), as are recordings over 2 MiB.

@@ -19,6 +19,7 @@ from typing import Any, Optional
 DEFAULT_AUDIO_URL = "http://127.0.0.1:8090"
 STATUS_TIMEOUT_S = 8.0  # /status lists the sound devices
 SAY_TIMEOUT_S = 40.0  # longer than the helper's own TTS timeout (30 s)
+HUSH_TIMEOUT_S = 1.0  # /hush never waits for the helper's lock; "stop" must not wait on it either
 PROBE_TIMEOUT_S = 25.0  # the longest probe (imu) is 5 s + 8 s of commands in the helper
 #: Added to an operation's own length; longer than the helper's subprocess margin (5 s).
 MARGIN_S = 8.0
@@ -38,7 +39,7 @@ def audio_url() -> str:
 
 
 class AudioClient:
-    """status(), tone(), say(), record() and probe() against the helper's routes."""
+    """status(), tone(), say(), hush(), mute(), record() and probe() against the helper's routes."""
 
     def __init__(self, base_url: Optional[str] = None):
         self.base_url = (base_url or audio_url()).rstrip("/")
@@ -84,8 +85,16 @@ class AudioClient:
     def tone(self, seconds: float = 1.0, freq: float = 1000.0) -> dict:
         return self._json("POST", "/tone", {"seconds": seconds, "freq": freq}, seconds + MARGIN_S)
 
-    def say(self, text: str) -> dict:
-        return self._json("POST", "/say", {"text": text}, SAY_TIMEOUT_S)
+    def say(self, text: str, timeout_s: float = SAY_TIMEOUT_S) -> dict:
+        """Answers when the speech ends: {"hushed": true} if /hush cut it off, {"muted": true} if muted."""
+        return self._json("POST", "/say", {"text": text}, timeout_s)
+
+    def hush(self, timeout_s: float = HUSH_TIMEOUT_S) -> dict:
+        """End the current speech or tone at once (idempotent)."""
+        return self._json("POST", "/hush", {}, timeout_s)
+
+    def mute(self, on: bool) -> dict:
+        return self._json("POST", "/mute", {"on": bool(on)}, STATUS_TIMEOUT_S)
 
     def probe(self, name: str) -> dict:
         """One of the helper's fixed NUC probes (#62); `name` is from its allow-list, never operator text."""

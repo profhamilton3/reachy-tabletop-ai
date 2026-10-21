@@ -182,10 +182,12 @@
           <span id="t3-quick-tags"></span>
           <input id="t3-tag-text" type="text" maxlength="60" placeholder="free-text tag" aria-label="Free-text tag">
           <input id="t3-note" type="text" maxlength="500" placeholder="note (optional)" aria-label="Note">
+          <label class="subtle" title="Reachy says the move through the audio helper (REACHY_AUDIO_URL). Output only: it never confirms or moves anything."><input type="checkbox" id="t3-speak"> Speak the move</label>
           <button id="t3-confirm" disabled>Confirm board</button>
           <button id="t3-save" disabled>Save labelled pair</button>
         </div>
         <div id="t3-result" class="t3-result" role="status" aria-live="polite" hidden></div>
+        <p class="subtle" id="t3-speech" role="status" aria-live="polite"></p>
       </div>
     </div>
   </section>
@@ -828,14 +830,26 @@
   $('t3-confirm').onclick = async () => {
     const tags = [...document.querySelectorAll('.t3-quick:checked')].map(c => c.value);
     const free = $('t3-tag-text').value.trim(); if (free) tags.push(free);
-    busy = true; renderBoards();
+    busy = true; renderBoards(); $('t3-speech').textContent = '';
+    let spoken = null;
     try {
-      const r = await api('/api/t3/confirm', {read_id: read.read_id, board: boardString(), tags, note: $('t3-note').value});
-      result = r.result;
+      const r = await api('/api/t3/confirm', {read_id: read.read_id, board: boardString(), tags, note: $('t3-note').value,
+                                              speak: $('t3-speak').checked});
+      result = r.result; spoken = r.spoken_text ? read.read_id : null;
       notice(`Confirmed and logged (${r.corrections.length} correction(s)) to ${r.history_file}.`);
     } catch (e) { notice(e.message); }
     busy = false; renderBoards();
+    if (spoken) speakMove(spoken);   // not awaited: speech never holds up the analysis
   };
+  async function speakMove(readId) {
+    const line = $('t3-speech');
+    line.textContent = 'Speaking…';
+    try {
+      const s = await api('/api/t3/speak', {read_id: readId}, 60000);
+      line.textContent = s.reason ? `Speech unavailable (${s.reason}).` : s.muted ? 'Not spoken: the audio helper is muted.' :
+        s.hushed ? `Spoken (cut off): “${s.text}”` : `Spoken: “${s.text}”`;
+    } catch (e) { line.textContent = `Speech unavailable (${e.message}).`; }
+  }
   $('t3-save').onclick = () => { const a = Object.assign(document.createElement('a'), {href: `/api/t3/reads/${read.read_id}/labelled-pair.zip`}); a.click(); };
   $('t3-toggle').onclick = async () => {
     const open = $('t3-body').hidden; $('t3-body').hidden = !open;

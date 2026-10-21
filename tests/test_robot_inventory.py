@@ -485,7 +485,8 @@ def test_inventory_analyser_respeaker6():
     assert imu["topic"] == "/reachy/imu" and imu["type"] == "sensor_msgs/msg/Imu" and imu["publishers"] == 1
     assert "orientation.w" in imu["sample_fields"] and "linear_acceleration.z" in imu["sample_fields"]
     assert "orientation_covariance" in imu["sample_fields"] and "header.stamp.sec" in imu["sample_fields"]
-    assert result["system"]["kernel"] == "Linux 5.15.0-89-generic" and result["system"]["helper_version"] == "2"
+    assert result["system"]["kernel"] == "Linux 5.15.0-89-generic"
+    assert result["system"]["helper_version"] == helper.VERSION
     assert result["sdk"]["version"] == "0.7.0" and result["sdk"]["joint_count"] == 13
     assert result["sdk"]["read_errors"] == [] and result["findings"] == []
 

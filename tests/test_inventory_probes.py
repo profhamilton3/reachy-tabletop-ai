@@ -109,7 +109,7 @@ def test_get_probe_serves_the_allow_list_and_404s_anything_else(serve):
     client = serve()
     status = client.status()
     assert status["probes"] == list(helper.PROBES) and status["imu_topic"] == "/reachy/imu"
-    assert status["version"] == helper.VERSION == "2"
+    assert status["version"] == helper.VERSION
     reply = client.probe("usb")
     assert reply["probe"] == "usb" and reply["outcome"] == "ok" and reply["redacted"] is True
     assert "2886:0018" in reply["commands"][0]["stdout"]
