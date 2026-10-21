@@ -7,6 +7,10 @@ REACHY_ENABLE_MOTION=true.
 
 The viewer's only server-side write is the history log: one JSON line per confirmed analysis, appended to
 <t3_history_dir>/<session_id>.jsonl (default outputs/t3_history, never committed). Everything else is held in memory.
+
+"Speak the move" (#59, off by default): Confirm with speak=true records speech.spoken_t3(result) in the history line,
+then the page asks /api/t3/speak to say it through the audio helper. Speech is output only and never blocks or changes
+the analysis: a failure comes back as a reason to show.
 """
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ from pathlib import Path
 from fastapi import Body, HTTPException
 from fastapi.responses import Response
 
+from reachy_ai.audio import speech
 from reachy_ai.camera_zoom import calibration_id as zoomed_calibration_id
 from reachy_ai.config import HEAD_PRESETS
 from reachy_ai.games import t3_board_reader as reader
@@ -90,7 +95,8 @@ def clean_tags(tags) -> list:
     return cleaned
 
 
-def history_line(read: dict, confirmed: tuple, result: t3.Result, tags: list, note: str) -> dict:
+def history_line(read: dict, confirmed: tuple, result: t3.Result, tags: list, note: str,
+                 spoken_text: str | None = None) -> dict:
     return {
         "schema": "t3_history.v1", "time_utc": utc_now(), "session_id": read["session_id"],
         "reference_id": read["reference_id"], "pair_id": read["pair_id"], "bundle_sha256": read["bundle_sha256"],
@@ -98,6 +104,7 @@ def history_line(read: dict, confirmed: tuple, result: t3.Result, tags: list, no
         "corrections": corrections(read["board_tuple"], confirmed),
         "confirmed_board": t3.to_string(confirmed), "result": result.to_dict(),
         "tags": tags, "note": note, "reader_settings": read["settings"], "viewer_version": viewer_version(),
+        "spoken_text": spoken_text,
     }
 
 
@@ -114,8 +121,10 @@ def labels_document(read: dict, confirmed: tuple) -> dict:
 
 
 def install_routes(app, *, camera, settings, zoom_context, depth, capture_record, analyze_pair, make_pair_bundle,
-                   history_dir: str):
-    """Mount /api/t3/* on the viewer app. The callables are the viewer's own (capture, analysis, bundle)."""
+                   history_dir: str, speak=None):
+    """Mount /api/t3/* on the viewer app. The callables are the viewer's own (capture, analysis, bundle); `speak(text)`
+    says a text through the audio helper and returns speech.speak's outcome (it never raises)."""
+    speak = speak or speech.speak
     lock = threading.Lock()
     app.state.t3 = {"reference": None, "reads": OrderedDict()}
     app.state.t3_settle_timeout_s = 8.0
@@ -240,7 +249,8 @@ def install_routes(app, *, camera, settings, zoom_context, depth, capture_record
                 "id": read_id, "session_id": snapshot["session_id"], "pair_id": meta["pair_id"],
                 "reference_id": held["id"], "bundle": data, "bundle_sha256": hashlib.sha256(data).hexdigest(),
                 "board": result.board_string(), "board_tuple": result.board, "squares": squares,
-                "settings": result.settings, "pose": result.pose, "confirmed": None, "confirmed_utc": None}
+                "settings": result.settings, "pose": result.pose, "confirmed": None, "confirmed_utc": None,
+                "spoken_text": None}
             while len(reads) > MAX_READS:
                 reads.popitem(last=False)
             return {"read_id": read_id, "pair_id": meta["pair_id"], "bundle_sha256": reads[read_id]["bundle_sha256"],
@@ -274,8 +284,10 @@ def install_routes(app, *, camera, settings, zoom_context, depth, capture_record
 
     @app.post("/api/t3/confirm")
     def t3_confirm(read_id: str = Body(embed=True), board: str = Body(embed=True), tags: list = Body([], embed=True),
-                   note: str = Body("", embed=True)):
-        """Confirm the (edited) board: refused while any square is unknown. Runs the engine and appends the history."""
+                   note: str = Body("", embed=True), speak: bool = Body(False, embed=True)):
+        """Confirm the (edited) board: refused while any square is unknown. Runs the engine and appends the history.
+        With speak (the page's "Speak the move"), the text Reachy will say is recorded in the line; nothing is said
+        here: the page asks /api/t3/speak afterwards, so speech never holds up the analysis."""
         read, confirmed = held_read(read_id), parse_board(board)
         unknown = [cell for cell, state in zip(t3.CELLS, confirmed) if state == t3.UNKNOWN]
         if unknown:
@@ -283,7 +295,8 @@ def install_routes(app, *, camera, settings, zoom_context, depth, capture_record
         if not isinstance(note, str) or len(note) > MAX_NOTE_CHARS:
             raise HTTPException(422, f"note must be text of at most {MAX_NOTE_CHARS} characters")
         result = t3.recommend(confirmed)
-        line = history_line(read, confirmed, result, clean_tags(tags), note.strip())
+        spoken_text = speech.spoken_t3(result) if speak is True else None
+        line = history_line(read, confirmed, result, clean_tags(tags), note.strip(), spoken_text)
         if not _SESSION_ID.match(read["session_id"]):
             raise HTTPException(500, "Unexpected session id; history not written")
         path = Path(history_dir) / f"{read['session_id']}.jsonl"
@@ -293,9 +306,22 @@ def install_routes(app, *, camera, settings, zoom_context, depth, capture_record
                 handle.write(json.dumps(line, sort_keys=True) + "\n")
         except OSError as exc:
             raise HTTPException(500, f"History not written ({exc.strerror}); confirmation not recorded") from exc
-        read["confirmed"], read["confirmed_utc"] = confirmed, line["time_utc"]
+        read["confirmed"], read["confirmed_utc"], read["spoken_text"] = confirmed, line["time_utc"], spoken_text
         return {"result": result.to_dict(), "confirmed_board": t3.to_string(confirmed),
-                "corrections": line["corrections"], "history_file": str(path), "history_time_utc": line["time_utc"]}
+                "corrections": line["corrections"], "history_file": str(path), "history_time_utc": line["time_utc"],
+                "spoken_text": spoken_text}
+
+    @app.post("/api/t3/speak")
+    def t3_speak(read_id: str = Body(embed=True)):
+        """Say the confirmed read's move through the audio helper. Output only: a failure is a reason, never an error
+        that touches the analysis or the history."""
+        read = held_read(read_id)
+        if read["confirmed"] is None or not read["spoken_text"]:
+            raise HTTPException(409, "Nothing to speak: confirm the board with Speak the move on")
+        outcome = speak(read["spoken_text"])
+        return {"text": read["spoken_text"], "spoken": bool(outcome.get("spoken")),
+                "hushed": bool(outcome.get("hushed")), "muted": bool(outcome.get("muted")),
+                "reason": None if outcome.get("ok") else outcome.get("detail") or outcome.get("error") or "failed"}
 
     @app.get("/api/t3/reads/{read_id}/labelled-pair.zip")
     def t3_labelled_pair(read_id: str):

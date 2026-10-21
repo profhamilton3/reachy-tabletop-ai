@@ -56,8 +56,40 @@ Anything that does not start with "reachy" is ignored (except "stop"). Cells are
 voice client has its own session, so it cannot see a run started by typing or clicking in the browser.
 Stop those with the panel's own **Stop** button.
 
-Settings: `--min-confidence` (default 0.6), `--confirm-timeout` (15), `REACHY_PANEL_URL`, `REACHY_VOSK_MODEL`.
+Settings: `--min-confidence` (default 0.6), `--confirm-timeout` (15), `--speak` (off), `REACHY_PANEL_URL`,
+`REACHY_VOSK_MODEL`, `REACHY_AUDIO_URL` (with `--speak`).
 Every panel call has a 5 s timeout, one attempt, and a plain error message.
+
+## Reachy speaks the replies (`--speak`)
+
+With `--speak` (**off** by default), Reachy says the panel's replies through the audio helper
+(`docs/SOUND_CHECK.md` §1, `REACHY_AUDIO_URL`), in short form:
+
+| Panel reply | Reachy says |
+|---|---|
+| a proposal | "I'd pick up the cube and put it back. Say Reachy, yes to go ahead." |
+| a refusal | "I can't do that: *the panel's reason*." |
+| a stop that the panel accepted | "Stopping." |
+
+```bash
+.venv/bin/python scripts/reachy_audio_helper.py --backend mac      # its own terminal
+python scripts/voice_panel.py --mic --speak
+```
+
+- **Output only.** Speech never confirms anything. A proposal still needs "reachy, yes" (or the Confirm button).
+  The words are built from the panel's own reply (its summary or reason); nothing is generated.
+- **Reachy does not answer itself.** While Reachy speaks, and for 1.5 s after (the recogniser reports an utterance
+  only after its trailing silence), every recognised result **except "stop"** is ignored and logged as
+  `ignored while speaking: '<text>'`. So its own "Say Reachy, yes" can never confirm. Wait for Reachy to finish
+  before you answer. The confirmation timeout (`--confirm-timeout`) starts when the proposal arrives, so the
+  spoken proposal uses a few of its seconds.
+- **"Stop" is always heard.** It first ends the speech (the helper's `/hush`, 1 s timeout), then cancels as before
+  (`POST /tasks/{id}/cancel`). It never waits for the speech to finish.
+- **The bridge tracks its own speech.** Speech from another client (the viewer's "Speak the move") is not seen
+  by the filter. That text never contains "reachy", so the bridge ignores it anyway (no wake word).
+- **If the helper is not running**, the script says `SPEECH UNAVAILABLE` at start; replies are shown but not spoken,
+  and nothing else changes. Mute and the volume cap are the helper's (`--mute`, `POST /mute`, `--max-gain`).
+- The spoken text is logged; audio is never logged or stored.
 
 ## Troubleshooting
 

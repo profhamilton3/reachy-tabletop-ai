@@ -30,6 +30,35 @@ both); otherwise a move is a logged dry run and the head stays where it is. No a
 
 Between games you only repeat steps 4 to 8. Capture the empty board again whenever the panel says the reference is stale.
 
+## Reachy speaks (optional)
+
+Tick **Speak the move** (next to Confirm board; **off** by default) and Reachy says the result after each **Confirm
+board**, through the audio helper (`docs/SOUND_CHECK.md` §1; `REACHY_AUDIO_URL`, default `http://127.0.0.1:8090`):
+
+- *"It's O's turn. Place a cylinder on row three, column three, to block X's row three."*
+- *"It's X's turn. Place a cube in the centre, row two, column two. That's the centre rule."*
+- *"X has won, on the diagonal."* / *"It's a draw."*
+- *"I can't analyse this board: there are four cubes and two cylinders."*
+- rule 9: *"... I checked every move ahead: the usual rule would miss the win."*
+
+Rows and columns are spoken from Reachy's side, as the squares are named (r1 nearest Reachy, c1 on Reachy's left).
+
+- **Output only.** Speech never confirms, moves or changes anything. The analysis is shown first; speech follows and
+  never holds it up. The line under the result says **Spoken**, **Spoken (cut off)** (a `/hush`), **Not spoken: the
+  audio helper is muted**, or **Speech unavailable (reason)** (the helper is not running, the tunnel is closed, no TTS
+  engine). Nothing else changes when speech fails. The phrase is rendered before it plays (for the volume cap), so
+  speech starts a moment after Confirm: about 2 s with macOS `say`.
+- **Only the system's own words.** The text is built from the engine's result fields (whose turn, the square, the rule
+  and its line, the board's problems), never generated and never re-read from the printed hint.
+- **Logged, never recorded.** The text is stored in the history line as `spoken_text` (`null` when the toggle is
+  off). Audio is never logged or kept.
+- **Mute and volume** are the helper's: start it with `--mute`, or `curl -s -X POST -d '{"on": true}'
+  http://127.0.0.1:8090/mute`; speech is scaled to at most `--max-gain` (default 0.5) of full scale. To cut Reachy off
+  at once: `curl -s -X POST http://127.0.0.1:8090/hush`.
+
+**Demo on the Mac (sim):** start the helper (`.venv/bin/python scripts/reachy_audio_helper.py --backend mac`), then the
+sim and the viewer as usual, open T3-Analysis, tick **Speak the move**, **Analyze board**, then **Confirm board**.
+
 ## What the squares mean
 
 | Square | Meaning |
@@ -58,7 +87,8 @@ set with `--t3-history-dir`; `outputs/` is git-ignored and must never be committ
 only server-side write**; everything else (pairs, references, reads) stays in memory. A line records: the time (UTC),
 session id, reference id, pair id and the pair bundle's SHA-256, the board as read, every square's evidence (state,
 suggestion, shape, detector label and confidence, change score), the **corrections** (`square`, `read`, `confirmed`),
-the confirmed board, the engine's result, your tags and note, and the reader settings.
+the confirmed board, the engine's result, your tags and note, the reader settings, and `spoken_text` (what Reachy was
+asked to say, or `null`).
 
 **How corrections become labels.** Every square you change is a case where Reachy was wrong or unsure, with the picture
 (by pair id and SHA-256) and the truth you confirmed: real-lab training labels for the detector and the shape rule. A
@@ -69,6 +99,8 @@ the analysis, `pair.json`) with `labels.json`: `{"board": "XOX/OXO/XOX", "square
 ## Under the hood
 
 Routes: `GET /api/t3/state`, `POST /api/t3/reference`, `POST /api/t3/analyze`, `POST /api/t3/accept-suggestions`,
-`POST /api/t3/confirm`, `GET /api/t3/reads/{id}/labelled-pair.zip`. Engine: `src/reachy_ai/games/tictactoe.py`; reader:
+`POST /api/t3/confirm` (`speak: true` records the spoken text), `POST /api/t3/speak` (says it through the helper; a
+failure answers 200 with a `reason`), `GET /api/t3/reads/{id}/labelled-pair.zip`. Spoken text:
+`src/reachy_ai/audio/speech.py` (`spoken_t3`). Engine: `src/reachy_ai/games/tictactoe.py`; reader:
 `src/reachy_ai/games/t3_board_reader.py`; routes: `src/reachy_ai/games/t3_viewer.py`. Offline check without the viewer:
 `python scripts/t3_read_board.py --reference <empty pair zip> --pair <pair zip> --analyze`.

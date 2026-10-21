@@ -21,6 +21,7 @@ import numpy as np
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
+from reachy_ai.audio import speech
 from reachy_ai.audio.audio_client import AudioClient
 from reachy_ai.camera_zoom import EYES, calibration_id, normalize_zoom, zoom_status
 from reachy_ai.config import HEAD_PRESETS
@@ -518,5 +519,5 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
 
     install_t3_routes(app, camera=camera, settings=settings, zoom_context=zoom_context, depth=depth,
                       capture_record=capture_record, analyze_pair=analyze_pair, make_pair_bundle=make_pair_bundle,
-                      history_dir=settings.t3_history_dir)
+                      history_dir=settings.t3_history_dir, speak=lambda text: speech.speak(text, client=audio))
     return app

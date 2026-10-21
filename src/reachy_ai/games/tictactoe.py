@@ -91,29 +91,48 @@ def _count(board: Board, piece: str) -> int:
     return sum(1 for v in board if v == piece)
 
 
-def validate(board: Board) -> list:
-    """Reasons the board is not a legal game position; empty when valid."""
-    reasons = []
-    unknown = [CELLS[i] for i, v in enumerate(board) if v == UNKNOWN]
+def problems(board: Board) -> list:
+    """Why the board is not a legal game position, as data; empty when valid. Each is a tuple:
+    ("unknown", cells), ("other", cells), ("counts", n_x, n_o), ("two_winners",) or ("after_win", winner)."""
+    found = []
+    unknown = tuple(CELLS[i] for i, v in enumerate(board) if v == UNKNOWN)
     if unknown:
-        reasons.append(f"unknown square(s): {', '.join(unknown)}")
-    other = [CELLS[i] for i, v in enumerate(board) if v == OTHER]
+        found.append(("unknown", unknown))
+    other = tuple(CELLS[i] for i, v in enumerate(board) if v == OTHER)
     if other:
-        reasons.append(f"non-game object on {', '.join(other)}")
+        found.append(("other", other))
     nx, no = _count(board, X), _count(board, O)
     counts_ok = abs(nx - no) <= 1
     if not counts_ok:
-        reasons.append(f"counts: {nx} X and {no} O differ by more than 1")
+        found.append(("counts", nx, no))
     won = _winners(board)
     if len(won) == 2:
-        reasons.append("both X and O have three in a row")
+        found.append(("two_winners",))
     elif len(won) == 1 and counts_ok:
         winner = next(iter(won))
         mine, theirs = (nx, no) if winner == X else (no, nx)
         # the winner made the last move, so it has as many pieces as the other side or one more
         if mine < theirs:
-            reasons.append(f"play continued after {winner} won")
-    return reasons
+            found.append(("after_win", winner))
+    return found
+
+
+def _reason(problem: tuple) -> str:
+    kind = problem[0]
+    if kind == "unknown":
+        return f"unknown square(s): {', '.join(problem[1])}"
+    if kind == "other":
+        return f"non-game object on {', '.join(problem[1])}"
+    if kind == "counts":
+        return f"counts: {problem[1]} X and {problem[2]} O differ by more than 1"
+    if kind == "two_winners":
+        return "both X and O have three in a row"
+    return f"play continued after {problem[1]} won"
+
+
+def validate(board: Board) -> list:
+    """Reasons the board is not a legal game position; empty when valid."""
+    return [_reason(problem) for problem in problems(board)]
 
 
 def turn(board: Board) -> str:
@@ -196,6 +215,8 @@ class Result:
     rule_name: Optional[str]
     lines: tuple  # the line(s) involved in the rule, each a tuple of cell names
     text: str
+    problems: tuple = ()  # an invalid board's problems(board), as data
+    search: Optional[tuple] = None  # rule 9: (verdict "win" or "draw", overridden cell, overridden rule number)
 
     def to_dict(self) -> dict:
         return {
@@ -203,6 +224,9 @@ class Result:
             "winner": self.winner, "winner_line": list(self.winner_line) if self.winner_line else None,
             "move_cell": self.move_cell, "rule_number": self.rule_number, "rule_name": self.rule_name,
             "lines": [list(line) for line in self.lines], "text": self.text,
+            "problems": [[p[0], *(list(v) if isinstance(v, tuple) else v for v in p[1:])] for p in self.problems],
+            "search": None if self.search is None else
+            {"verdict": self.search[0], "overridden_cell": self.search[1], "overridden_rule": self.search[2]},
         }
 
 
@@ -272,7 +296,8 @@ def _value(board: Board, mover: str) -> int:
 
 
 def _pick(board: Board, me: str) -> tuple:
-    """(cell, rule, name, lines, detail): the first rule whose candidate is minimax-optimal; rule 9 if none is.
+    """(cell, rule, name, lines, detail, search): the first rule whose candidate is minimax-optimal; rule 9 if none is.
+    search is None, or for rule 9 (verdict, overridden cell, overridden rule number).
 
     The first applicable rule's move can give up value after an opponent error, so the later rules are tried before
     searching. Rule 9 names the rule-of-thumb move it overrides and says what it would have cost."""
@@ -282,7 +307,7 @@ def _pick(board: Board, me: str) -> tuple:
     candidates = _candidates(board, me)
     for candidate in candidates:
         if scores[candidate[0]] == top:
-            return candidate
+            return candidate + (None,)
     first = candidates[0]  # a rule always applies on an in-progress board
     sign = 1 if me == X else -1
     verdict = "win" if sign * top == 1 else "draw"
@@ -290,14 +315,15 @@ def _pick(board: Board, me: str) -> tuple:
     cell = next(c for c in _empties(board) if scores[c] == top)
     detail = (f"the rule-of-thumb move {CELLS[first[0]]} (rule {first[1]}, {first[2]}) would {verb}; "
               f"{CELLS[cell]} {'wins' if verdict == 'win' else 'draws'}.")
-    return cell, 9, RULE_NAMES[9], (), detail
+    return cell, 9, RULE_NAMES[9], (), detail, (verdict, CELLS[first[0]], first[1])
 
 
 def recommend(board: Board) -> Result:
-    reasons = validate(board)
-    if reasons:
+    found = problems(board)
+    if found:
+        reasons = [_reason(problem) for problem in found]
         return Result(False, tuple(reasons), None, "invalid", None, None, None, None, None, (),
-                      f"Invalid board: {'; '.join(reasons)}.")
+                      f"Invalid board: {'; '.join(reasons)}.", tuple(found))
     result = outcome(board)
     if result.kind == "win":
         line = tuple(CELLS[i] for i in result.line)
@@ -307,8 +333,8 @@ def recommend(board: Board) -> Result:
         return Result(True, (), None, "draw", None, None, None, None, None, (),
                       "Draw: the board is full with no winner. No move.")
     me = turn(board)
-    cell, rule, name, lines, detail = _pick(board, me)
+    cell, rule, name, lines, detail, search = _pick(board, me)
     text = (f"{me}'s turn: place a {PIECE_NAMES[me]} ({me}) at {CELLS[cell]}. "
             f"Rule {rule}, {name}: {detail}")
     return Result(True, (), me, "in_progress", None, None, CELLS[cell], rule, name,
-                  tuple(tuple(CELLS[i] for i in line) for line in lines), text)
+                  tuple(tuple(CELLS[i] for i in line) for line in lines), text, (), search)

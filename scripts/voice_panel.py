@@ -4,16 +4,20 @@
     python scripts/voice_panel.py --wav tests/command.wav
     python scripts/voice_panel.py --mic
     python scripts/voice_panel.py --wav tests/command.wav --dry-run
+    python scripts/voice_panel.py --mic --speak      # Reachy says the replies (audio helper, #59)
 
 Voice produces text requests only; the panel plans, checks and confirms. See
 docs/VOICE.md. Recognised text, confidence and the panel's reply are logged;
-audio is never logged or stored.
+audio is never logged or stored. --speak (off by default) speaks the panel's
+replies through the audio helper (REACHY_AUDIO_URL); while Reachy speaks, only
+"stop" is heard.
 """
 import argparse
 import logging
 import sys
 import threading
 
+from reachy_ai.audio.audio_client import AudioClient, AudioHelperError
 from reachy_ai.audio.panel_bridge import (
     DEFAULT_CONFIRM_TIMEOUT_S,
     DEFAULT_MIN_CONFIDENCE,
@@ -22,6 +26,7 @@ from reachy_ai.audio.panel_bridge import (
     VoicePanelBridge,
     panel_url,
 )
+from reachy_ai.audio.speech import Speaker
 from reachy_ai.audio.voice_commands import (
     VoiceError,
     build_grammar,
@@ -33,7 +38,7 @@ from reachy_ai.audio.voice_commands import (
 log = logging.getLogger("voice_panel")
 
 
-def main(argv=None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--wav", help="recognise a 16-bit PCM WAV file")
@@ -44,7 +49,13 @@ def main(argv=None) -> int:
                     help="seconds to wait for 'reachy, yes' before declining (default 15)")
     ap.add_argument("--model", help="Vosk model directory (default: REACHY_VOSK_MODEL or tests/vosk/...)")
     ap.add_argument("--device", help="sounddevice input device (name or index)")
-    args = ap.parse_args(argv)
+    ap.add_argument("--speak", action="store_true",
+                    help="say the panel's replies through the audio helper (REACHY_AUDIO_URL); off by default")
+    return ap
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     client = PanelClient()
@@ -59,9 +70,20 @@ def main(argv=None) -> int:
         grammar = degraded_grammar()
         print(f"PANEL UNREACHABLE: {exc}\nOnly 'stop' will be accepted; no vocabulary is guessed.")
 
+    speaker = None
+    if args.speak:
+        audio = AudioClient()
+        speaker = Speaker(audio)
+        try:
+            status = audio.status()
+            print(f"Speaking through the audio helper ({status.get('backend')}, tts {status.get('tts')}"
+                  f"{', MUTED' if status.get('muted') else ''}).")
+        except AudioHelperError as exc:
+            print(f"SPEECH UNAVAILABLE: {exc}\nReplies are shown but not spoken.")
+
     bridge = VoicePanelBridge(client, min_confidence=args.min_confidence,
                               confirm_timeout_s=args.confirm_timeout, dry_run=args.dry_run,
-                              degraded=degraded)
+                              degraded=degraded, speaker=speaker)
     done = threading.Event()
 
     def watch_timeout():

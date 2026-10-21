@@ -18,6 +18,12 @@ Routes used (reachy-1-2-sim, web/panel_routes.py and web/camera_server.py):
 
 The panel has no separate decline route: its Cancel button on a pending proposal
 posts ``/cancel``, so "no" and the confirmation timeout do the same.
+
+With a ``speaker`` (voice_panel.py --speak, #59), Reachy says the panel's replies in
+short form: the proposal, a refusal with its reason, and "Stopping." Speech is output
+only. While Reachy speaks (and briefly after), every recognised result except "stop"
+is ignored, so Reachy cannot answer itself ("Say Reachy, yes ..."). "Stop" always goes
+through: it hushes the speech first, then cancels as before.
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ from threading import RLock
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
+from reachy_ai.audio.speech import STOPPING, Speaker, spoken_proposal, spoken_refusal
 from reachy_ai.audio.voice_commands import NO_WORD, STOP_WORD, UNKNOWN, WAKE_WORD, YES_WORD
 
 log = logging.getLogger(__name__)
@@ -157,8 +164,8 @@ class VoicePanelBridge:
     """Turns ``(text, confidence)`` into panel calls. Thread-safe.
 
     ``handle`` returns a short outcome tag (also useful to tests):
-    ignored, low_confidence, degraded, stop, nothing_to_stop, sent, replied,
-    confirmed, declined, nothing_pending, stale, expired, error, dry_run.
+    ignored, ignored_while_speaking, low_confidence, degraded, stop, nothing_to_stop,
+    sent, replied, confirmed, declined, nothing_pending, stale, expired, error, dry_run.
     """
 
     def __init__(self, client: Optional[PanelClient] = None, *,
@@ -170,7 +177,8 @@ class VoicePanelBridge:
                  degraded: bool = False,
                  clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep,
-                 out: Callable[[str], None] = print):
+                 out: Callable[[str], None] = print,
+                 speaker: Optional[Speaker] = None):
         self.client = client
         self.min_confidence = min_confidence
         self.confirm_timeout_s = confirm_timeout_s
@@ -181,6 +189,7 @@ class VoicePanelBridge:
         self._clock = clock
         self._sleep = sleep
         self._out = out
+        self.speaker = speaker  # None: nothing is spoken (the default)
         self._lock = RLock()
         self._task_id = ""
         self._question_id = ""
@@ -194,7 +203,16 @@ class VoicePanelBridge:
             # "stop" first: it is never held back by the wake word or the
             # confidence setting, and never becomes a motion request.
             if tokens in ([STOP_WORD], [WAKE_WORD, STOP_WORD]):
-                return self._stop()
+                if self.speaker is not None:
+                    self.speaker.hush()  # cut Reachy off first, then cancel as always
+                outcome = self._stop()
+                if outcome == "stop":
+                    self._say(STOPPING)
+                return outcome
+            if self.speaker is not None and self.speaker.speaking():
+                # Reachy may be hearing itself: only "stop" gets through.
+                log.info("ignored while speaking: %r (confidence %.2f)", text, confidence)
+                return "ignored_while_speaking"
             if confidence < self.min_confidence or UNKNOWN in tokens:
                 log.info("low confidence %.2f for %r: nothing sent", confidence, text)
                 self._out("didn't catch that")
@@ -321,6 +339,11 @@ class VoicePanelBridge:
 
     # -- showing the panel's reply -------------------------------------------
 
+    def _say(self, text: str) -> None:
+        """Speak one short reply in the background, if speaking is on. Never raises."""
+        if self.speaker is not None:
+            self.speaker.say(text)
+
     def _report(self, task: dict) -> None:
         state = task.get("state", "?")
         events = task.get("events") or []
@@ -338,6 +361,8 @@ class VoicePanelBridge:
             }
             self._out(f"say 'reachy, yes' to run it, or 'reachy, no' to decline "
                       f"({self.confirm_timeout_s:g} s)")
+            summary = proposal.get("summary") or str(proposal.get("task_type") or "do that").replace("_", " ")
+            self._say(spoken_proposal(summary))
         elif state == "needs_clarification":
             self._question_id = task.get("question_id", "")
             self._out(f"needs clarification: {said}")
@@ -348,6 +373,7 @@ class VoicePanelBridge:
             self._out("executing in simulation; say 'stop' to cancel")
         elif state == "failed":
             self._out(f"refused: {task.get('detail') or said}")
+            self._say(spoken_refusal(task.get("detail") or said))
         elif state in _TERMINAL:
             self._out(f"{state}: {task.get('detail') or said}")
         else:

@@ -1,6 +1,9 @@
 """T3-Analysis in the stereo viewer (issue #52): reference, analyze, confirm, history, labels. Offline: a fake camera
 service, a stub detector and the sim fixtures; nothing moves."""
 import json
+import socket
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -9,6 +12,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from reachy_ai.audio.audio_client import AudioClient
 from reachy_ai.games import t3_viewer
 from reachy_ai.games import tictactoe as t3
 from reachy_ai.pair_bundle import read_bundle
@@ -43,8 +47,7 @@ def neck(service, pitch=64.78):
         n: {"present_deg": v, "goal_deg": v, "compliant": False} for n, v in zip(NECK, (0.0, pitch, 0.0))}})
 
 
-@pytest.fixture
-def viewer(tmp_path):
+def make_viewer(tmp_path, audio_client=None):
     service = StereoService(StereoSettings(source="sim", t3_history_dir=str(tmp_path / "history")))
     service._new_session()
     for eye in ("left", "right"):
@@ -64,11 +67,24 @@ def viewer(tmp_path):
 
     service.request_head = request_head
     detector = StubDetector()
-    app = create_app(service.settings, service, detector=detector)
+    # never the default REACHY_AUDIO_URL: a helper running on this machine must not speak during the tests
+    app = create_app(service.settings, service, detector=detector,
+                     audio_client=audio_client or AudioClient(f"http://127.0.0.1:{free_port()}"))
     app.state.t3_settle_timeout_s = 0
     with TestClient(app) as client:
         client.service, client.detector, client.history = service, detector, tmp_path / "history"
         yield client
+
+
+@pytest.fixture
+def viewer(tmp_path):
+    yield from make_viewer(tmp_path)
+
+
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
 
 
 def populate(client, folder=D_FULL):
@@ -101,7 +117,7 @@ def test_page_has_the_t3_panel_and_the_route_list_has_no_arm_route(viewer):
     paths = {route.path for route in viewer.app.routes}
     t3_paths = {p for p in paths if p.startswith("/api/t3")}
     assert t3_paths == {"/api/t3/state", "/api/t3/reference", "/api/t3/analyze", "/api/t3/accept-suggestions",
-                        "/api/t3/confirm", "/api/t3/reads/{read_id}/labelled-pair.zip"}
+                        "/api/t3/confirm", "/api/t3/speak", "/api/t3/reads/{read_id}/labelled-pair.zip"}
     for path in paths:
         assert not any(word in path for word in ("arm", "gripper", "grasp", "pick", "place", "task", "joint")), path
     assert viewer.post("/api/t3/move", json={}).status_code == 404
@@ -263,7 +279,7 @@ def test_history_line_schema_and_corrections(viewer):
     (line,) = history_lines(viewer)
     assert set(line) == {"schema", "time_utc", "session_id", "reference_id", "pair_id", "bundle_sha256", "board_read",
                          "squares", "corrections", "confirmed_board", "result", "tags", "note", "reader_settings",
-                         "viewer_version"}
+                         "viewer_version", "spoken_text"}
     assert line["schema"] == "t3_history.v1" and line["time_utc"].endswith("Z")
     assert line["session_id"] == viewer.service.session and line["pair_id"] == data["pair_id"]
     assert line["reference_id"] == data["reference_id"] and line["bundle_sha256"] == data["bundle_sha256"]
@@ -346,3 +362,82 @@ def test_reads_held_in_memory_are_bounded(viewer):
     for _ in range(t3_viewer.MAX_READS):
         analyze(viewer)
     assert viewer.post("/api/t3/confirm", json={"read_id": first, "board": "XOX/OXO/XOX"}).status_code == 410
+
+
+# --- Speak the move (#59 part 2) ------------------------------------------------------------------------------------
+
+sys.path.insert(0, str(ROOT / "scripts"))
+import reachy_audio_helper as helper  # noqa: E402
+
+
+@pytest.fixture
+def audio_helper():
+    servers = []
+
+    def start(backend, **kwargs):
+        server = helper.make_server(0, backend, **kwargs)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return AudioClient(f"http://127.0.0.1:{server.server_address[1]}")
+
+    yield start
+    for server in servers:
+        server.shutdown()
+        server.server_close()
+
+
+def confirmed_read(client, board, **extra):
+    build_reference(client)
+    data = analyze(client).json()
+    done = client.post("/api/t3/confirm", json={"read_id": data["read_id"], "board": board, **extra})
+    assert done.status_code == 200
+    return data["read_id"], done.json()
+
+
+def test_t3_speak_the_move_is_off_by_default(viewer):
+    page = viewer.get("/").text
+    assert 'id="t3-speak"' in page and "Speak the move" in page
+    toggle = page[page.index('id="t3-speak"') - 30:page.index('id="t3-speak"') + 30]
+    assert "checked" not in toggle
+    read_id, done = confirmed_read(viewer, "O../O.X/XX.")
+    assert done["spoken_text"] is None and history_lines(viewer)[0]["spoken_text"] is None
+    assert viewer.post("/api/t3/speak", json={"read_id": read_id}).status_code == 409  # nothing to say
+
+
+def test_t3_speak_the_move_logs_the_text_then_says_it(tmp_path, audio_helper):
+    backend = helper.FakeBackend()
+    for client in make_viewer(tmp_path, audio_client=audio_helper(backend)):
+        read_id, done = confirmed_read(client, "O../O.X/XX.", speak=True)
+        text = "It's O's turn. Place a cylinder on row three, column three, to block X's row three."
+        assert done["spoken_text"] == text and done["result"]["move_cell"] == "r3c3"
+        assert history_lines(client)[0]["spoken_text"] == text
+        assert backend.calls == []  # confirming says nothing; the page asks for it next
+        spoken = client.post("/api/t3/speak", json={"read_id": read_id}).json()
+        assert spoken == {"text": text, "spoken": True, "hushed": False, "muted": False, "reason": None}
+        assert backend.calls == [("say", text)]
+        assert len(history_lines(client)) == 1  # speaking writes nothing
+
+
+def test_t3_speech_failure_does_not_block_the_analysis(viewer):
+    # the viewer fixture's helper URL has nothing listening
+    read_id, done = confirmed_read(viewer, "XXX/X../OO.", speak=True)
+    assert done["result"]["valid"] is False and done["result"]["reasons"]
+    assert done["spoken_text"] == "I can't analyse this board: there are four cubes and two cylinders."
+    assert history_lines(viewer)[0]["spoken_text"] == done["spoken_text"]
+    response = viewer.post("/api/t3/speak", json={"read_id": read_id})
+    assert response.status_code == 200
+    spoken = response.json()
+    assert spoken["spoken"] is False and "REACHY_AUDIO_URL" in spoken["reason"]
+
+
+def test_t3_speak_reports_a_muted_helper(tmp_path, audio_helper):
+    backend = helper.FakeBackend()
+    for client in make_viewer(tmp_path, audio_client=audio_helper(backend, muted=True)):
+        read_id, _ = confirmed_read(client, "XOX/XOO/OXX", speak=True)
+        spoken = client.post("/api/t3/speak", json={"read_id": read_id}).json()
+        assert spoken["muted"] is True and spoken["spoken"] is False and spoken["reason"] is None
+        assert spoken["text"] == "It's a draw." and backend.calls == []
+
+
+def test_t3_speak_needs_a_held_read(viewer):
+    assert viewer.post("/api/t3/speak", json={"read_id": "nope"}).status_code == 410

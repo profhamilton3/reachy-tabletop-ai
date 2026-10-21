@@ -14,7 +14,10 @@ channels are (plain, or the ReSpeaker USB array's respeaker6 / respeaker1 firmwa
 
     GET  /status                                  backend, devices found, TTS engine, limits, version
     POST /tone   {"seconds": <=3, "freq": Hz}     play a test tone (generated here, capped at -12 dBFS)
-    POST /say    {"text": <=200 chars}            speak a phrase (piper, else espeak-ng; "unavailable" if neither)
+    POST /say    {"text": <=200 chars}            speak a phrase (piper, else espeak-ng; "unavailable" if neither);
+                                                  answers when the speech ends, or with "hushed": true
+    POST /hush   {}                               end the current speech or tone at once (never waits for the lock)
+    POST /mute   {"on": bool}                     the mute switch: while on, /say and /tone are no-ops
     POST /record {"seconds": <=3, "channels": <=6, "tone": {"seconds", "freq"}?}
                                                   record and return a WAV; with "tone", the recording starts
                                                   first and the tone plays during it (the loopback check)
@@ -27,9 +30,11 @@ timeout and its output is capped; the reply is redacted (this host's name, IP an
 and home paths, serial-looking fields). ROS is never sourced here: start the helper from a terminal that has it.
 
 One operation at a time (409 "busy", never a queue), a timeout on every subprocess, limits on request and
-response sizes, and an explicit {"error", "detail"} JSON body on every failure. The system mixer is never
-touched. The spoken text and each operation are logged; audio never is, and nothing is kept on disk: every
-clip lives in a temporary directory that is removed when the operation ends.
+response sizes, and an explicit {"error", "detail"} JSON body on every failure. /hush and /mute bypass the lock,
+so "stop" can always cut speech off. Speech is rendered to a WAV and scaled to --max-gain (default 0.5) before
+it plays; /status reports "speaking" while a phrase or tone sounds. The system mixer is never touched. The spoken
+text and each operation are logged; audio never is, and nothing is kept on disk: every clip lives in a temporary
+directory that is removed when the operation ends.
 """
 
 import argparse
@@ -53,7 +58,7 @@ import time
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2"
+VERSION = "3"
 HOST = "127.0.0.1"  # local only; the workstation reaches it through an SSH tunnel
 DEFAULT_PORT = 8090
 DEFAULT_RATE = 16000  # the ReSpeaker's native rate
@@ -69,6 +74,7 @@ CHANNEL_LAYOUTS = {
 MAX_TEXT = 200
 MIN_FREQ, MAX_FREQ = 100.0, 8000.0
 TONE_DBFS = -12.0
+DEFAULT_MAX_GAIN = 0.5  # speech is scaled to at most this fraction of full scale (--max-gain)
 FADE_S = 0.01  # tone fade in and out, so the speaker does not click
 MAX_REQUEST_BYTES = 4096
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 3 s x 4 ch x 48 kHz x 16 bit is 1.15 MB
@@ -130,19 +136,84 @@ class NotFound(HelperError):
     status, code = 404, "not_found"
 
 
-def run_command(argv, timeout, stdin_text=None):
-    """Run one subprocess with a timeout. Returns its stdout text; raises HelperTimeout or HelperError."""
+class Muted(HelperError):
+    status, code = 409, "muted"
+
+
+class Hushed(Exception):
+    """/hush ended the operation's sound. Not a failure: /say and /tone answer {"hushed": true}."""
+
+
+class Playback:
+    """The subprocess that is sounding now (synthesis or playback), so /hush can end it from another thread."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._process = None
+        self._hushed = False
+
+    def begin(self):
+        """A new operation starts: forget an earlier hush."""
+        with self._lock:
+            self._hushed = False
+
+    @property
+    def hushed(self):
+        with self._lock:
+            return self._hushed
+
+    def track(self, process):
+        """Hold `process` as the current one; False (and nothing held) if this operation was hushed already."""
+        with self._lock:
+            if self._hushed:
+                return False
+            self._process = process
+            return True
+
+    def untrack(self, process):
+        with self._lock:
+            if self._process is process:
+                self._process = None
+
+    def hush(self):
+        """End the current subprocess at once. Idempotent. True if one was running."""
+        with self._lock:
+            self._hushed = True
+            process, self._process = self._process, None
+        if process is None or process.poll() is not None:
+            return False
+        process.terminate()
+        return True
+
+
+def run_command(argv, timeout, stdin_text=None, playback=None):
+    """Run one subprocess with a timeout. Returns its stdout text; raises HelperTimeout or HelperError.
+
+    With `playback`, the process can be ended by playback.hush(); it then raises Hushed."""
     try:
-        done = subprocess.run(argv, input=stdin_text, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              timeout=timeout, universal_newlines=True)
-    except subprocess.TimeoutExpired:
-        raise HelperTimeout("{} did not finish within {:g} s".format(os.path.basename(argv[0]), timeout))
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL if stdin_text is None else subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
     except OSError as exc:
         raise HelperError("{} could not start: {}".format(os.path.basename(argv[0]), exc.strerror or exc))
-    if done.returncode != 0:
-        tail = (done.stderr or "").strip().splitlines()[-1:] or ["no message"]
-        raise HelperError("{} failed (exit {}): {}".format(os.path.basename(argv[0]), done.returncode, tail[0]))
-    return done.stdout
+    if playback is not None and not playback.track(process):
+        process.kill()
+        process.communicate()
+        raise Hushed()
+    try:
+        out, err = process.communicate(stdin_text, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        raise HelperTimeout("{} did not finish within {:g} s".format(os.path.basename(argv[0]), timeout))
+    finally:
+        if playback is not None:
+            playback.untrack(process)
+    if playback is not None and playback.hushed:
+        raise Hushed()
+    if process.returncode != 0:
+        tail = (err or "").strip().splitlines()[-1:] or ["no message"]
+        raise HelperError("{} failed (exit {}): {}".format(os.path.basename(argv[0]), process.returncode, tail[0]))
+    return out
 
 
 def tone_wav(seconds, freq, rate=DEFAULT_RATE, dbfs=TONE_DBFS):
@@ -165,6 +236,33 @@ def tone_wav(seconds, freq, rate=DEFAULT_RATE, dbfs=TONE_DBFS):
     return out.getvalue()
 
 
+def scale_wav(source, target, gain):
+    """Copy a 16-bit WAV from `source` to `target` with every sample scaled by `gain` (0 < gain <= 1), so its peak
+    is at most gain x full scale. Returns its length in seconds. The volume cap of /say, with the array module."""
+    try:
+        with wave.open(source, "rb") as w:
+            params = w.getparams()
+            data = w.readframes(w.getnframes())
+    except (wave.Error, EOFError, OSError) as exc:
+        raise HelperError("the synthesised speech is not a readable WAV: {}".format(exc))
+    if params.sampwidth != 2:
+        raise HelperError("the synthesised speech is {}-bit; only 16-bit is supported".format(8 * params.sampwidth))
+    samples = array.array("h")
+    samples.frombytes(data[:len(data) - len(data) % 2])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    limit = int(32767 * gain)
+    scaled = array.array("h", [max(-limit, min(limit, int(round(v * gain)))) for v in samples])
+    if sys.byteorder == "big":
+        scaled.byteswap()
+    with wave.open(target, "wb") as w:
+        w.setnchannels(params.nchannels)
+        w.setsampwidth(2)
+        w.setframerate(params.framerate)
+        w.writeframes(scaled.tobytes())
+    return params.nframes / float(params.framerate or 1)
+
+
 def wav_info(data):
     """(channels, rate, frames) of WAV bytes; raises HelperError if they are not a WAV."""
     try:
@@ -179,6 +277,14 @@ def checked_device(value):
     if value is not None and not DEVICE_PATTERN.fullmatch(value):
         raise ValueError("{!r} is not an ALSA device name such as hw:2,0".format(value))
     return value
+
+
+def checked_gain(value):
+    """A --max-gain: a number more than 0 and at most 1, else ValueError."""
+    gain = float(value)
+    if not 0 < gain <= 1:
+        raise ValueError("{!r} is not a gain from more than 0 to 1".format(value))
+    return gain
 
 
 def checked_topic(value):
@@ -365,9 +471,15 @@ class Backend:
 
     name = "none"
 
-    def __init__(self, rate=DEFAULT_RATE, piper_model=None):
+    def __init__(self, rate=DEFAULT_RATE, piper_model=None, max_gain=DEFAULT_MAX_GAIN):
         self.rate = rate
         self.piper_model = piper_model
+        self.max_gain = checked_gain(max_gain)
+        self.playback = Playback()
+
+    def run(self, argv, timeout, stdin_text=None):
+        """run_command for synthesis and playback: /hush can end it."""
+        return run_command(argv, timeout, stdin_text, playback=self.playback)
 
     def tts(self):
         """The TTS engine in use, or None."""
@@ -382,9 +494,9 @@ class Backend:
         engine = self.tts()
         path = os.path.join(folder, "say.wav")
         if engine == "piper":
-            run_command(["piper", "--model", self.piper_model, "--output_file", path], timeout, text)
+            self.run(["piper", "--model", self.piper_model, "--output_file", path], timeout, text)
         elif engine == "espeak-ng":
-            run_command(["espeak-ng", "--stdin", "-w", path], timeout, text)
+            self.run(["espeak-ng", "--stdin", "-w", path], timeout, text)
         else:
             raise Unavailable("no TTS engine: install piper (with --piper-model) or espeak-ng")
         return path
@@ -396,11 +508,11 @@ class Backend:
         raise NotImplementedError
 
     def speak(self, text):
+        """Synthesise to a WAV, scale it to max_gain, play it. Raises Hushed if /hush ended it."""
         with tempfile.TemporaryDirectory(prefix="reachy-audio-") as folder:
             path = self.synthesize(text, folder, TTS_TIMEOUT_S)
-            with open(path, "rb") as handle:
-                channels, rate, frames = wav_info(handle.read())
-            self.play_wav(path, frames / float(rate))
+            capped = os.path.join(folder, "say-capped.wav")
+            self.play_wav(capped, scale_wav(path, capped, self.max_gain))
         return self.tts()
 
     def record(self, seconds, channels, during=None):
@@ -433,7 +545,7 @@ class AlsaBackend(Backend):
         return ["-D", device] if device else []
 
     def play_wav(self, path, seconds):
-        run_command(["aplay", "-q", *self._device(self.play_device), path], seconds + COMMAND_MARGIN_S)
+        self.run(["aplay", "-q", *self._device(self.play_device), path], seconds + COMMAND_MARGIN_S)
 
     def record(self, seconds, channels, during=None):
         with tempfile.TemporaryDirectory(prefix="reachy-audio-") as folder:
@@ -480,14 +592,16 @@ class MacBackend(Backend):
                 "capture": ["{} ({} ch)".format(d["name"], d["max_input_channels"])
                             for d in listed if d["max_input_channels"] > 0]}
 
-    def play_wav(self, path, seconds):
-        run_command(["afplay", path], seconds + COMMAND_MARGIN_S)
-
-    def speak(self, text):
+    def synthesize(self, text, folder, timeout):
         if self.tts() != "say":
-            return Backend.speak(self, text)
-        run_command(["say"], TTS_TIMEOUT_S, text)  # the text goes on stdin
-        return "say"
+            return Backend.synthesize(self, text, folder, timeout)
+        path = os.path.join(folder, "say.wav")
+        # `say -o` renders to a 16-bit WAV (the text goes on stdin); afplay then plays it at the capped gain.
+        self.run(["say", "-o", path, "--file-format=WAVE", "--data-format=LEI16@22050"], timeout, text)
+        return path
+
+    def play_wav(self, path, seconds):
+        self.run(["afplay", path], seconds + COMMAND_MARGIN_S)
 
     def record(self, seconds, channels, during=None):
         """Records min(channels, the default input's channels): a Mac microphone usually has one or two."""
@@ -527,13 +641,22 @@ class MacBackend(Backend):
 
 
 class FakeBackend(Backend):
-    """For tests: no sound, no subprocess. Records what it was asked to do."""
+    """For tests: no sound. Records what it was asked to do. With `playback_s`, each play and phrase runs a silent
+    stand-in subprocess (a Python sleep) that long, through the same path as aplay, so /hush can end it."""
 
     name = "fake"
 
-    def __init__(self, delay=0.0, tts="fake-tts", record_bytes=None, **kwargs):
+    def __init__(self, delay=0.0, tts="fake-tts", record_bytes=None, playback_s=None, **kwargs):
         Backend.__init__(self, **kwargs)
         self.delay, self._tts, self.record_bytes, self.calls = delay, tts, record_bytes, []
+        self.playback_s = playback_s
+
+    def _sound(self):
+        if self.playback_s:
+            self.run([sys.executable, "-c", "import time; time.sleep({!r})".format(self.playback_s)],
+                     self.playback_s + COMMAND_MARGIN_S)
+        else:
+            time.sleep(self.delay)
 
     def tts(self):
         return self._tts
@@ -543,13 +666,13 @@ class FakeBackend(Backend):
 
     def play_wav(self, path, seconds):
         self.calls.append(("play", round(seconds, 3)))
-        time.sleep(self.delay)
+        self._sound()
 
     def speak(self, text):
         if not self._tts:
             raise Unavailable("no TTS engine: install piper (with --piper-model) or espeak-ng")
         self.calls.append(("say", text))
-        time.sleep(self.delay)
+        self._sound()
         return self._tts
 
     def record(self, seconds, channels, during=None):
@@ -590,20 +713,28 @@ def tone_args(body):
     return seconds_of(body), number(body, "freq", MIN_FREQ, MAX_FREQ, 1000)
 
 
+def utc_now():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 class AudioHelper:
     """The operations behind the routes; one at a time."""
 
-    def __init__(self, backend, channel_layout="plain", prober=None):
+    def __init__(self, backend, channel_layout="plain", prober=None, muted=False):
         if channel_layout not in CHANNEL_LAYOUTS:
             raise ValueError("unknown channel layout {!r}".format(channel_layout))
         self.backend, self.channel_layout = backend, channel_layout
         self.prober = prober or Prober(record_device=getattr(backend, "record_device", None))
         self.lock = threading.Lock()
+        self.muted = bool(muted)
+        self.speaking_since = None  # UTC time the current phrase or tone started, while it sounds
 
     def status(self):
         return {"helper": "reachy_audio_helper", "version": VERSION, "backend": self.backend.name,
                 "rate": self.backend.rate, "tts": self.backend.tts(), "devices": self.backend.devices(),
-                "busy": self.lock.locked(), "tone_dbfs": TONE_DBFS,
+                "busy": self.lock.locked(), "tone_dbfs": TONE_DBFS, "max_gain": self.backend.max_gain,
+                "muted": self.muted, "speaking": self.speaking_since is not None,
+                "speaking_since": self.speaking_since,
                 "channel_layout": dict(CHANNEL_LAYOUTS[self.channel_layout], name=self.channel_layout),
                 "probes": list(PROBES), "imu_topic": self.prober.imu_topic,
                 "limits": {"seconds": MAX_SECONDS, "channels": MAX_CHANNELS, "text": MAX_TEXT,
@@ -618,6 +749,35 @@ class AudioHelper:
         finally:
             self.lock.release()
 
+    def _sounding(self, operation, *args):
+        """Run a phrase or a tone (under the lock) with the speaking flag up. (result, hushed)."""
+        self.backend.playback.begin()
+        self.speaking_since = utc_now()
+        try:
+            return operation(*args), False
+        except Hushed:
+            return None, True
+        finally:
+            self.speaking_since = None
+
+    def hush(self, body):
+        """End the current speech or tone at once. Never takes the lock, so it works during /say. Idempotent."""
+        speaking = self.speaking_since is not None
+        stopped = self.backend.playback.hush()
+        LOG.info("hush: %s", "speech or tone ended" if stopped or speaking else "nothing was sounding")
+        return {"ok": True, "op": "hush", "stopped": bool(stopped or speaking)}
+
+    def mute(self, body):
+        """The mute switch. Muting also ends the current speech or tone. Never takes the lock."""
+        on = body.get("on")
+        if not isinstance(on, bool):
+            raise BadRequest("on must be true or false")
+        self.muted = on
+        if on:
+            self.backend.playback.hush()
+        LOG.info("mute: %s", "on" if on else "off")
+        return {"ok": True, "op": "mute", "muted": on}
+
     def _play_tone(self, seconds, freq):
         with tempfile.TemporaryDirectory(prefix="reachy-audio-") as folder:
             path = os.path.join(folder, "tone.wav")
@@ -627,11 +787,15 @@ class AudioHelper:
 
     def tone(self, body):
         seconds, freq = tone_args(body)
+        reply = {"ok": True, "op": "tone", "seconds": seconds, "freq": freq, "dbfs": TONE_DBFS,
+                 "backend": self.backend.name, "muted": self.muted, "hushed": False}
+        if self.muted:
+            LOG.info("tone (muted, not played): %.2f s at %.0f Hz", seconds, freq)
+            return dict(reply, elapsed_s=0.0)
         LOG.info("tone: %.2f s at %.0f Hz (%.0f dBFS)", seconds, freq, TONE_DBFS)
         started = time.monotonic()
-        self.exclusive(self._play_tone, seconds, freq)
-        return {"ok": True, "op": "tone", "seconds": seconds, "freq": freq, "dbfs": TONE_DBFS,
-                "backend": self.backend.name, "elapsed_s": round(time.monotonic() - started, 2)}
+        _, hushed = self.exclusive(self._sounding, self._play_tone, seconds, freq)
+        return dict(reply, hushed=hushed, elapsed_s=round(time.monotonic() - started, 2))
 
     def say(self, body):
         text = body.get("text")
@@ -640,11 +804,18 @@ class AudioHelper:
         text = " ".join(text.split())
         if len(text) > MAX_TEXT or not text.isprintable():
             raise BadRequest("text must be printable and at most {} characters".format(MAX_TEXT))
+        if self.muted:
+            LOG.info("say (muted, not spoken): %r", text)
+            return {"ok": True, "op": "say", "text": text, "tts": None, "backend": self.backend.name, "muted": True,
+                    "hushed": False, "elapsed_s": 0.0}
         LOG.info("say: %r", text)
         started = time.monotonic()
-        engine = self.exclusive(self.backend.speak, text)
-        return {"ok": True, "op": "say", "text": text, "tts": engine, "backend": self.backend.name,
-                "elapsed_s": round(time.monotonic() - started, 2)}
+        engine, hushed = self.exclusive(self._sounding, self.backend.speak, text)
+        if hushed:
+            LOG.info("say: hushed")
+        return {"ok": True, "op": "say", "text": text, "tts": engine if not hushed else self.backend.tts(),
+                "backend": self.backend.name, "muted": False, "hushed": hushed,
+                "max_gain": self.backend.max_gain, "elapsed_s": round(time.monotonic() - started, 2)}
 
     def probe(self, name):
         """One NUC probe, under the same one-at-a-time lock (audio_hw_params opens the capture device)."""
@@ -665,7 +836,9 @@ class AudioHelper:
             tone_s, freq = tone_args(tone)
             if tone_s + LOOPBACK_LEAD_S > seconds:
                 raise BadRequest("the tone must end before the recording does")
-            during = lambda: self._play_tone(tone_s, freq)  # noqa: E731
+            if self.muted:
+                raise Muted("the helper is muted; unmute it (POST /mute {\"on\": false}) for the loopback tone")
+            during = lambda: self._loopback_tone(tone_s, freq)  # noqa: E731
         LOG.info("record: %.2f s on %d channel(s)%s", seconds, channels,
                  " with a {:.2f} s tone".format(tone_s) if tone is not None else "")
         data = self.exclusive(self.backend.record, seconds, int(channels), during)
@@ -673,6 +846,14 @@ class AudioHelper:
             raise TooLarge("the recording is {} bytes; the limit is {}".format(len(data), MAX_RESPONSE_BYTES))
         got, rate, frames = wav_info(data)
         return data, {"X-Channels": str(got), "X-Rate": str(rate), "X-Frames": str(frames)}
+
+    def _loopback_tone(self, seconds, freq):
+        """The tone during a recording: a /hush ends the tone, and the recording runs on."""
+        self.backend.playback.begin()
+        try:
+            self._play_tone(seconds, freq)
+        except Hushed:
+            LOG.info("record: the loopback tone was hushed")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -725,12 +906,15 @@ class Handler(BaseHTTPRequestHandler):
             self.fail(HelperError("unexpected failure: {}".format(type(exc).__name__)))
 
     def do_POST(self):
-        routes = {"/tone": self.helper.tone, "/say": self.helper.say, "/record": self.helper.record}
+        routes = {"/tone": self.helper.tone, "/say": self.helper.say, "/record": self.helper.record,
+                  "/hush": self.helper.hush, "/mute": self.helper.mute}
         if self.path not in routes:
             self.close_connection = True
             return self.fail(NotFound("no such route"))
         try:
-            result = routes[self.path](self.read_json())
+            # /hush needs no body, so a bare `curl -X POST .../hush` works too
+            body = {} if self.path == "/hush" and self.headers.get("Content-Length") is None else self.read_json()
+            result = routes[self.path](body)
         except HelperError as error:
             self.close_connection = True
             return self.fail(error)
@@ -743,10 +927,10 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(200, result)
 
 
-def make_server(port, backend, channel_layout="plain", imu_topic=None, prober=None):
+def make_server(port, backend, channel_layout="plain", imu_topic=None, prober=None, muted=False):
     """The HTTP server, bound to 127.0.0.1. Port 0 picks a free port (tests)."""
     prober = prober or Prober(record_device=getattr(backend, "record_device", None), imu_topic=imu_topic)
-    handler = type("BoundHandler", (Handler,), {"helper": AudioHelper(backend, channel_layout, prober)})
+    handler = type("BoundHandler", (Handler,), {"helper": AudioHelper(backend, channel_layout, prober, muted)})
     server = ThreadingHTTPServer((HOST, port), handler)
     server.daemon_threads = True
     return server
@@ -755,10 +939,10 @@ def make_server(port, backend, channel_layout="plain", imu_topic=None, prober=No
 def build_backend(args):
     if args.backend == "alsa":
         return AlsaBackend(play_device=args.play_device, record_device=args.record_device, rate=args.rate,
-                           piper_model=args.piper_model)
+                           piper_model=args.piper_model, max_gain=args.max_gain)
     if args.backend == "mac":
-        return MacBackend(rate=args.rate, piper_model=args.piper_model)
-    return FakeBackend(rate=args.rate)
+        return MacBackend(rate=args.rate, piper_model=args.piper_model, max_gain=args.max_gain)
+    return FakeBackend(rate=args.rate, max_gain=args.max_gain)
 
 
 def _argument(check):
@@ -787,11 +971,17 @@ def main(argv=None):
     parser.add_argument("--imu-topic", type=_argument(checked_topic),
                         help="the neck IMU's ROS 2 topic, e.g. /imu, for the imu probe (#6); start the helper "
                              "from a terminal with ROS sourced")
+    parser.add_argument("--max-gain", type=_argument(checked_gain), default=DEFAULT_MAX_GAIN,
+                        help="volume cap: speech is scaled to at most this fraction of full scale, more than 0 to 1 "
+                             "(default %(default)s)")
+    parser.add_argument("--mute", action="store_true",
+                        help="start muted: /say and /tone succeed without sound until POST /mute {\"on\": false}")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    server = make_server(args.port, build_backend(args), args.channel_layout, args.imu_topic)
-    LOG.info("audio helper v%s, backend %s, channel layout %s, listening on %s:%d (local only)", VERSION,
-             args.backend, args.channel_layout, HOST, server.server_address[1])
+    server = make_server(args.port, build_backend(args), args.channel_layout, args.imu_topic, muted=args.mute)
+    LOG.info("audio helper v%s, backend %s, channel layout %s, max gain %g%s, listening on %s:%d (local only)",
+             VERSION, args.backend, args.channel_layout, args.max_gain, ", muted" if args.mute else "", HOST,
+             server.server_address[1])
     try:
         server.serve_forever()
     except KeyboardInterrupt:
