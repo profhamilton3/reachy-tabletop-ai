@@ -1,6 +1,6 @@
 """Small stereo-viewer FastAPI application: cameras and, for data-capture procedures, the neck only.
 
-No task, arm or gripper route is mounted. The only motion routes move the head through
+No task, arm or gripper route is mounted. The only motion routes (data capture, T3-Analysis) move the head through
 motion.primitives behind the head safety gate (owner decision 2026-10-20: "Neck motion is required
 for vision data capture. Capture procedures may articulate the head through the neck for viewing and
 perception. Arm motion stays forbidden in capture procedures."). They are dry-run unless
@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 from reachy_ai.camera_zoom import EYES, calibration_id, normalize_zoom, zoom_status
 from reachy_ai.config import HEAD_PRESETS
+from reachy_ai.games.t3_viewer import install_routes as install_t3_routes
 from reachy_ai.pair_bundle import BundleTooLarge, build_bundle, json_bytes, viewer_version
 from reachy_ai.perception.pair_detector import (
     DEFAULT_MODEL,
@@ -323,8 +324,7 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
             raise HTTPException(500, "Unable to encode snapshot")
         return Response(jpeg.tobytes(), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
-    @app.get("/api/stereo/pairs/{pair_id}/bundle.zip")
-    def pair_bundle(pair_id: str):
+    def make_pair_bundle(pair_id):
         """Everything held for this pair, built on demand in memory (never written to the server's disk)."""
         with camera.lock:
             record = camera.snapshots.get(pair_id)
@@ -356,9 +356,13 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
         versions = {"viewer": viewer_version(), "sdk": sdk_version, "neck_sign_check": neck_sign_check,
                     "detector_model": (analysis or {}).get("model")}
         try:
-            data = build_bundle(files, versions, calibration_id)
+            return build_bundle(files, versions, calibration_id)
         except BundleTooLarge as exc:
             raise HTTPException(413, str(exc)) from exc
+
+    @app.get("/api/stereo/pairs/{pair_id}/bundle.zip")
+    def pair_bundle(pair_id: str):
+        data = make_pair_bundle(pair_id)
         return Response(data, media_type="application/zip", headers={
             "Cache-Control": "no-store",
             "Content-Disposition": f'attachment; filename="reachy-pair-{pair_id[:8]}.zip"'})
@@ -455,4 +459,7 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
                 raise HTTPException(404, "Run 3D analysis first")
             return Response(record["depth_image"], media_type="image/png", headers={"Cache-Control": "no-store"})
 
+    install_t3_routes(app, camera=camera, settings=settings, zoom_context=zoom_context, depth=depth,
+                      capture_record=capture_record, analyze_pair=analyze_pair, make_pair_bundle=make_pair_bundle,
+                      history_dir=settings.t3_history_dir)
     return app

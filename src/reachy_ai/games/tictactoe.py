@@ -58,6 +58,16 @@ def parse(text: str) -> Board:
         raise ValueError(f"unknown board character {bad.args[0]!r} in {text!r}") from None
 
 
+def symbol(state: str) -> str:
+    """The one-character form of a square state: X, O, ".", "?" or "#"."""
+    return _SYMBOLS[state]
+
+
+def state_of(char: str) -> str:
+    """The square state a board-string character stands for."""
+    return _CHARS[char]
+
+
 def to_string(board: Board) -> str:
     chars = [_SYMBOLS[v] for v in board]
     return "/".join("".join(chars[i:i + 3]) for i in (0, 3, 6))
