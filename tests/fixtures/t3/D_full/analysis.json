@@ -1,0 +1,187 @@
+{
+  "analysis_id": "ec961e679c1f4db4bd2996b2b9718da7",
+  "camera_context": {
+    "analysis_profile": {
+      "baseline_m": 0.0725,
+      "focal_px": [
+        407.0,
+        398.8
+      ],
+      "geometry": "URDF camera positions and axes",
+      "id": "771392183ddc6c62",
+      "lens": "distorted",
+      "name": "measured_2026_08_27 + scene URDF",
+      "neck_origin_pitch_rad": 0.174,
+      "neck_origin_xyz_m": [
+        0.015,
+        0,
+        0.095
+      ],
+      "radial": [
+        [
+          -0.3163,
+          0.1027
+        ],
+        [
+          -0.3895,
+          0.1838
+        ]
+      ],
+      "resolution": [
+        640,
+        480
+      ],
+      "right_camera_in_head_m": [
+        0.0033,
+        -0.03625,
+        0.061
+      ],
+      "source": "sim",
+      "warp_fx_px": [
+        408.4,
+        400.9
+      ]
+    },
+    "calibration_id": "771392183ddc6c62",
+    "settings_at_connection": {
+      "left": {
+        "focus": 0,
+        "zoom": 0,
+        "zoom_level": "ZERO"
+      },
+      "right": {
+        "focus": 0,
+        "zoom": 0,
+        "zoom_level": "ZERO"
+      }
+    },
+    "zoom": {
+      "captured": "ZERO",
+      "levels": {
+        "left": "ZERO",
+        "right": "ZERO"
+      },
+      "matches_profile": null,
+      "profile": null,
+      "scene_policy": null,
+      "warning": null,
+      "warnings": []
+    }
+  },
+  "detections": [
+    {
+      "box_xywh": [
+        265,
+        98,
+        66,
+        58
+      ],
+      "class_id": 1,
+      "confidence": 0.947392,
+      "label": "cylinder"
+    },
+    {
+      "box_xywh": [
+        258,
+        304,
+        73,
+        67
+      ],
+      "class_id": 1,
+      "confidence": 0.898801,
+      "label": "cylinder"
+    },
+    {
+      "box_xywh": [
+        155,
+        197,
+        61,
+        61
+      ],
+      "class_id": 1,
+      "confidence": 0.844123,
+      "label": "cylinder"
+    },
+    {
+      "box_xywh": [
+        377,
+        193,
+        64,
+        70
+      ],
+      "class_id": 1,
+      "confidence": 0.795866,
+      "label": "cylinder"
+    },
+    {
+      "box_xywh": [
+        170,
+        107,
+        55,
+        57
+      ],
+      "class_id": 1,
+      "confidence": 0.500448,
+      "label": "cylinder"
+    },
+    {
+      "box_xywh": [
+        265,
+        200,
+        58,
+        56
+      ],
+      "class_id": 2,
+      "confidence": 0.422999,
+      "label": "empty"
+    },
+    {
+      "box_xywh": [
+        379,
+        315,
+        64,
+        52
+      ],
+      "class_id": 2,
+      "confidence": 0.393961,
+      "label": "empty"
+    },
+    {
+      "box_xywh": [
+        146,
+        308,
+        64,
+        51
+      ],
+      "class_id": 2,
+      "confidence": 0.308593,
+      "label": "empty"
+    }
+  ],
+  "elapsed_ms": 23.5,
+  "eye": "right",
+  "frame_id": "f81d451d30804bb78289991625ba46e5:right:36687",
+  "model": {
+    "export_date": "2026-09-25T18:08:52.937005+00:00",
+    "export_version": "8.4.163",
+    "labels": [
+      "cube",
+      "cylinder",
+      "empty"
+    ],
+    "name": "best.tflite",
+    "runtime": "ai_edge_litert",
+    "sha256": "60dad10f8e6a29dc09daf1bc11608a1658d70b5b98ffbaa615d88f54e453ff7e"
+  },
+  "overlay_url": "/api/stereo/pairs/865ba21186204d4299c0720d75f531a6/analysis/image.jpg",
+  "pair_id": "865ba21186204d4299c0720d75f531a6",
+  "parameters": {
+    "box_format": "source-pixel xywh",
+    "confidence_threshold": 0.3,
+    "input": "RGB float32 NCHW 320x320, resized without padding",
+    "nms_iou_threshold": 0.45
+  },
+  "raw_url": "/api/stereo/pairs/865ba21186204d4299c0720d75f531a6/right.jpg",
+  "session_id": "f81d451d30804bb78289991625ba46e5",
+  "source": "sim"
+}
