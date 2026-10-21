@@ -1,0 +1,36 @@
+{
+  "board": null,
+  "cells": [],
+  "created_utc": "2026-10-21T03:05:00Z",
+  "objects": [],
+  "off_board": [],
+  "pipeline": {
+    "bounds_model_id": "none",
+    "code_sha": "7786a65",
+    "depth_method": "sgbm-bidir-1px/inner60-median",
+    "detector_labels": [
+      "cube",
+      "cylinder",
+      "empty"
+    ],
+    "detector_model_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "dirty": false,
+    "surface_correction_id": "none"
+  },
+  "rig": {
+    "calibration_id": "abc123@zoom=OUT",
+    "identity_version": 1,
+    "intrinsics_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+    "mount_id": "october-2026",
+    "rig_epoch": 2,
+    "rig_layout_id": "FWDCenterLabMCC",
+    "scene_name": null,
+    "scene_revision": null,
+    "scene_sha256": null,
+    "source": "robot",
+    "zoom_level": "OUT"
+  },
+  "scene_id": "00112233445566778899aabbccddeeff",
+  "schema_version": "perceived_scene.v1",
+  "warnings": []
+}

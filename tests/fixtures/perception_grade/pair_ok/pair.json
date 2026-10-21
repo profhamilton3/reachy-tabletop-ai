@@ -1,0 +1,16 @@
+{
+  "head_context": {
+    "joints": {
+      "neck_pitch": {
+        "present_deg": 64.0
+      },
+      "neck_roll": {
+        "present_deg": 0.0
+      },
+      "neck_yaw": {
+        "present_deg": 0.0
+      }
+    }
+  },
+  "pair_id": "fixture-pair-1"
+}

@@ -1,0 +1,238 @@
+{
+  "board": {
+    "bounds_m": [
+      0.01,
+      0.01,
+      0.01
+    ],
+    "fit_rms_mm": 1.2,
+    "poses_used": 7,
+    "position_m": [
+      0.2258,
+      0.0,
+      -0.4095
+    ],
+    "quat_wxyz": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "source": "head_sweep_fit",
+    "spread_mm": 3.2
+  },
+  "cells": [
+    {
+      "name": "r1c1",
+      "object_index": null,
+      "state": "empty"
+    },
+    {
+      "name": "r1c2",
+      "object_index": null,
+      "state": "unknown"
+    },
+    {
+      "name": "r1c3",
+      "object_index": null,
+      "state": "unknown"
+    },
+    {
+      "name": "r2c1",
+      "object_index": 0,
+      "state": "cylinder"
+    },
+    {
+      "name": "r2c2",
+      "object_index": null,
+      "state": "empty"
+    },
+    {
+      "name": "r2c3",
+      "object_index": null,
+      "state": "empty"
+    },
+    {
+      "name": "r3c1",
+      "object_index": null,
+      "state": "empty"
+    },
+    {
+      "name": "r3c2",
+      "object_index": 1,
+      "state": "cube"
+    },
+    {
+      "name": "r3c3",
+      "object_index": null,
+      "state": "empty"
+    }
+  ],
+  "created_utc": "2026-10-21T03:05:00Z",
+  "objects": [
+    {
+      "bounds_coverage": 0.95,
+      "bounds_m": [
+        0.005,
+        0.005,
+        0.008
+      ],
+      "bounds_provisional": false,
+      "calibration_id": "771392183ddc6c62",
+      "cell": "r2c1",
+      "centre_m": [
+        0.2084,
+        0.1524,
+        -0.3
+      ],
+      "depth_iqr_m": 0.004,
+      "kind": "cylinder",
+      "kind_confidence": 0.9,
+      "quat_wxyz": [
+        1.0,
+        0.5,
+        0.0,
+        0.0
+      ],
+      "size_m": null,
+      "size_source": "unknown",
+      "source": {
+        "bundle_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "captured_utc": "2026-10-21T03:00:19Z",
+        "left_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "neck_deg": [
+          0.0,
+          64.78,
+          0.0
+        ],
+        "pair_id": "fixture-pair-1",
+        "right_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "stereo_coverage": 1.0,
+      "stereo_samples": 500,
+      "surface_point_m": [
+        0.2084,
+        0.1524,
+        -0.27999999999999997
+      ],
+      "yaw_bound_deg": 3.0
+    },
+    {
+      "bounds_coverage": 0.95,
+      "bounds_m": [
+        null,
+        null,
+        null
+      ],
+      "bounds_provisional": true,
+      "calibration_id": "771392183ddc6c62",
+      "cell": "r3c2",
+      "centre_m": [
+        0.3584,
+        0.0,
+        -0.33
+      ],
+      "depth_iqr_m": 0.004,
+      "kind": "cube",
+      "kind_confidence": 0.9,
+      "quat_wxyz": null,
+      "size_m": null,
+      "size_source": "unknown",
+      "source": {
+        "bundle_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "captured_utc": "2026-10-21T03:00:19Z",
+        "left_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "neck_deg": [
+          0.0,
+          64.78,
+          0.0
+        ],
+        "pair_id": "fixture-pair-1",
+        "right_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "stereo_coverage": 1.0,
+      "stereo_samples": 500,
+      "surface_point_m": [
+        0.3584,
+        0.0,
+        -0.31
+      ],
+      "yaw_bound_deg": null
+    }
+  ],
+  "off_board": [
+    {
+      "bounds_coverage": 0.95,
+      "bounds_m": [
+        null,
+        null,
+        null
+      ],
+      "bounds_provisional": true,
+      "calibration_id": "771392183ddc6c62",
+      "cell": null,
+      "centre_m": [
+        0.1,
+        -0.5,
+        -0.9
+      ],
+      "depth_iqr_m": 0.004,
+      "kind": "cube",
+      "kind_confidence": 0.9,
+      "quat_wxyz": null,
+      "size_m": null,
+      "size_source": "unknown",
+      "source": {
+        "bundle_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "captured_utc": "2026-10-21T03:00:19Z",
+        "left_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "neck_deg": [
+          0.0,
+          64.78,
+          0.0
+        ],
+        "pair_id": "fixture-pair-1",
+        "right_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "stereo_coverage": 1.0,
+      "stereo_samples": 500,
+      "surface_point_m": [
+        0.1,
+        -0.5,
+        -0.88
+      ],
+      "yaw_bound_deg": null
+    }
+  ],
+  "pipeline": {
+    "bounds_model_id": "none",
+    "code_sha": "7786a65",
+    "depth_method": "sgbm-bidir-1px/inner60-median",
+    "detector_labels": [
+      "cube",
+      "cylinder",
+      "empty"
+    ],
+    "detector_model_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "dirty": false,
+    "surface_correction_id": "none"
+  },
+  "rig": {
+    "calibration_id": "771392183ddc6c62",
+    "identity_version": 1,
+    "intrinsics_sha256": "771392183ddc6c62",
+    "mount_id": "october-2026",
+    "rig_epoch": 0,
+    "rig_layout_id": "FWDCenterLabSivaPool",
+    "scene_name": "FWDCenterLabSivaPool",
+    "scene_revision": "initial",
+    "scene_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+    "source": "sim",
+    "zoom_level": "ZERO"
+  },
+  "scene_id": "0123456789abcdef0123456789abcdef",
+  "schema_version": "perceived_scene.v1",
+  "warnings": [
+    "fixture: committed by hand-built generator"
+  ]
+}

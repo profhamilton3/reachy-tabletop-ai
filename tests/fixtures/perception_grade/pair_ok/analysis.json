@@ -1,0 +1,107 @@
+{
+  "detections": [
+    {
+      "box_xywh": [
+        379,
+        101,
+        48,
+        48
+      ],
+      "class_id": 1,
+      "confidence": 0.9,
+      "label": "cylinder"
+    },
+    {
+      "box_xywh": [
+        266,
+        328,
+        48,
+        48
+      ],
+      "class_id": 0,
+      "confidence": 0.9,
+      "label": "cube"
+    },
+    {
+      "box_xywh": [
+        266,
+        200,
+        48,
+        48
+      ],
+      "class_id": 1,
+      "confidence": 0.9,
+      "label": "cylinder"
+    },
+    {
+      "box_xywh": [
+        158,
+        324,
+        44,
+        44
+      ],
+      "class_id": 2,
+      "confidence": 0.9,
+      "label": "empty"
+    },
+    {
+      "box_xywh": [
+        387,
+        328,
+        44,
+        44
+      ],
+      "class_id": 2,
+      "confidence": 0.9,
+      "label": "empty"
+    },
+    {
+      "box_xywh": [
+        164,
+        216,
+        44,
+        44
+      ],
+      "class_id": 2,
+      "confidence": 0.9,
+      "label": "empty"
+    },
+    {
+      "box_xywh": [
+        383,
+        216,
+        44,
+        44
+      ],
+      "class_id": 2,
+      "confidence": 0.9,
+      "label": "empty"
+    },
+    {
+      "box_xywh": [
+        176,
+        122,
+        44,
+        44
+      ],
+      "class_id": 2,
+      "confidence": 0.9,
+      "label": "empty"
+    },
+    {
+      "box_xywh": [
+        274,
+        119,
+        44,
+        44
+      ],
+      "class_id": 2,
+      "confidence": 0.9,
+      "label": "empty"
+    }
+  ],
+  "model": {
+    "name": "best.tflite",
+    "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  }
+}
