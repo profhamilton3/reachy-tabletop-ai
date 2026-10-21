@@ -119,6 +119,31 @@ Capture at each pose. Stop and report if the neck labours, sounds wrong, or read
 
 **Sound check (v1)** (speaker and microphones, no motion; it needs the audio helper and a consent tick per recording): see `docs/SOUND_CHECK.md`.
 
+### Robot inventory (v1)
+
+One bundle of read-only facts that replaces most of the commands typed for #6, #7, #59 and #28 (item C).
+**No motion and no writes of any kind.** The SDK is only read, and the NUC runs only the audio helper's fixed
+probes. Nothing typed in the page is ever run.
+
+Before you start, on the NUC: start the audio helper **from a terminal with ROS sourced**. Add `--imu-topic`
+if the IMU topic is known. Then open the SSH tunnel (`docs/SOUND_CHECK.md` §1 and §5).
+
+| Step | Button | What it reads |
+|---|---|---|
+| 1. SDK reads | **Read robot** | The SDK version; every joint's position and compliance; the gripper; the force sensor; the fans; both cameras' zoom and focus; the neck sign check (IK only). |
+| 2. NUC probes | **Run NUC probes** | `audio_devices`, `audio_hw_params`, `usb`, `system`, `ros2_topics`, `imu`. Each probe has its own result: ok, failed, or not run, with the reason. |
+| 3. Operator answers | **Save answers** | "Is the arm resting on the table?" (for the record only), plus a free note. |
+
+- **Each SDK read stands alone.** A failed or stuck read (5 s limit) records its error type, and the other
+  reads continue.
+- **Helper unreachable.** Step 1 still works, and step 2 marks every probe "not run (helper unreachable)".
+  The analyser then reports the answers as unknown, never as absent.
+- **Redaction.** The NUC output is redacted twice, once by the helper and again by the viewer before
+  bundling. That removes host names, IP and MAC addresses, the user name and home paths, and serial-looking
+  fields. ROS topic names are kept.
+- **Download.** Press **Download capture bundle** (`reachy-capture-robot_inventory.zip`). It holds
+  `capture.json`, one `probes/<name>.json` per probe and `manifest.json`. Attach it to #28.
+
 ### Zoom field-of-view check (v4)
 
 Run this last in a robot session. Arm at rest on the table, taped 3x3 board clear.
@@ -223,13 +248,27 @@ Each bundle holds, per step, `left.jpg`, `right.jpg` and `pair.json`, plus:
   - the run's Stop and Release events;
 - `manifest.json`.
 
+A Robot inventory bundle has no images. It holds `capture.json` (the SDK reads, each probe's outcome and
+reason, the operator's answers, the helper status, and the redaction record), `probes/<name>.json` (each
+probe's redacted commands and output), and `manifest.json`.
+
 ## Analyse a returned bundle (offline)
 
 ```sh
 python scripts/analyze_capture_bundle.py reachy-capture-zoom_fov.zip
 python scripts/analyze_capture_bundle.py reachy-capture-depth_ruler.zip --json depth.json
 python scripts/analyze_capture_bundle.py reachy-capture-head_sweep.zip
+python scripts/analyze_capture_bundle.py reachy-capture-robot_inventory.zip
 ```
+
+- **inventory**: answers the open questions directly.
+  - **#7**: whether the ReSpeaker was found (`arecord -l`, `lsusb`), its channel count, and so its firmware:
+    6 channels is the 6-channel firmware, 1 is the 1-channel one.
+  - **#59**: the playback devices, and which one the helper's `--play-device` points at.
+  - **#6**: the IMU topic, its message type and publisher count, and one sample's fields.
+  - **System**: the OS, kernel and Python versions.
+  - **SDK**: the version, the joint count and every read error.
+  - A probe that did not run is reported as unknown, never as absent.
 
 - **zoom**: the apparent cell pitch in px per level (raw frames) and its ratio to the widest level.
   - The level is the cameras' read-back, never the requested one.
@@ -265,7 +304,9 @@ Before the session:
 - [ ] The page shows `neck_sign_check: passed`.
 - [ ] First session only: **Board-view approach** (starts with the 20° step) with Siva watching, before anything else.
 
-**Neck IMU (#6): read-only, for Siva to run on the NUC.** It sends no command. Paste the output into #6.
+**Neck IMU (#6): read-only, for Siva to run on the NUC.** It sends no command. The **Robot inventory** runs
+these for you (its `ros2_topics` and `imu` probes; start the helper with `--imu-topic` once the topic is known).
+Typing them by hand is the fallback. Paste the output into #6.
 
 ```sh
 ros2 topic list                              # find the IMU topic (likely /head/imu or /neck/imu)

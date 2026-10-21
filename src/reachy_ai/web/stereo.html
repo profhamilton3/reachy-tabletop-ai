@@ -134,7 +134,7 @@
   <p id="notice" role="status" aria-live="polite">Connecting to camera service…</p>
   <p id="zoom-warning" role="alert" hidden></p>
   <section id="capture-panel" aria-label="Data capture">
-    <h2>DATA CAPTURE <span class="subtle">· camera and neck only, never arm motion; the Sound check moves nothing</span></h2>
+    <h2>DATA CAPTURE <span class="subtle">· camera and neck only, never arm motion; the Sound check and Robot inventory move nothing</span></h2>
     <label class="subtle" for="capture-select">Procedure</label>
     <select id="capture-select"><option value="">None</option></select>
     <div id="head-controls" aria-label="Head controls">
@@ -554,6 +554,15 @@
   const confirmed = {};  // per step and command; cleared after every command so each one needs a fresh confirm
   const volumeNotes = {};  // Sound check: the operator's volume note per step, kept across re-renders
   const SOUND_BUTTONS = {status: 'Check helper', tone: 'Play tone', say: 'Say phrase', loopback: 'Record loopback', baseline: 'Record baseline'};
+  const INVENTORY_BUTTONS = {sdk: 'Read robot', nuc: 'Run NUC probes'};
+  const inventoryDraft = {arm: '', note: ''};  // Robot inventory: the operator's answers, kept across re-renders
+  function inventorySummary(r) {
+    if (r.outcome === 'failed') return `failed: ${r.error}`;
+    if (r.op === 'sdk') return `reachy-sdk ${r.sdk_version ?? '?'} · ${r.joint_count} joints · ${r.read_errors} read error(s) · neck sign check ${r.neck_sign_check ?? '?'}`;
+    if (r.op === 'nuc') return Object.entries(r.probes).map(([name, p]) =>
+      `${name} ${p.outcome === 'not_run' ? 'not run' : p.outcome}${p.reason ? ` (${p.reason})` : ''}`).join('; ');
+    return `arm resting on the table: ${r.arm_resting === null ? 'not answered' : r.arm_resting ? 'yes' : 'no'}` + (r.note ? ` · note: ${r.note}` : '');
+  }
   function soundSummary(r) {
     if (r.outcome === 'ok') return `helper ${r.backend} v${r.version} · TTS ${r.tts || 'none'} · capture: ${(r.devices?.capture || []).join('; ') || 'none found'}`;
     if (r.outcome === 'recorded') return `take ${r.take}: ${r.channels} of ${r.requested_channels} ch, ${r.rate} Hz, ${r.seconds} s`;
@@ -564,7 +573,7 @@
   }
   const note = text => { $('capture-note').textContent = text; };
   async function runApi(path, options = {}) {
-    const response = await fetch('/api/stereo/capture-run' + path, {...options, signal: AbortSignal.timeout(45000)});
+    const response = await fetch('/api/stereo/capture-run' + path, {...options, signal: AbortSignal.timeout(options.timeout || 45000)});
     const body = response.headers.get('content-type')?.includes('json') ? await response.json() : null;
     if (!response.ok) throw Error(body?.detail || 'Request failed');
     return body;
@@ -620,6 +629,21 @@
           li.append(volume, answer('Heard it', true), answer('Not heard', false));
         }
       }
+      if (step.inventory === 'answers') {
+        const arm = Object.assign(document.createElement('select'), {disabled: runBusy});
+        for (const [value, text] of [['', 'Arm resting on the table? (not answered)'], ['yes', 'Arm resting on the table: yes'], ['no', 'Arm resting on the table: no']])
+          arm.append(Object.assign(document.createElement('option'), {value, textContent: text}));
+        arm.value = inventoryDraft.arm; arm.onchange = () => { inventoryDraft.arm = arm.value; };
+        const text = Object.assign(document.createElement('input'), {type: 'text', placeholder: 'note (optional)', maxLength: 200, value: inventoryDraft.note});
+        text.oninput = () => { inventoryDraft.note = text.value; };
+        const save = Object.assign(document.createElement('button'), {textContent: 'Save answers', disabled: runBusy,
+          onclick: () => runStep(step.id, 'inventory', {arm_resting: arm.value === '' ? null : arm.value === 'yes', note: text.value}, 'Answers saved: ')});
+        li.append(arm, text, save);
+      } else if (step.inventory) {
+        const act = Object.assign(document.createElement('button'), {textContent: INVENTORY_BUTTONS[step.inventory], disabled: runBusy});
+        act.onclick = () => runStep(step.id, 'inventory', {}, `${INVENTORY_BUTTONS[step.inventory]}: `, 180000);
+        li.append(act);
+      }
       if (step.capture) {
         const cap = Object.assign(document.createElement('button'), {textContent: 'Capture', disabled: runBusy || !status?.can_capture});
         cap.onclick = () => runStep(step.id, 'capture', null, 'Captured ');
@@ -628,9 +652,10 @@
       const head = step.head_commands.at(-1);
       const neck = head?.readback_deg ? ` (neck ${Object.values(head.readback_deg).map(v => v.toFixed(1)).join(', ')}°)` : '';
       const sound = step.sound_results?.at(-1);
+      const inventory = step.inventory_results?.at(-1);
       li.append(Object.assign(document.createElement('span'), {className: 'subtle',
-        textContent: (step.capture ? `${step.captured} pair${step.captured === 1 ? '' : 's'} captured` : step.sound ? 'sound' : 'no capture') +
-          (sound ? ` · ${soundSummary(sound)}` : '') +
+        textContent: (step.capture ? `${step.captured} pair${step.captured === 1 ? '' : 's'} captured` : step.sound ? 'sound' : step.inventory ? 'reads only' : 'no capture') +
+          (sound ? ` · ${soundSummary(sound)}` : '') + (inventory ? ` · ${inventorySummary(inventory)}` : '') +
           (step.answer ? ` · operator: ${step.answer.heard ? 'heard it' : 'not heard'}${step.answer.volume_note ? ` (${step.answer.volume_note})` : ''}` : '') +
           (head ? ` · head ${head.mode === 'live' ? head.outcome : head.outcome === 'refused' ? 'refused' : 'dry-run'}${neck}` : '') +
           (step.zoom_commands.length ? zoomSummary(step.zoom_commands) : '')}));
@@ -646,12 +671,12 @@
       : last.dry_run ? 'dry-run' : last.after ?? '?';
     return ` · zoom ${text}` + (warn ? ` · ${warn.warning || warn.note}` : '');
   }
-  async function runStep(stepId, action, body, label) {
+  async function runStep(stepId, action, body, label, timeout) {
     if (runBusy) return;
     runBusy = true; renderRun(); note('Working…');
     try {
-      const result = await runApi(`/steps/${stepId}/${action}`, body ? {method: 'POST',
-        headers: {'content-type': 'application/json'}, body: JSON.stringify(body)} : {method: 'POST'});
+      const result = await runApi(`/steps/${stepId}/${action}`, body ? {method: 'POST', timeout,
+        headers: {'content-type': 'application/json'}, body: JSON.stringify(body)} : {method: 'POST', timeout});
       runState = result.state || result;
       note(label + (result.dry_run ? '(dry run: logged, not sent).' : (result.record?.outcome ?? 'done') + '.'));
     } catch (error) { note(error.message); }

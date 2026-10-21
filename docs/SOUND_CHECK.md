@@ -30,8 +30,10 @@ to listen on another address.
        --channel-layout respeaker6
    ```
    Without `--play-device` and `--record-device`, the system default devices are used.
-   The other options are `--port` (default 8090), `--rate` (16000, the ReSpeaker's native rate; 44100 or 48000)
-   and `--piper-model`.
+   The other options are `--port` (default 8090), `--rate` (16000, the ReSpeaker's native rate; 44100 or 48000),
+   `--piper-model`, and `--imu-topic` (the Robot inventory's IMU probe, §5).
+   Device names must look like ALSA names (`hw:2,0`, `plughw:2,0`, `hw:CARD=ArrayUAC10,DEV=0`, `default`).
+   The helper refuses to start on anything else.
 4. Leave it running in its own terminal. Each operation and the spoken text are logged; audio never is.
    Nothing is kept on the NUC: a clip lives in a temporary folder that is deleted when the request ends.
 
@@ -100,6 +102,7 @@ microphone permission prompt for the terminal.
 | `POST /tone` | `{"seconds": ≤3, "freq": 100–8000}` | plays a sine generated in the helper, at −12 dBFS with 10 ms fades |
 | `POST /say` | `{"text": ≤200 characters}` | speaks the text (the text goes to the engine on stdin) |
 | `POST /record` | `{"seconds": ≤3, "channels": ≤6, "tone": {"seconds", "freq"}?}` | returns a 16-bit WAV; with `tone`, the recording starts first and the tone plays 0.3 s into it |
+| `GET /probe/<name>` | — | one read-only NUC probe from a fixed list (§5); any other name answers **404** |
 
 - One operation at a time. A second request while one runs gets **409 busy**; nothing is queued.
 - Every subprocess has a timeout (the operation's length plus 5 s; 30 s for TTS synthesis), and a timeout
@@ -194,3 +197,46 @@ a missing recording, a missing status check, and the fake backend (synthetic rec
 | The Mac recording is silent | macOS refused the microphone: allow the terminal in System Settings → Privacy & Security → Microphone. |
 | Tone not heard, but the loopback margin is high | The speaker plays, but too quietly for the room. Raise the system volume a little and run the check again. |
 | Every channel DEAD | The recording ran on the wrong device (for example, a monitor with no microphone). Check `--record-device`. |
+| The Robot inventory says "ros2 not found" | The helper was started from a terminal without ROS. Stop it, `source` the ROS setup in that terminal (as you would for `ros2 topic list`), and start it again. |
+
+## 5. Robot inventory probes (#62)
+
+The **Robot inventory** procedure (`docs/DATA_CAPTURE.md`) asks the same helper for a few facts about the NUC.
+They come from a **fixed list of probes**. Nothing typed in the page is ever run, and nothing goes through a
+shell.
+
+| Probe | Runs |
+|---|---|
+| `audio_devices` | `arecord -l`, `aplay -l` |
+| `audio_hw_params` | `arecord --dump-hw-params -D <--record-device> -d 1 /dev/null`: the channel count gives the ReSpeaker firmware (§1.1). The second of audio goes to `/dev/null`. Not run without `--record-device`. |
+| `usb` | `lsusb` (never `lsusb -v`) |
+| `system` | reads `/etc/os-release`; runs `uname -sr`; reports the helper's Python version |
+| `ros2_topics` | `ros2 topic list` |
+| `imu` | `ros2 topic info <--imu-topic>` and `ros2 topic echo --once <--imu-topic>`; not run without `--imu-topic` |
+
+**Start the helper from a terminal with ROS sourced.** The helper never sources anything itself. Without
+`ros2` on its `PATH`, the ROS probes answer "ros2 not found: start the helper from a terminal with ROS sourced".
+With the IMU topic (#6), the command is:
+
+```bash
+python3 scripts/reachy_audio_helper.py --backend alsa --play-device hw:2,0 --record-device hw:2,0 \
+    --channel-layout respeaker6 --imu-topic /imu
+```
+
+`--imu-topic` must be an absolute ROS 2 name (`/imu`, `/head/imu`); the helper refuses to start on anything else.
+Leave it out if the topic is not known yet. The `ros2_topics` probe lists the topics, and the analyser picks out
+the IMU-like ones.
+
+- **Limits.** Each command has a 5 s timeout (8 s for `echo --once`). Its output is capped at 64 KiB per
+  stream, and a cut is marked `truncated`.
+- **One at a time.** Probes share the audio operations' lock, so a probe during a recording answers **409 busy**.
+- **Redaction.** Every reply is redacted before it leaves the helper, and the viewer redacts it again before
+  bundling. The redaction replaces:
+  - this host's name with `<host>`;
+  - IPv4 and IPv6 addresses with `<ip>`;
+  - MAC addresses with `<mac>`;
+  - the user name and `/home/<name>` paths with `<user>`;
+  - serial-looking fields (`iSerial`, `Serial Number`, `ID_SERIAL…`) with `<serial>`.
+
+  ROS topic names that `ros2 topic list` printed, and the configured topic and device, are kept, even when
+  the host or user is called e.g. `reachy`.

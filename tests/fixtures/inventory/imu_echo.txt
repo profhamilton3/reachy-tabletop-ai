@@ -1,0 +1,23 @@
+header:
+  stamp:
+    sec: 1792500000
+    nanosec: 125000000
+  frame_id: head_imu
+orientation:
+  x: 0.01
+  y: -0.02
+  z: 0.0
+  w: 0.9997
+orientation_covariance:
+- 0.0
+- 0.0
+- 0.0
+angular_velocity:
+  x: 0.001
+  y: 0.0
+  z: -0.002
+linear_acceleration:
+  x: 0.05
+  y: 0.01
+  z: 9.81
+---

@@ -1,0 +1,12 @@
+HW Params of device "hw:2,0":
+--------------------
+ACCESS:  MMAP_INTERLEAVED RW_INTERLEAVED
+FORMAT:  S16_LE
+SUBFORMAT:  STD
+SAMPLE_BITS: 16
+FRAME_BITS: 96
+CHANNELS: 6
+RATE: 16000
+PERIOD_TIME: (1000 2730625)
+--------------------
+Recording WAVE '/dev/null' : Unsigned 8 bit, Rate 8000 Hz, Mono

@@ -4,7 +4,8 @@ The SDK owns its camera streaming threads. A single child process contains that
 connection so its blocking startup/first-frame calls can be stopped on timeout.
 No arm, gripper, focus, or robot-service command is issued here. Two commands exist, both requested
 only by a data-capture procedure after the operator's explicit confirm, both run in the child
-process that owns the connection, one at a time (bounded queues of 1):
+process that owns the connection, one at a time (bounded queues of 1). The zoom queue also carries the
+Robot inventory's read-only request (#62: robot_inventory.sdk_inventory, which only reads):
 
 - a camera zoom level (camera_zoom.ZoomSetter): dry-run (logged only) unless the viewer is started
   with --allow-zoom-commands;
@@ -37,10 +38,11 @@ LOG = logging.getLogger(__name__)
 EYES = ("left", "right")
 OBSERVATION_QUEUE = 4  # frames and head readbacks in flight; the newest are kept
 ZOOM_QUEUE = HEAD_QUEUE = 1  # commands in flight to the SDK process; a second one is refused
+INVENTORY_TIMEOUT_S = 90.0  # the inventory's reads are bounded one by one (robot_inventory.READ_TIMEOUT_S)
 
 
 class CommandBusy(RuntimeError):
-    """A zoom or head command is already pending or running."""
+    """A zoom or head command (or an inventory request) is already pending or running."""
 
 
 @dataclass(frozen=True)
@@ -111,8 +113,8 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
     Frames and head readbacks go to the bounded `messages` queue, newest kept.
     Ready, error and diagnostics messages go to `control`, which is unbounded:
     they are few, and a failure report must never be dropped. `commands` carries explicit
-    zoom requests from a data-capture procedure; `head` is (requests, halt): head moves and
-    releases, and the Stop event. Results come back on `control`.
+    zoom requests from a data-capture procedure, and the Robot inventory's read-only request; `head` is
+    (requests, halt): head moves and releases, and the Stop event. Results come back on `control`.
     """
     # Ctrl+C belongs to the web-server parent, which disposes this worker.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -209,6 +211,9 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
                 request = commands.get(timeout=0.2)
             except queue.Empty:
                 continue
+            if request.get("kind") == "inventory":
+                publish(_inventory_result(robot, settings, request))
+                continue
             try:
                 records = setter.set_both(request["level"])
             except Exception as exc:  # noqa: BLE001 - report the type only
@@ -271,6 +276,20 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
     stop.wait()
 
 
+def _inventory_result(robot, settings, request):
+    """The Robot inventory's SDK reads (#62), as a control message. Only reads; never raises."""
+    from reachy_ai.robot_inventory import sdk_inventory
+    try:
+        inventory = sdk_inventory(robot)
+    except Exception as exc:  # noqa: BLE001 - report the type only
+        return {"kind": "inventory_result", "id": request["id"], "error": type(exc).__name__}
+    check = inventory.get("neck_sign_check") or {}
+    if settings.source == "sim" and check.get("result") == "failed" and "IK call failed" in (check.get("detail") or ""):
+        inventory["neck_sign_check"] = {"result": "skipped (sim)",
+                                        "detail": "the simulator has no head IK: " + check["detail"]}
+    return {"kind": "inventory_result", "id": request["id"], "inventory": inventory}
+
+
 @dataclass(frozen=True)
 class EyeFrame:
     frame_id: str
@@ -304,6 +323,7 @@ class StereoService:
         self.head = None
         self.commands = None
         self._zoom_waits: dict[str, dict] = {}
+        self._inventory_waits: dict[str, dict] = {}
         self.head_requests = None
         self.head_halt = None
         self._head_waits: dict[str, dict] = {}
@@ -418,6 +438,11 @@ class StereoService:
                 LOG.info("SDK readback %s: %s", message["section"], message["values"])
             elif kind == "zoom_result":
                 self._apply_zoom_result(message)
+            elif kind == "inventory_result":
+                wait = self._inventory_waits.get(message["id"])
+                if wait is not None:
+                    wait["message"] = message
+                    wait["event"].set()
             elif kind == "head_result":
                 self._apply_head_result(message)
             elif kind == "head":
@@ -488,6 +513,34 @@ class StereoService:
         if message.get("error"):
             raise RuntimeError(f"Zoom command failed ({message['error']})")
         return message["records"]
+
+    def request_inventory(self, timeout_s: float = INVENTORY_TIMEOUT_S) -> dict:
+        """The Robot inventory's SDK reads (#62), from the SDK process that owns the connection. Read-only.
+
+        Needs a connection that has reported ready (the cameras need not be live). Shares the zoom queue, so it
+        is refused with CommandBusy while a zoom command is pending."""
+        with self.lock:
+            ready = self.commands is not None and "sdk_version" in self.diagnostics
+        if not ready:
+            raise RuntimeError("Robot connection is not ready")
+        request_id = uuid.uuid4().hex
+        wait = {"event": threading.Event(), "message": None}
+        with self.lock:
+            self._inventory_waits[request_id] = wait
+        try:
+            try:
+                self.commands.put_nowait({"id": request_id, "kind": "inventory"})
+            except queue.Full:
+                raise CommandBusy("A zoom command or inventory request is already pending") from None
+            if not wait["event"].wait(timeout_s):
+                raise TimeoutError("No inventory result from the SDK process")
+        finally:
+            with self.lock:
+                self._inventory_waits.pop(request_id, None)
+        message = wait["message"]
+        if message.get("error"):
+            raise RuntimeError(f"Inventory failed ({message['error']})")
+        return message["inventory"]
 
     def _command_finished(self, message):
         finished = message.get("finished_ns")

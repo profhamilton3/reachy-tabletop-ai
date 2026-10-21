@@ -4,6 +4,7 @@
     python scripts/analyze_capture_bundle.py reachy-capture-depth_ruler.zip [--calibration PATH] [--json OUT.json]
     python scripts/analyze_capture_bundle.py reachy-capture-head_sweep.zip [--calibration PATH]
     python scripts/analyze_capture_bundle.py reachy-capture-sound_check.zip
+    python scripts/analyze_capture_bundle.py reachy-capture-robot_inventory.zip
 
 The bundle comes from the stereo viewer's "Data capture" dropdown (or the CLI fallbacks) and is checked
 against its SHA-256 manifest first. Which analyser runs follows the procedure kind:
@@ -25,12 +26,17 @@ against its SHA-256 manifest first. Which analyser runs follows the procedure ki
          helper's channel layout (4 plain; the ReSpeaker's respeaker6: ch0 processed, ch1-4 the microphones,
          ch5 the playback reference, which should carry the tone; respeaker1: one processed channel), and a
          dead or clipped channel flag; plus the operator's heard / not heard answers.
+  inventory (Robot inventory, #62) the open questions answered from the SDK reads and the NUC probes: #7 is
+         the ReSpeaker there, with how many channels (6: the 6-channel firmware, 1: the 1-channel one); #59 the
+         playback devices and the helper's --play-device; #6 the IMU topic, its message type and one sample's
+         fields; the system versions; the SDK version, joint count and every read error.
 """
 
 import argparse
 import io
 import json
 import math
+import re
 import statistics
 import sys
 import wave
@@ -48,6 +54,7 @@ import zoom_fov_check as zoom_check  # noqa: E402
 from reachy_ai.camera_zoom import EYES, SCENE_ZOOM, ZOOM_READBACK  # noqa: E402
 from reachy_ai.pair_bundle import read_bundle  # noqa: E402
 from reachy_ai.perception.procedures import (  # noqa: E402
+    INVENTORY_PROBES,
     SENSITIVITY_BASELINE_M,
     SENSITIVITY_FOCAL_PX,
     TOLERANCE_M,
@@ -80,6 +87,11 @@ CLIP_LEVEL = 32766
 CLIP_FRACTION = 0.001
 #: The tone must lift a channel's RMS at least this far above the room baseline to count as heard.
 MIN_MARGIN_DB = 6.0
+#: Robot inventory: how the ReSpeaker USB 4-mic array shows in `arecord -l` and `lsusb` (Seeed, 2886:0018).
+RESPEAKER_RE = re.compile(r"respeaker|arrayuac10|2886:0018", re.IGNORECASE)
+#: Channel count of the ReSpeaker's capture device -> its firmware (docs/SOUND_CHECK.md §1.1).
+RESPEAKER_FIRMWARE = {6: "6-channel firmware (--channel-layout respeaker6)",
+                      1: "1-channel firmware (--channel-layout respeaker1)"}
 
 
 def load(source):
@@ -549,6 +561,203 @@ def analyze_sound(capture, files):
             "rows": rows, "answers": answers, "notes": notes, "findings": findings}
 
 
+def probe_reply(capture, files, name):
+    """A probe's reply from its bundle file, or the capture.json summary if there is no file."""
+    entry = (capture.get("probes") or {}).get(name) or {"outcome": "not_run", "reason": "not in the bundle"}
+    data = files.get(entry.get("file") or f"probes/{name}.json")
+    return json.loads(data) if data else entry
+
+
+def probe_output(reply, index=0):
+    """stdout and stderr of a probe's `index`th command, as one text ("" if it did not run)."""
+    commands = reply.get("commands") or []
+    if index >= len(commands):
+        return ""
+    return (commands[index].get("stdout") or "") + (commands[index].get("stderr") or "")
+
+
+def card_lines(text):
+    return [line.strip() for line in text.splitlines() if line.startswith("card ")]
+
+
+def yaml_fields(text):
+    """Dotted field paths of one `ros2 topic echo` message (leaves and lists), e.g. orientation.x."""
+    paths, stack = [], []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped == "---" or stripped.startswith("- "):
+            continue
+        key, sep, _ = stripped.partition(":")
+        if not sep:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        stack.append((indent, key))
+        paths.append(".".join(k for _, k in stack))
+    return [p for p in paths if not any(other.startswith(p + ".") for other in paths)]
+
+
+def device_card(device):
+    """The card an ALSA device name points at: '2' for hw:2,0, 'ArrayUAC10' for hw:CARD=ArrayUAC10,DEV=0."""
+    match = re.match(r"^(?:plug)?hw:(?:CARD=)?([A-Za-z0-9_]+)", device or "")
+    return match.group(1) if match else None
+
+
+def analyze_inventory(capture, files):
+    """#7 (ReSpeaker, channels, firmware), #59 (speaker device), #6 (IMU), system and SDK, from the bundle."""
+    findings = []
+    status = capture.get("helper_status") or {}
+    devices = status.get("devices") or {}
+    listed = capture.get("probes") or {}
+    order = [*(n for n in INVENTORY_PROBES if n in listed), *(n for n in listed if n not in INVENTORY_PROBES)]
+    probes = {name: probe_reply(capture, files, name) for name in order}
+    outcomes = {name: {"outcome": r.get("outcome"), "reason": r.get("reason")} for name, r in probes.items()}
+    if probes and all(r.get("outcome") == "not_run" for r in probes.values()):
+        findings.append("No NUC probe ran (" + (next(iter(probes.values())).get("reason") or "no reason") + "): "
+                        "start the helper and the SSH tunnel, then run the NUC step again.")
+    for name, r in probes.items():
+        if r.get("outcome") == "failed":
+            findings.append(f"Probe {name} failed: {r.get('reason')}.")
+
+    sdk = capture.get("sdk") or {}
+    sdk_result = {"version": sdk.get("sdk_version"), "joint_count": sdk.get("joint_count"),
+                  "read_errors": sdk.get("errors") or [], "neck_sign_check": (sdk.get("neck_sign_check") or {}),
+                  "grippers": sdk.get("grippers") or {}, "force_sensors": sdk.get("force_sensors") or {},
+                  "fans": sdk.get("fans") or {}, "cameras": sdk.get("cameras") or {}}
+    if not sdk:
+        findings.append("The SDK reads were not taken.")
+    for error in sdk_result["read_errors"]:
+        findings.append(f"SDK read {error['read']} failed ({error['error']}).")
+
+    audio = probes.get("audio_devices") or {}
+    capture_cards, playback_cards = card_lines(probe_output(audio, 0)), card_lines(probe_output(audio, 1))
+    usb = [line.strip() for line in probe_output(probes.get("usb") or {}).splitlines() if RESPEAKER_RE.search(line)]
+    respeaker_cards = [line for line in capture_cards if RESPEAKER_RE.search(line)]
+    hw = probes.get("audio_hw_params") or {}
+    channels_text = None
+    match = re.search(r"^CHANNELS:\s*(.+?)\s*$", probe_output(hw), re.MULTILINE)
+    if match:
+        channels_text = match.group(1)
+    channels = int(channels_text) if channels_text and channels_text.isdigit() else None
+    record_device = devices.get("record_device")
+    looked = audio.get("outcome") == "ok" or (probes.get("usb") or {}).get("outcome") == "ok"
+    # Not looked for (the probes did not run) is unknown, never "not found".
+    respeaker = {"found": bool(respeaker_cards or usb) if looked else None, "capture_cards": respeaker_cards,
+                 "usb": usb, "devices_probe": outcomes.get("audio_devices"), "usb_probe": outcomes.get("usb"),
+                 "record_device": record_device, "channels": channels, "channels_text": channels_text,
+                 "firmware": RESPEAKER_FIRMWARE.get(channels) if channels is not None else None,
+                 "hw_params": outcomes.get("audio_hw_params")}
+    if audio.get("outcome") == "ok" and not respeaker["found"]:
+        findings.append("#7: no ReSpeaker in `arecord -l` or `lsusb`: is the array plugged in?")
+    if channels is not None and channels not in RESPEAKER_FIRMWARE:
+        findings.append(f"#7: the record device has {channels} channels, neither ReSpeaker firmware (6 or 1): is "
+                        "--record-device the ReSpeaker?")
+    card = device_card(record_device)
+    if card and respeaker_cards and not any(re.match(rf"card {re.escape(card)}:|card \d+: {re.escape(card)} ", line)
+                                            for line in respeaker_cards):
+        findings.append(f"#7: --record-device {record_device} is not the ReSpeaker's card ({respeaker_cards[0]}).")
+
+    speaker = {"playback_cards": playback_cards, "play_device": devices.get("play_device"),
+               "listed": audio.get("outcome") == "ok", "devices_probe": outcomes.get("audio_devices")}
+    play_card = device_card(speaker["play_device"])
+    speaker["play_card"] = next((line for line in playback_cards if play_card and (
+        line.startswith(f"card {play_card}:") or f": {play_card} " in line)), None)
+    if audio.get("outcome") == "ok" and not playback_cards:
+        findings.append("#59: `aplay -l` lists no playback device.")
+
+    topics_text = probe_output(probes.get("ros2_topics") or {})
+    topics = [line.strip() for line in topics_text.splitlines() if line.strip().startswith("/")]
+    imu_reply = probes.get("imu") or {}
+    info, sample = probe_output(imu_reply, 0), probe_output(imu_reply, 1)
+    type_match = re.search(r"^Type:\s*(\S+)", info, re.MULTILINE)
+    publishers = re.search(r"^Publisher count:\s*(\d+)", info, re.MULTILINE)
+    imu = {"topic": status.get("imu_topic"), "outcome": imu_reply.get("outcome"), "reason": imu_reply.get("reason"),
+           "helper_status": bool(status), "topics_probe": outcomes.get("ros2_topics"),
+           "candidates": [t for t in topics if "imu" in t.lower()], "topic_count": len(topics),
+           "type": type_match.group(1) if type_match else None,
+           "publishers": int(publishers.group(1)) if publishers else None,
+           "sample_fields": yaml_fields((imu_reply.get("commands") or [{}, {}])[1].get("stdout") or "")
+           if len(imu_reply.get("commands") or []) > 1 else [],
+           "sample_received": bool(sample.strip())}
+    if imu["topic"] is None and status:
+        findings.append("#6: no --imu-topic configured" + (f"; IMU-like topics: {', '.join(imu['candidates'])}"
+                                                            if imu["candidates"] else "") + ".")
+    elif imu["outcome"] == "ok" and imu["publishers"] == 0:
+        findings.append(f"#6: {imu['topic']} has no publisher.")
+
+    system_reply = probes.get("system") or {}
+    values = system_reply.get("values") or {}
+    system = {"os": (values.get("os_release") or {}).get("PRETTY_NAME"),
+              "kernel": probe_output(system_reply).strip() or None, "python": values.get("python"),
+              "helper_version": status.get("version")}
+    redaction = capture.get("redaction") or {}
+    if redaction.get("viewer_replacements"):
+        findings.append(f"The viewer's redaction pass removed {redaction['viewer_replacements']} item(s) the "
+                        "helper's pass had missed: check the helper's version.")
+    return {"kind": "inventory", "sdk": sdk_result, "probes": outcomes, "respeaker": respeaker, "speaker": speaker,
+            "imu": imu, "system": system, "operator": capture.get("operator") or {}, "redaction": redaction,
+            "findings": findings}
+
+
+def outcome_text(entry):
+    if not entry:
+        return "not run"
+    text = "not run" if entry["outcome"] == "not_run" else entry["outcome"]
+    return text + (f" ({entry['reason']})" if entry.get("reason") else "")
+
+
+def print_inventory(result):
+    sdk = result["sdk"]
+    check = sdk["neck_sign_check"].get("result") or "not read"
+    print(f"SDK: reachy-sdk {sdk['version'] or 'unknown'} · {sdk['joint_count'] or 0} joints · "
+          f"{len(sdk['read_errors'])} read error(s) · neck sign check {check}")
+    grippers = ", ".join(f"{n} {level_text(g['present_deg'])}°" for n, g in sdk["grippers"].items()) or "none"
+    force = ", ".join(f"{n} {f['force']}" for n, f in sdk["force_sensors"].items()) or "none"
+    fans = ", ".join(f"{n} {'on' if f['on'] else 'off' if f['on'] is not None else '?'}"
+                     for n, f in sdk["fans"].items()) or "none"
+    lens = "; ".join(f"{eye} zoom {c.get('zoom_level')} ({c.get('zoom')}), focus {c.get('focus')}"
+                     for eye, c in sdk["cameras"].items() if c) or "none"
+    print(f"  grippers: {grippers} · force: {force} · fans: {fans}")
+    print(f"  cameras: {lens}")
+    r = result["respeaker"]
+    if r["found"] is None:
+        where = "audio_devices " + outcome_text(r["devices_probe"]) + ", usb " + outcome_text(r["usb_probe"])
+    else:
+        where = "; ".join(r["capture_cards"] or r["usb"]) or "not in arecord -l or lsusb"
+    if r["channels"] is not None:
+        firmware = f"{r['channels']} channels on {r['record_device']}: " + (r["firmware"] or "not a ReSpeaker firmware")
+    else:
+        firmware = "channels unknown: audio_hw_params " + outcome_text(r["hw_params"])
+    found = "unknown" if r["found"] is None else "found" if r["found"] else "NOT found"
+    print(f"#7 ReSpeaker: {found} ({where}) · {firmware}")
+    s = result["speaker"]
+    if s["listed"]:
+        configured = s["play_device"] or "system default"
+        print(f"#59 speaker: playback devices: {'; '.join(s['playback_cards']) or 'none listed'} · helper "
+              f"--play-device: {configured}" + (f" = {s['play_card']}" if s["play_card"] else ""))
+    else:
+        print("#59 speaker: unknown: audio_devices " + outcome_text(s["devices_probe"]))
+    imu = result["imu"]
+    if not imu["helper_status"]:
+        print("#6 IMU: unknown: imu " + outcome_text({"outcome": imu["outcome"], "reason": imu["reason"]}))
+    elif imu["topic"] is None:
+        print("#6 IMU: no --imu-topic configured · IMU-like topics in ros2 topic list: "
+              f"{', '.join(imu['candidates']) or 'none'} (of {imu['topic_count']})")
+    else:
+        print(f"#6 IMU: {imu['topic']} · {outcome_text({'outcome': imu['outcome'], 'reason': imu['reason']})} · "
+              f"type {imu['type'] or 'unknown'} · publishers {imu['publishers']}" +
+              (f" · sample fields: {', '.join(imu['sample_fields'])}" if imu["sample_fields"] else " · no sample"))
+    sy = result["system"]
+    print(f"system: {sy['os'] or 'OS unknown'} · {sy['kernel'] or 'kernel unknown'} · NUC Python "
+          f"{sy['python'] or 'unknown'} · audio helper v{sy['helper_version'] or '?'}")
+    print("probes: " + " · ".join(f"{n} {outcome_text(e)}" for n, e in result["probes"].items()))
+    op = result["operator"]
+    arm = op.get("arm_resting")
+    print(f"operator: arm resting on the table: {'not answered' if arm is None else 'yes' if arm else 'no'}"
+          + (f" · note: {op['note']}" if op.get("note") else ""))
+
+
 def level_text(value):
     return "silent" if value is None else f"{value:.1f}"
 
@@ -586,6 +795,8 @@ def print_report(manifest, capture, result):
                   f"{level_text(r['loopback_peak_dbfs'])} dBFS | baseline rms {level_text(r['baseline_rms_dbfs'])} "
                   f"peak {level_text(r['baseline_peak_dbfs'])} dBFS | margin {margin}"
                   + (f" | {', '.join(flags)}" if flags else ""))
+    elif result["kind"] == "inventory":
+        print_inventory(result)
     elif result["kind"] == "head":
         for r in result["rows"]:
             where = (f"torso {r['centre_torso_m']} m" if "centre_torso_m" in r else r.get("reason", "not placed"))
@@ -624,6 +835,8 @@ def main():
         result = analyze_zoom(capture, files)
     elif capture["kind"] == "sound":
         result = analyze_sound(capture, files)
+    elif capture["kind"] == "inventory":
+        result = analyze_inventory(capture, files)
     else:
         source, sim_lens, where = bundle_geometry(capture, files)
         # --calibration is a robot profile; a sim bundle uses the sim's own geometry.

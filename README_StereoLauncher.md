@@ -149,6 +149,8 @@ For the tic-tac-toe demo (T3-Analysis: read the board, confirm it, get the next 
 
 For the speaker and microphone check (**Sound check**: the audio helper on the NUC, the SSH tunnel, no motion), see **`docs/SOUND_CHECK.md`**.
 
+For the one-bundle answers to #6, #7 and #59 (**Robot inventory**: SDK reads and the helper's fixed NUC probes; start the helper from a ROS-sourced terminal; reads only, no motion), see **`docs/DATA_CAPTURE.md`** and `docs/SOUND_CHECK.md` §5.
+
 To analyse a bundle yourself, run this from the repo root with the viewer's Python:
 
 ```bash
