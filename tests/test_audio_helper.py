@@ -1,0 +1,311 @@
+"""The NUC audio helper (scripts/reachy_audio_helper.py) and its client (reachy_ai.audio.audio_client), #59.
+
+Offline: the helper runs on 127.0.0.1 with the fake backend; nothing plays and nothing is recorded."""
+
+import ast
+import http.client
+import io
+import json
+import logging
+import socket
+import sys
+import threading
+import time
+import wave
+from pathlib import Path
+
+import pytest
+
+from reachy_ai.audio import audio_client
+from reachy_ai.audio.audio_client import AudioClient, AudioHelperError
+
+ROOT = Path(__file__).resolve().parent.parent
+HELPER_PATH = ROOT / "scripts" / "reachy_audio_helper.py"
+sys.path.insert(0, str(ROOT / "scripts"))
+import reachy_audio_helper as helper  # noqa: E402
+
+
+@pytest.fixture
+def serve():
+    servers = []
+
+    def start(backend):
+        server = helper.make_server(0, backend)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return server, AudioClient(f"http://127.0.0.1:{server.server_address[1]}")
+
+    yield start
+    for server in servers:
+        server.shutdown()
+        server.server_close()
+
+
+def post(server, path, body, headers=None):
+    """A raw POST, so malformed requests can be sent. Returns (status, JSON body)."""
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    data = body if isinstance(body, bytes) else json.dumps(body).encode()
+    connection.request("POST", path, data, {"Content-Type": "application/json", **(headers or {})})
+    response = connection.getresponse()
+    status, payload = response.status, json.loads(response.read())
+    connection.close()
+    return status, payload
+
+
+def wav(data):
+    with wave.open(io.BytesIO(data), "rb") as clip:
+        return clip.getnchannels(), clip.getsampwidth(), clip.getframerate(), clip.readframes(clip.getnframes())
+
+
+# --- the helper's own constraints ------------------------------------------------------------------
+
+def test_helper_is_python_3_8_syntax_and_standard_library_only():
+    tree = ast.parse(HELPER_PATH.read_text(), feature_version=(3, 8))
+    imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import)
+                for alias in node.names}
+    imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+    # sounddevice is optional and imported only inside the Mac backend's methods
+    assert imported - {"sounddevice"} <= set(sys.stdlib_module_names)
+    top_level = {alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names}
+    assert "sounddevice" not in top_level
+    # no subscripted builtins in annotations (3.9+ at runtime)
+    assert not any(isinstance(node, (ast.AnnAssign, ast.arg)) and getattr(node, "annotation", None)
+                   for node in ast.walk(tree))
+
+
+def test_helper_binds_to_127_0_0_1_only(serve):
+    server, _ = serve(helper.FakeBackend())
+    assert server.server_address[0] == "127.0.0.1" and helper.HOST == "127.0.0.1"
+    with pytest.raises(SystemExit):
+        helper.main(["--host", "0.0.0.0"])  # there is no option to listen elsewhere
+
+
+def test_status_reports_backend_devices_tts_limits_and_version(serve):
+    _, client = serve(helper.FakeBackend())
+    status = client.status()
+    assert status["backend"] == "fake" and status["version"] == helper.VERSION and status["tts"] == "fake-tts"
+    assert status["devices"]["capture"] == ["fake array (4 ch)"] and status["busy"] is False
+    assert status["limits"]["seconds"] == 3.0 and status["limits"]["channels"] == 6
+    assert status["channel_layout"] == {"name": "plain", "channels": 4, "roles": ["mic"] * 4}
+    assert status["limits"]["text"] == 200 and status["tone_dbfs"] == -12.0
+
+
+def test_tone_wav_is_mono_16_bit_at_the_rate_and_capped_at_minus_12_dbfs():
+    import array
+    channels, width, rate, raw = wav(helper.tone_wav(1.0, 1000, 16000))
+    samples = array.array("h", raw)
+    if sys.byteorder == "big":
+        samples.byteswap()
+    cap = 32767 * 10 ** (-12 / 20)
+    assert (channels, width, rate, len(samples)) == (1, 2, 16000, 16000)
+    assert 0.98 * cap <= max(abs(s) for s in samples) <= cap + 1
+    assert samples[0] == 0 and abs(samples[-1]) < 0.01 * cap  # faded in and out: no click
+
+
+def test_tone_say_and_record_through_the_client(serve):
+    backend = helper.FakeBackend()
+    _, client = serve(backend)
+    reply = client.tone(1.0, 1000)
+    assert reply["ok"] and reply["dbfs"] == -12.0 and reply["freq"] == 1000
+    assert client.say("Hello, I am Reachy")["tts"] == "fake-tts"
+    channels, width, rate, raw = wav(client.record(2.0, 4))
+    assert (channels, width, rate, len(raw)) == (4, 2, 16000, 2 * 16000 * 4 * 2)
+    client.record(2.0, 4, tone={"seconds": 1.0, "freq": 1000})
+    assert backend.calls == [("play", 1.0), ("say", "Hello, I am Reachy"), ("record", 2.0, 4),
+                             ("record", 2.0, 4), ("play", 1.0)]  # the loopback: recording first, then the tone
+
+
+def test_record_allows_up_to_six_channels_for_the_respeaker_6_channel_firmware(serve):
+    backend = helper.FakeBackend()
+    server, client = serve(backend)
+    assert wav(client.record(1.0, 6))[0] == 6
+    status, payload = post(server, "/record", {"seconds": 1, "channels": 7})
+    assert status == 400 and "channels must be a number from 1 to 6" == payload["detail"]
+    assert backend.calls == [("record", 1.0, 6)]
+
+
+@pytest.mark.parametrize("layout, channels, roles", [
+    ("respeaker6", 6, ["processed", "mic", "mic", "mic", "mic", "reference"]),
+    ("respeaker1", 1, ["processed"]),
+    ("plain", 4, ["mic", "mic", "mic", "mic"]),
+])
+def test_the_channel_layout_is_reported_in_status(layout, channels, roles):
+    server = helper.make_server(0, helper.FakeBackend(), layout)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status = AudioClient(f"http://127.0.0.1:{server.server_address[1]}").status()
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert status["channel_layout"] == {"name": layout, "channels": channels, "roles": roles}
+
+
+def test_an_unknown_channel_layout_is_refused():
+    with pytest.raises(SystemExit):
+        helper.main(["--channel-layout", "respeaker4"])
+    with pytest.raises(ValueError):
+        helper.AudioHelper(helper.FakeBackend(), "respeaker4")
+
+
+@pytest.mark.parametrize("path, body", [
+    ("/tone", {"seconds": 3.5}), ("/tone", {"seconds": 0}), ("/tone", {"seconds": True}),
+    ("/tone", {"seconds": 1, "freq": 50}), ("/tone", {"seconds": 1, "freq": 20000}), ("/tone", {}),
+    ("/say", {"text": "x" * 201}), ("/say", {"text": "   "}), ("/say", {"text": 7}), ("/say", {}),
+    ("/record", {"seconds": 2, "channels": 7}), ("/record", {"seconds": 2, "channels": 2.5}),
+    ("/record", {"seconds": 4, "channels": 1}), ("/record", {"seconds": 2, "channels": 0}),
+    ("/record", {"seconds": 2, "channels": 4, "tone": {"seconds": 2, "freq": 1000}}),
+    ("/record", {"seconds": 2, "channels": 4, "tone": "loud"}),
+])
+def test_out_of_limit_requests_are_refused_with_an_explicit_error(serve, path, body):
+    backend = helper.FakeBackend()
+    server, _ = serve(backend)
+    status, payload = post(server, path, body)
+    assert status == 400 and payload["error"] == "bad_request" and payload["detail"]
+    assert backend.calls == []
+
+
+def test_malformed_and_oversized_requests_are_refused(serve):
+    server, client = serve(helper.FakeBackend())
+    assert post(server, "/tone", b"x" * (helper.MAX_REQUEST_BYTES + 1)) == (
+        413, {"error": "too_large", "detail": "the request is larger than 4096 bytes"})
+    assert post(server, "/tone", b"{nope")[0] == 400
+    assert post(server, "/tone", b"[1, 2]")[0] == 400
+    assert post(server, "/play", {})[0] == 404
+    with pytest.raises(AudioHelperError) as missing:
+        client._json("GET", "/nothing", None, 2)
+    assert missing.value.status == 404 and missing.value.code == "not_found"
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    connection.putrequest("POST", "/tone")
+    connection.endheaders()  # no Content-Length
+    response = connection.getresponse()
+    assert response.status == 400 and json.loads(response.read())["error"] == "bad_request"
+
+
+def test_one_operation_at_a_time_a_second_one_gets_409_busy(serve):
+    backend = helper.FakeBackend(delay=0.6)
+    _, client = serve(backend)
+    first = threading.Thread(target=client.tone, args=(1.0, 1000))
+    first.start()
+    deadline = time.monotonic() + 3
+    while not client.status()["busy"]:
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    with pytest.raises(AudioHelperError) as busy:
+        client.record(1.0, 4)
+    first.join()
+    assert busy.value.code == "busy" and busy.value.status == 409
+    assert [c[0] for c in backend.calls] == ["play"]  # the refused recording never reached the backend
+    assert client.tone(1.0, 1000)["ok"]  # free again afterwards
+
+
+def test_say_without_a_tts_engine_is_unavailable(serve):
+    _, client = serve(helper.FakeBackend(tts=None))
+    with pytest.raises(AudioHelperError) as error:
+        client.say("Hello, I am Reachy")
+    assert error.value.code == "unavailable" and error.value.status == 503
+
+
+def test_every_subprocess_has_a_timeout_and_a_failure_is_explicit():
+    started = time.monotonic()
+    with pytest.raises(helper.HelperTimeout, match="did not finish within 0.3 s"):
+        helper.run_command([sys.executable, "-c", "import time; time.sleep(5)"], 0.3)
+    assert time.monotonic() - started < 3
+    with pytest.raises(helper.HelperError, match=r"exit 3\): broken"):
+        helper.run_command([sys.executable, "-c", "import sys; sys.stderr.write('broken'); sys.exit(3)"], 5)
+    with pytest.raises(helper.HelperError, match="could not start"):
+        helper.run_command(["/nonexistent/aplay"], 5)
+
+
+def test_a_backend_timeout_reaches_the_client_as_504(serve):
+    class Hung(helper.FakeBackend):
+        def play_wav(self, path, seconds):
+            raise helper.HelperTimeout("aplay did not finish within 6 s")
+
+    _, client = serve(Hung())
+    with pytest.raises(AudioHelperError) as error:
+        client.tone(1.0, 1000)
+    assert error.value.code == "timeout" and error.value.status == 504 and "6 s" in str(error.value)
+
+
+def test_an_oversized_recording_is_refused(serve):
+    _, client = serve(helper.FakeBackend(record_bytes=b"RIFF" + b"\0" * helper.MAX_RESPONSE_BYTES))
+    with pytest.raises(AudioHelperError) as error:
+        client.record(1.0, 4)
+    assert error.value.code == "too_large" and error.value.status == 413
+
+
+def test_alsa_commands_use_the_devices_and_send_text_on_stdin(monkeypatch):
+    calls = []
+
+    def fake_run(argv, timeout, stdin_text=None):
+        calls.append((argv, timeout, stdin_text))
+        if "-w" in argv:  # espeak-ng writes its WAV
+            Path(argv[-1]).write_bytes(helper.tone_wav(0.5, 440))
+        return ""
+
+    monkeypatch.setattr(helper, "run_command", fake_run)
+    monkeypatch.setattr(helper.shutil, "which", lambda name: "/usr/bin/espeak-ng" if name == "espeak-ng" else None)
+    backend = helper.AlsaBackend(play_device="hw:2,0", record_device="hw:2,0")
+    assert backend.tts() == "espeak-ng"
+    assert backend.speak("Hello; rm -rf /") == "espeak-ng"
+    synth, play = calls
+    assert synth[0][:2] == ["espeak-ng", "--stdin"] and synth[2] == "Hello; rm -rf /"
+    assert "Hello; rm -rf /" not in " ".join(synth[0]) and synth[1] == helper.TTS_TIMEOUT_S
+    assert play[0][:4] == ["aplay", "-q", "-D", "hw:2,0"] and play[1] == pytest.approx(0.5 + helper.COMMAND_MARGIN_S)
+
+
+def test_piper_is_used_only_with_a_model_then_espeak_ng_then_nothing(monkeypatch):
+    present = {"piper", "espeak-ng"}
+    monkeypatch.setattr(helper.shutil, "which", lambda name: name if name in present else None)
+    assert helper.AlsaBackend(piper_model="voice.onnx").tts() == "piper"
+    assert helper.AlsaBackend().tts() == "espeak-ng"
+    present.clear()
+    assert helper.AlsaBackend(piper_model="voice.onnx").tts() is None
+    with pytest.raises(helper.Unavailable):
+        helper.AlsaBackend().speak("Hello")
+
+
+def test_the_helper_logs_the_text_and_operation_never_audio(serve, caplog):
+    _, client = serve(helper.FakeBackend())
+    with caplog.at_level(logging.DEBUG, logger="reachy_audio_helper"):
+        client.say("Hello, I am Reachy")
+        client.record(1.0, 4, tone={"seconds": 0.5, "freq": 1000})
+    text = caplog.text
+    assert "say: 'Hello, I am Reachy'" in text and "record: 1.00 s on 4 channel(s) with a 0.50 s tone" in text
+    assert "RIFF" not in text and "\\x00" not in text
+
+
+# --- the client ------------------------------------------------------------------------------------
+
+def test_client_url_comes_from_reachy_audio_url(monkeypatch):
+    monkeypatch.delenv("REACHY_AUDIO_URL", raising=False)
+    assert AudioClient().base_url == "http://127.0.0.1:8090"
+    monkeypatch.setenv("REACHY_AUDIO_URL", "http://127.0.0.1:9123/")
+    assert AudioClient().base_url == "http://127.0.0.1:9123"
+
+
+def test_client_reports_an_unreachable_helper_without_the_address():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    with pytest.raises(AudioHelperError) as error:
+        AudioClient(f"http://127.0.0.1:{port}").status()
+    assert error.value.code == "unreachable" and "REACHY_AUDIO_URL" in str(error.value)
+    assert str(port) not in str(error.value) and "127.0.0.1" not in str(error.value)
+
+
+def test_client_times_out_on_a_helper_that_never_answers(monkeypatch):
+    with socket.socket() as silent:
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(1)
+        monkeypatch.setattr(audio_client, "STATUS_TIMEOUT_S", 0.3)
+        started = time.monotonic()
+        with pytest.raises(AudioHelperError) as error:
+            AudioClient(f"http://127.0.0.1:{silent.getsockname()[1]}").status()
+    assert error.value.code == "timeout" and time.monotonic() - started < 3
+
+
+def test_client_refuses_a_reply_that_is_not_a_wav(serve):
+    _, client = serve(helper.FakeBackend(record_bytes=b"not a wav at all"))
+    with pytest.raises(AudioHelperError):
+        client.record(1.0, 4)  # the helper itself rejects it: not a readable WAV

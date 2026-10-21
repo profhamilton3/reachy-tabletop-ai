@@ -3,6 +3,7 @@
     python scripts/analyze_capture_bundle.py reachy-capture-zoom_fov.zip
     python scripts/analyze_capture_bundle.py reachy-capture-depth_ruler.zip [--calibration PATH] [--json OUT.json]
     python scripts/analyze_capture_bundle.py reachy-capture-head_sweep.zip [--calibration PATH]
+    python scripts/analyze_capture_bundle.py reachy-capture-sound_check.zip
 
 The bundle comes from the stereo viewer's "Data capture" dropdown (or the CLI fallbacks) and is checked
 against its SHA-256 manifest first. Which analyser runs follows the procedure kind:
@@ -19,12 +20,20 @@ against its SHA-256 manifest first. Which analyser runs follows the procedure ki
          with the profile and carried into the torso frame with the RECORDED neck angles
          (stereo_depth.camera_to_torso, the URDF head transform). The spread of that centre across head
          poses is the consistency of the head/neck calibration: the board does not move.
+  sound  (Sound check, #59) per channel: RMS and peak in dBFS for the loopback recording (the tone playing)
+         and the room baseline, the loopback-minus-baseline margin, the channel count found against the
+         helper's channel layout (4 plain; the ReSpeaker's respeaker6: ch0 processed, ch1-4 the microphones,
+         ch5 the playback reference, which should carry the tone; respeaker1: one processed channel), and a
+         dead or clipped channel flag; plus the operator's heard / not heard answers.
 """
 
 import argparse
+import io
 import json
+import math
 import statistics
 import sys
+import wave
 from pathlib import Path
 
 import cv2
@@ -59,6 +68,18 @@ ZOOM_MATCH_TOL = 0.03
 HEAD_SPREAD_LIMIT_MM = 20.0
 #: Head sweep: neck read-backs closer than this (deg) on every joint count as the same pose.
 SAME_POSE_DEG = 0.5
+#: Sound check: the channel count the loopback should show without a channel layout ("plain").
+SOUND_CHANNELS_EXPECTED = 4
+#: Why a processed channel's tone margin is reported but not judged.
+PROCESSED_NOTE = ("The processed channel's levels are reported, but its tone margin is not judged: the firmware's "
+                  "processing (echo cancellation included) can remove Reachy's own tone.")
+#: A channel whose RMS stays below this in every recording is dead (an unconnected input reads ~ -inf).
+DEAD_DBFS = -80.0
+#: Samples within this of full scale count as clipped; a channel with more than CLIP_FRACTION of them is clipped.
+CLIP_LEVEL = 32766
+CLIP_FRACTION = 0.001
+#: The tone must lift a channel's RMS at least this far above the room baseline to count as heard.
+MIN_MARGIN_DB = 6.0
 
 
 def load(source):
@@ -401,6 +422,137 @@ def analyze_head(capture, files, depth):
     return result
 
 
+def wav_samples(data):
+    """(samples as a float array of shape (frames, channels), rate) of 16-bit PCM WAV bytes."""
+    with wave.open(io.BytesIO(data), "rb") as clip:
+        if clip.getsampwidth() != 2:
+            raise ValueError(f"{clip.getsampwidth() * 8}-bit samples; the analyser reads 16-bit PCM")
+        channels, rate, raw = clip.getnchannels(), clip.getframerate(), clip.readframes(clip.getnframes())
+    return np.frombuffer(raw, "<i2").astype(np.float64).reshape(-1, channels), rate
+
+
+def dbfs(value):
+    """Level in dBFS of a 16-bit amplitude, or None for digital silence."""
+    return round(20 * math.log10(value / 32768.0), 1) if value > 0 else None
+
+
+def channel_levels(samples):
+    """Per channel: RMS and peak in dBFS and the fraction of samples at full scale."""
+    if not len(samples):
+        return [{"rms_dbfs": None, "peak_dbfs": None, "clipped_fraction": 0.0} for _ in range(samples.shape[1])]
+    rms = np.sqrt((samples ** 2).mean(axis=0))
+    peak = np.abs(samples).max(axis=0)
+    clipped = (np.abs(samples) >= CLIP_LEVEL).mean(axis=0)
+    return [{"rms_dbfs": dbfs(r), "peak_dbfs": dbfs(p), "clipped_fraction": round(float(c), 5)}
+            for r, p, c in zip(rms, peak, clipped)]
+
+
+def last_take(step, files):
+    """(clip name, bytes) of a recording step's last take, or (None, None)."""
+    clips = step.get("clips") or []
+    return (clips[-1], files[clips[-1]]) if clips else (None, None)
+
+
+def analyze_sound(capture, files):
+    """Per-channel levels of the loopback and baseline recordings, their margin, and the operator's answers."""
+    findings, clips, answers = [], {}, {}
+    backend = capture.get("backend")
+    if not capture.get("helper_status"):
+        findings.append("The helper status was not checked: the backend and devices are unknown.")
+    if backend == "fake":
+        findings.append("Fake backend: the recordings are synthetic, not a real speaker or microphone.")
+    for step in capture["steps"]:
+        sound = step.get("sound")
+        results = step.get("sound_results") or []
+        if sound in ("tone", "say"):
+            outcome = results[-1]["outcome"] if results else None
+            answer = step.get("answer")
+            answers[step["id"]] = {"label": step["label"], "outcome": outcome,
+                                   "heard": None if answer is None else answer["heard"],
+                                   "volume_note": (answer or {}).get("volume_note", "")}
+            if outcome == "skipped":
+                findings.append(f"{step['label']}: skipped ({results[-1].get('note')}).")
+            elif outcome not in ("played", "spoken"):
+                findings.append(f"{step['label']}: not played"
+                                + (f" ({results[-1].get('error')})." if outcome == "failed" else "."))
+            elif answer is None:
+                findings.append(f"{step['label']}: played, but the operator did not answer heard / not heard.")
+            elif not answer["heard"]:
+                findings.append(f"{step['label']}: NOT HEARD by the operator: check the speaker, its cable and "
+                                "the system volume (docs/SOUND_CHECK.md).")
+        elif sound in ("loopback", "baseline"):
+            name, data = last_take(step, files)
+            if data is None:
+                findings.append(f"{step['label']}: no recording.")
+                continue
+            try:
+                samples, rate = wav_samples(data)
+            except (wave.Error, EOFError, ValueError) as exc:
+                findings.append(f"{step['label']}: {name} is not readable ({exc}).")
+                continue
+            clips[sound] = {"clip": name, "takes": len(step.get("clips") or []), "rate": rate,
+                            "seconds": round(len(samples) / rate, 3), "channels": samples.shape[1],
+                            "levels": channel_levels(samples)}
+    found = max((c["channels"] for c in clips.values()), default=0)
+    layout = capture.get("channel_layout") or (capture.get("helper_status") or {}).get("channel_layout") or {}
+    layout_name = layout.get("name") or "plain"
+    plain = layout_name == "plain"
+    roles = [] if plain else list(layout.get("roles") or [])
+    expected = SOUND_CHANNELS_EXPECTED if plain else int(layout.get("channels") or len(roles))
+    rows, notes = [], []
+    for index in range(found):
+        role = roles[index] if index < len(roles) else "mic"
+        # The ReSpeaker firmware numbers its channels from 0; a plain layout counts from 1, as before.
+        row = {"channel": index + (1 if plain else 0), "role": role}
+        name = f"Channel {row['channel']}" + ("" if plain else f" ({role})")
+        for sound in ("loopback", "baseline"):
+            levels = clips.get(sound, {}).get("levels") or []
+            level = levels[index] if index < len(levels) else {}
+            row[f"{sound}_rms_dbfs"], row[f"{sound}_peak_dbfs"] = level.get("rms_dbfs"), level.get("peak_dbfs")
+            row[f"{sound}_clipped_fraction"] = level.get("clipped_fraction")
+        loud, quiet = row["loopback_rms_dbfs"], row["baseline_rms_dbfs"]
+        row["margin_db"] = round(loud - quiet, 1) if loud is not None and quiet is not None else None
+        heard = [row[f"{s}_rms_dbfs"] for s in ("loopback", "baseline") if s in clips]
+        both = {"loopback", "baseline"} <= set(clips)
+        tone_margin = loud is not None and (quiet is None or loud - quiet >= MIN_MARGIN_DB)
+        # The reference is silent in the baseline by design: it is judged only on carrying the tone.
+        row["dead"] = None if role == "reference" else all(v is None or v < DEAD_DBFS for v in heard)
+        row["clipped"] = any((row[f"{s}_clipped_fraction"] or 0) > CLIP_FRACTION for s in ("loopback", "baseline"))
+        row["hears_tone"] = tone_margin if role == "mic" and both and not row["dead"] else None
+        row["carries_tone"] = tone_margin if role == "reference" and both else None
+        rows.append(row)
+        if row["dead"]:
+            findings.append(f"{name} is dead: below {DEAD_DBFS:.0f} dBFS in every recording.")
+        if row["clipped"]:
+            findings.append(f"{name} clips (more than {CLIP_FRACTION:.1%} of samples at full "
+                            "scale): lower the speaker volume or the capture gain.")
+        if row["hears_tone"] is False:
+            findings.append(f"{name} barely hears the tone: the loopback is "
+                            f"{row['margin_db']:+.1f} dB over the baseline (needs {MIN_MARGIN_DB:+.0f} dB).")
+        if row["carries_tone"] is False:
+            findings.append(f"{name} does not carry the tone: the tone did not play through the ReSpeaker's own "
+                            "output (is the speaker on another sound card?), so the reference cannot serve echo "
+                            "cancellation.")
+        if role == "processed" and PROCESSED_NOTE not in notes:
+            notes.append(PROCESSED_NOTE)
+    if clips and found != expected:
+        findings.append(f"{found} channel(s) found, not {SOUND_CHANNELS_EXPECTED}: the capture device is not the "
+                        "4-channel ReSpeaker input (see docs/SOUND_CHECK.md)." if plain else
+                        f"{found} channel(s) found, but the {layout_name} layout defines {expected}: the firmware "
+                        "or --record-device does not match --channel-layout (see docs/SOUND_CHECK.md).")
+    if len({c["channels"] for c in clips.values()}) > 1:
+        findings.append("The loopback and the baseline have different channel counts.")
+    return {"kind": "sound", "backend": backend, "tts": (capture.get("helper_status") or {}).get("tts"),
+            "channel_layout": layout_name, "channels_expected": expected, "channels_found": found,
+            "min_margin_db": MIN_MARGIN_DB,
+            "recordings": {k: {key: v for key, v in c.items() if key != "levels"} for k, c in clips.items()},
+            "rows": rows, "answers": answers, "notes": notes, "findings": findings}
+
+
+def level_text(value):
+    return "silent" if value is None else f"{value:.1f}"
+
+
 def print_report(manifest, capture, result):
     print(f"{capture['procedure']['name']} v{capture['procedure']['version']} · calibration {capture['calibration_id']}"
           f" · {len(manifest['files'])} files, SHA-256 verified")
@@ -413,6 +565,27 @@ def print_report(manifest, capture, result):
             print(f"{r['step']:>10} {r['eye']:>5}: zoom {r['level']}  cell pitch "
                   f"{'not found' if r['pitch_px'] is None else str(r['pitch_px']) + ' px'}  "
                   f"x{r['pitch_vs_widest']} vs widest  ({r['found']}/{r['captures']} pairs)")
+    elif result["kind"] == "sound":
+        print(f"backend: {result['backend'] or 'unknown'} · TTS: {result['tts'] or 'none'} · channel layout: "
+              f"{result['channel_layout']}")
+        for a in result["answers"].values():
+            said = "no answer" if a["heard"] is None else "heard it" if a["heard"] else "NOT HEARD"
+            print(f"{a['label']}: {a['outcome'] or 'not run'}, {said}"
+                  + (f" ({a['volume_note']})" if a["volume_note"] else ""))
+        for sound, c in result["recordings"].items():
+            print(f"{sound}: {c['clip']} ({c['takes']} take(s); {c['channels']} ch, {c['rate']} Hz, {c['seconds']} s)")
+        print(f"channels found: {result['channels_found']} of {result['channels_expected']}")
+        for r in result["rows"]:
+            flags = [f for f, on in (("DEAD", r["dead"]), ("CLIPPED", r["clipped"]),
+                                     ("tone not heard", r["hears_tone"] is False),
+                                     ("carries the tone", r["carries_tone"]),
+                                     ("NO TONE on the reference", r["carries_tone"] is False)) if on]
+            margin = "n/a" if r["margin_db"] is None else f"{r['margin_db']:+.1f} dB"
+            role = "" if result["channel_layout"] == "plain" else f" ({r['role']})"
+            print(f"ch{r['channel']}{role}: loopback rms {level_text(r['loopback_rms_dbfs'])} peak "
+                  f"{level_text(r['loopback_peak_dbfs'])} dBFS | baseline rms {level_text(r['baseline_rms_dbfs'])} "
+                  f"peak {level_text(r['baseline_peak_dbfs'])} dBFS | margin {margin}"
+                  + (f" | {', '.join(flags)}" if flags else ""))
     elif result["kind"] == "head":
         for r in result["rows"]:
             where = (f"torso {r['centre_torso_m']} m" if "centre_torso_m" in r else r.get("reason", "not placed"))
@@ -431,6 +604,8 @@ def print_report(manifest, capture, result):
                 f"= {r['implied_disparity_px']} px of disparity")
             print(f"{r['ruler_m']:.1f} m: {measured} | 1 px = {r['sensitivity_mm_per_px']} mm, 15 mm needs "
                   f"{r['target_needs_disparity_px']} px | {r['verdict']}")
+    for info in result.get("notes", []):
+        print("info:", info)
     for finding in result.get("findings", []):
         print("NOTE:", finding)
 
@@ -447,6 +622,8 @@ def main():
     manifest, files, capture = load(args.bundle)
     if capture["kind"] == "zoom":
         result = analyze_zoom(capture, files)
+    elif capture["kind"] == "sound":
+        result = analyze_sound(capture, files)
     else:
         source, sim_lens, where = bundle_geometry(capture, files)
         # --calibration is a robot profile; a sim bundle uses the sim's own geometry.

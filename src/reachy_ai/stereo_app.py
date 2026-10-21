@@ -5,7 +5,7 @@ motion.primitives behind the head safety gate (owner decision 2026-10-20: "Neck 
 for vision data capture. Capture procedures may articulate the head through the neck for viewing and
 perception. Arm motion stays forbidden in capture procedures."). They are dry-run unless
 REACHY_ENABLE_MOTION=true and the viewer runs with --allow-head-motion, and each move needs a fresh
-operator confirm.
+operator confirm. The Sound check's routes call only the audio helper (REACHY_AUDIO_URL, #59): no motion.
 """
 
 import asyncio
@@ -20,6 +20,7 @@ import numpy as np
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
+from reachy_ai.audio.audio_client import AudioClient
 from reachy_ai.camera_zoom import EYES, calibration_id, normalize_zoom, zoom_status
 from reachy_ai.config import HEAD_PRESETS
 from reachy_ai.games.t3_viewer import install_routes as install_t3_routes
@@ -36,7 +37,9 @@ from reachy_ai.perception.procedures import (
     CaptureRun,
     HeadNotConfirmed,
     HeadRefused,
+    RecordingNotConsented,
     RunLimit,
+    SoundFailed,
     ZoomNotConfirmed,
     encode_jpeg,
     get_procedure,
@@ -73,8 +76,9 @@ class _ServiceHead:
 
 
 def create_app(settings: StereoSettings, service: StereoService | None = None, detector_model=None, detector=None,
-               sim_lens="distorted", stereo_calibration=None, depth_analyzer=None):
+               sim_lens="distorted", stereo_calibration=None, depth_analyzer=None, audio_client=None):
     camera = service or StereoService(settings)
+    audio = audio_client or AudioClient()
     analyzer = detector or PairDetector(detector_model or DEFAULT_MODEL)
     depth = depth_analyzer or PairDepth(settings.source, sim_lens, stereo_calibration)
 
@@ -287,9 +291,40 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
                 raise HTTPException(500, str(exc)) from exc
             return run.state()
 
+    @app.post("/api/stereo/capture-run/steps/{step_id}/sound")
+    def run_sound(step_id: str, confirm: bool = Body(False, embed=True)):
+        """Sound check: this step's audio-helper operation (status, tone, phrase or a recording). A recording is
+        refused without the operator's tick that the speaker agreed. The WAV stays in the run's memory."""
+        run = current_run()
+        try:
+            with run_lock:
+                record = run.apply_sound(step_id, audio, confirm)
+        except (RecordingNotConsented, RunLimit) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except SoundFailed as exc:
+            raise HTTPException(409 if exc.code == "busy" else 503, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, "Unknown step") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"record": record, "state": run.state()}
+
+    @app.post("/api/stereo/capture-run/steps/{step_id}/answer")
+    def run_answer(step_id: str, heard: bool = Body(embed=True), note: str = Body("", embed=True)):
+        """Sound check: the operator's 'heard it' / 'not heard' and volume note for a tone or phrase step."""
+        run = current_run()
+        try:
+            with run_lock:
+                run.record_answer(step_id, heard, note)
+        except KeyError as exc:
+            raise HTTPException(404, "Unknown step") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return run.state()
+
     @app.get("/api/stereo/capture-run/bundle.zip")
     def run_bundle():
-        """Every pair of the run, step labels, zoom per step and a SHA-256 manifest; built in memory."""
+        """Every pair (or audio clip) of the run, step labels, zoom per step and a SHA-256 manifest; in memory."""
         run = current_run()
         with camera.lock:
             versions = {"viewer": viewer_version(), "sdk": camera.diagnostics.get("sdk_version"),

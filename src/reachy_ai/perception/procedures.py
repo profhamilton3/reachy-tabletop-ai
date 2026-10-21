@@ -4,11 +4,13 @@ Camera and neck only, never arms. A procedure is a list of numbered operator ste
 captures a stereo pair per step. A procedure can ask for two robot commands, each only after an
 explicit operator confirm: a camera zoom level (`CaptureRun.apply_zoom`, through
 `camera_zoom.ZoomSetter`) and a named head pose (`CaptureRun.apply_head`, through
-`motion.primitives` and the head safety gate). Owner decision 2026-10-20: "Neck motion is required
+`motion.primitives` and the head safety gate). The Sound check (#59) moves nothing at all: its steps call
+the audio helper (`CaptureRun.apply_sound`, through `audio.audio_client`), and its recordings need an
+operator tick that the speaker agreed. Owner decision 2026-10-20: "Neck motion is required
 for vision data capture. Capture procedures may articulate the head through the neck for viewing and
 perception. Arm motion stays forbidden in capture procedures." No arm or gripper command exists
-here. Nothing is written to disk by this module: the run lives in memory and `CaptureRun.build_zip`
-returns the bundle bytes.
+here. Nothing is written to disk by this module: the run lives in memory (pairs and audio clips alike) and
+`CaptureRun.build_zip` returns the bundle bytes.
 
 The viewer (stereo_app.py) and the CLI fallbacks (scripts/zoom_fov_check.py,
 scripts/ruler_depth_test.py) both drive these same objects; the offline analysers
@@ -16,10 +18,13 @@ scripts/ruler_depth_test.py) both drive these same objects; the offline analyser
 """
 from __future__ import annotations
 
+import io
 import logging
+import wave
 from dataclasses import dataclass, field
 from typing import Any
 
+from reachy_ai.audio.audio_client import AudioHelperError
 from reachy_ai.camera_zoom import SCENE_ZOOM, ZOOM_ORDER, zoom_read_warning
 from reachy_ai.config import HEAD_PRESETS, NECK_JOINTS
 from reachy_ai.pair_bundle import build_bundle, json_bytes
@@ -34,6 +39,14 @@ TOLERANCE_M = 0.015
 #: dZ = Z^2 / (f * B) * dd. Approximate (f ~ 400 px, B = 78 mm); the analyser can override them.
 SENSITIVITY_FOCAL_PX = 400.0
 SENSITIVITY_BASELINE_M = 0.078
+#: Sound check (#59): the tone, the phrase and the recordings.
+SOUND_PHRASE = "Hello, I am Reachy"
+SOUND_TONE = {"seconds": 1.0, "freq": 1000.0}
+SOUND_RECORD_S = 2.0
+SOUND_CHANNELS = 4  # without a channel layout from the helper ("plain")
+MAX_TAKES_PER_STEP = 3
+MAX_NOTE_CHARS = 200
+RECORDING_SOUNDS = ("loopback", "baseline")
 
 
 class ZoomNotConfirmed(PermissionError):
@@ -52,6 +65,18 @@ class RunLimit(ValueError):
     pass
 
 
+class RecordingNotConsented(PermissionError):
+    """A recording was requested without the operator's tick that the speaker agreed."""
+
+
+class SoundFailed(RuntimeError):
+    """The audio helper refused or failed an operation; `code` is the helper's (busy, timeout, ...)."""
+
+    def __init__(self, message: str, code: str = "failed"):
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass(frozen=True)
 class Step:
     id: str
@@ -62,11 +87,12 @@ class Step:
     head: str | None = None          # head preset this step points at (config.HEAD_PRESETS; needs confirm)
     capture: bool = True             # False for a head-only step (e.g. the end of a run)
     zoom_role: str | None = None     # "start" (read-back only), "check" (read-back vs the profile) or "restore"
+    sound: str | None = None         # "status", "tone", "say", "loopback" or "baseline" (the audio helper)
 
     def describe(self) -> dict:
         return {"id": self.id, "label": self.label, "zoom": self.zoom, "distance_m": self.distance_m,
                 "head": self.head, "head_deg": head_deg(self.head), "capture": self.capture,
-                "zoom_role": self.zoom_role, "instruction": self.instruction}
+                "zoom_role": self.zoom_role, "sound": self.sound, "instruction": self.instruction}
 
 
 @dataclass(frozen=True)
@@ -74,7 +100,7 @@ class Procedure:
     id: str
     name: str
     version: str
-    kind: str                        # "zoom" | "depth" | "head": which analyser reads it
+    kind: str                        # "zoom" | "depth" | "head" | "sound": which analyser reads it
     summary: str
     setup: tuple[str, ...]
     steps: tuple[Step, ...]
@@ -212,8 +238,41 @@ def board_view_approach_procedure() -> Procedure:
                end_step()))
 
 
+def sound_check_procedure() -> Procedure:
+    tone = f"{SOUND_TONE['seconds']:g} s at {SOUND_TONE['freq']:g} Hz"
+    record = (f"{SOUND_RECORD_S:g} s on every channel of the helper's layout: 4 plain, 6 for the ReSpeaker's "
+              f"6-channel firmware, 1 for its 1-channel firmware")
+    consent = "tick 'I confirm: the speaker agreed to this recording'"
+    return Procedure(
+        id="sound_check", name="Sound check", version="1", kind="sound",
+        summary="Reachy's speaker and microphones through the audio helper: a tone and a phrase the operator "
+                "confirms by ear, a loopback recording while the tone plays, and a room baseline. The analyser "
+                "reports the level per channel.",
+        setup=("No motion of any kind: no head, arm or zoom command is part of this check.",
+               "Start the audio helper next to the speaker (the NUC, or the Mac for sim work) and, on the robot, "
+               "the SSH tunnel (docs/SOUND_CHECK.md). Set the system volume low first; the helper never changes it.",
+               "Recording needs the speaker's agreement: tick the consent box before each recording. Audio is held "
+               "in memory and is kept only in the downloaded bundle."),
+        steps=(Step(id="sound_status", label="Helper status", sound="status", capture=False,
+                    instruction="Press 'Check helper': it shows whether the helper answers, its backend (alsa, "
+                                "mac or fake), the TTS engine and the sound devices it found."),
+               Step(id="sound_tone", label="Speaker: tone", sound="tone", capture=False,
+                    instruction=f"Press 'Play tone' ({tone}, capped at -12 dBFS). Then answer 'Heard it' or "
+                                f"'Not heard', with a volume note (e.g. quiet, comfortable, loud)."),
+               Step(id="sound_phrase", label="Speaker: phrase", sound="say", capture=False,
+                    instruction=f"Press 'Say phrase' (Reachy says \"{SOUND_PHRASE}\"). Then answer 'Heard it' or "
+                                f"'Not heard', with a volume note. Without a TTS engine the step is skipped with a "
+                                f"note."),
+               Step(id="sound_loopback", label="Microphones: loopback", sound="loopback", capture=False,
+                    instruction=f"Everyone quiet. {consent.capitalize()} and press 'Record loopback' ({record}; "
+                                f"the recording starts, then the tone plays in it)."),
+               Step(id="sound_baseline", label="Microphones: room baseline", sound="baseline", capture=False,
+                    instruction=f"Everyone quiet, nothing playing. {consent.capitalize()} and press "
+                                f"'Record baseline' ({record} of silence: the noise floor).")))
+
+
 PROCEDURES = {p.id: p for p in (zoom_fov_procedure(), depth_ruler_procedure(), board_view_approach_procedure(),
-                                head_sweep_procedure())}
+                                head_sweep_procedure(), sound_check_procedure())}
 
 
 def get_procedure(procedure_id: str) -> Procedure:
@@ -239,6 +298,10 @@ class CaptureRun:
     zoom_commands: dict[str, list[dict]] = field(default_factory=dict)
     head_commands: dict[str, list[dict]] = field(default_factory=dict)
     head_events: list[dict] = field(default_factory=list)  # Stop and Release, not tied to a step
+    sound_results: dict[str, list[dict]] = field(default_factory=dict)  # every audio-helper attempt per step
+    answers: dict[str, dict] = field(default_factory=dict)  # the operator's heard / not heard per step
+    clips: dict[str, list[bytes]] = field(default_factory=dict)  # WAV takes per step, in memory only
+    helper_status: dict | None = None  # the helper's last /status
     commands_attempted: bool = False  # a zoom command (live or dry-run) has been asked for
     _start: str | None = None  # the starting zoom: the first complete read, fixed once a command was attempted
 
@@ -340,6 +403,89 @@ class CaptureRun:
             raise HeadRefused("Head move refused: " + "; ".join(record.get("gate", {}).get("failures", [])))
         return record
 
+    def apply_sound(self, step_id: str, client, confirmed: bool = False) -> dict:
+        """Run this step's audio-helper operation through `client` (an `AudioClient`).
+
+        A recording step is refused with RecordingNotConsented unless `confirmed` (the operator's tick that
+        the speaker agreed). A helper failure raises SoundFailed; a phrase without a TTS engine is recorded
+        as skipped. Every attempt is recorded in the run (and so the bundle); WAVs stay in memory."""
+        step = self.procedure.step(step_id)
+        if step.sound is None:
+            raise ValueError(f"step {step_id!r} has no sound operation")
+        attempts = self.sound_results.setdefault(step_id, [])
+        if step.sound in RECORDING_SOUNDS:
+            if not confirmed:
+                attempts.append({"op": step.sound, "outcome": "refused", "consent": False})
+                raise RecordingNotConsented("A recording needs the operator's tick that the speaker agreed.")
+            if len(self.clips.get(step_id, [])) >= MAX_TAKES_PER_STEP:
+                raise RunLimit(f"At most {MAX_TAKES_PER_STEP} recordings per step; redo the run to start over.")
+        try:
+            record = self._sound(step, client)
+        except AudioHelperError as exc:
+            if step.sound == "say" and exc.code == "unavailable":
+                record = {"op": "say", "outcome": "skipped", "text": SOUND_PHRASE,
+                          "note": "No TTS engine on the helper (piper or espeak-ng): the phrase step is skipped."}
+                attempts.append(record)
+                return record
+            attempts.append({"op": step.sound, "outcome": "failed", "code": exc.code, "error": str(exc)})
+            raise SoundFailed(str(exc), exc.code) from exc
+        attempts.append(record)
+        return record
+
+    def _sound(self, step: Step, client) -> dict:
+        if step.sound == "status":
+            status = client.status()
+            self.helper_status = status
+            return {"op": "status", "outcome": "ok", "backend": status.get("backend"), "tts": status.get("tts"),
+                    "version": status.get("version"), "rate": status.get("rate"), "devices": status.get("devices")}
+        if step.sound == "tone":
+            reply = client.tone(SOUND_TONE["seconds"], SOUND_TONE["freq"])
+            return {"op": "tone", "outcome": "played", **{k: reply.get(k) for k in ("seconds", "freq", "dbfs",
+                                                                                    "backend", "elapsed_s")}}
+        if step.sound == "say":
+            reply = client.say(SOUND_PHRASE)
+            return {"op": "say", "outcome": "spoken", "text": SOUND_PHRASE, "tts": reply.get("tts"),
+                    "backend": reply.get("backend"), "elapsed_s": reply.get("elapsed_s")}
+        tone = SOUND_TONE if step.sound == "loopback" else None
+        if self.helper_status is None:
+            self.helper_status = client.status()  # the channel layout decides how many channels to record
+        channels = self.layout_channels()
+        data = client.record(SOUND_RECORD_S, channels, tone=tone)
+        try:
+            with wave.open(io.BytesIO(data), "rb") as clip:
+                info = {"channels": clip.getnchannels(), "rate": clip.getframerate(),
+                        "seconds": round(clip.getnframes() / clip.getframerate(), 3),
+                        "sample_bits": clip.getsampwidth() * 8}
+        except (wave.Error, EOFError, ZeroDivisionError) as exc:
+            raise AudioHelperError(f"the recording is not a readable WAV ({exc})") from exc
+        takes = self.clips.setdefault(step.id, [])
+        takes.append(data)
+        return {"op": step.sound, "outcome": "recorded", "consent": True, "take": len(takes),
+                "requested_seconds": SOUND_RECORD_S, "requested_channels": channels, "tone": tone, **info}
+
+    def channel_layout(self) -> dict:
+        """The helper's channel layout ({name, channels, roles}); "plain" with 4 channels if it reports none."""
+        layout = (self.helper_status or {}).get("channel_layout")
+        return layout or {"name": "plain", "channels": SOUND_CHANNELS, "roles": ["mic"] * SOUND_CHANNELS}
+
+    def layout_channels(self) -> int:
+        return int(self.channel_layout()["channels"])
+
+    def record_answer(self, step_id: str, heard: bool, note: str = "") -> dict:
+        """The operator's answer for a tone or phrase step: heard or not heard, and a volume note."""
+        step = self.procedure.step(step_id)
+        if step.sound not in ("tone", "say"):
+            raise ValueError(f"step {step_id!r} takes no heard / not heard answer")
+        outcomes = {r.get("outcome") for r in self.sound_results.get(step_id, [])}
+        if not outcomes & {"played", "spoken"}:
+            raise ValueError("Play this step's sound first; there is nothing to answer yet.")
+        answer = {"heard": bool(heard), "volume_note": str(note or "").strip()[:MAX_NOTE_CHARS]}
+        self.answers[step_id] = answer
+        return answer
+
+    def sound_count(self) -> int:
+        return sum(len(v) for v in self.sound_results.values())
+
     def record_head_event(self, record: dict) -> None:
         """A Stop or Release, kept in order with the run."""
         self.head_events.append(record)
@@ -361,9 +507,11 @@ class CaptureRun:
         return {"procedure": {k: v for k, v in self.procedure.describe().items() if k != "steps"},
                 "steps": [{**s.describe(), "captured": len(self.captures.get(s.id, [])),
                            "zoom_commands": self.zoom_commands.get(s.id, []),
-                           "head_commands": self.head_commands.get(s.id, [])}
+                           "head_commands": self.head_commands.get(s.id, []),
+                           "sound_results": self.sound_results.get(s.id, []), "answer": self.answers.get(s.id)}
                           for s in self.procedure.steps],
-                "head_events": self.head_events, "pairs": self.pair_count(), "max_pairs": MAX_PAIRS_PER_RUN}
+                "head_events": self.head_events, "pairs": self.pair_count(), "max_pairs": MAX_PAIRS_PER_RUN,
+                "can_download": bool(self.pair_count() or self.sound_count())}
 
     def calibration_id(self) -> Any:
         for taken in self.captures.values():
@@ -394,16 +542,31 @@ class CaptureRun:
                                 "observation_skew_ms": record["meta"].get("observation_skew_ms"),
                                 "neck_deg": neck_readback(record["meta"]),
                                 "head_command": record["meta"].get("head_command")})
-            steps.append({"index": index, "id": step.id, "label": step.label, "instruction": step.instruction,
-                          "distance_m": step.distance_m, "requested_zoom": step.zoom,
-                          "requested_head": step.head, "requested_head_deg": head_deg(step.head),
-                          "zoom_role": step.zoom_role,
-                          "zoom_commands": self.zoom_commands.get(step.id, []),
-                          "head_commands": self.head_commands.get(step.id, []), "captures": entries})
+            row = {"index": index, "id": step.id, "label": step.label, "instruction": step.instruction,
+                   "distance_m": step.distance_m, "requested_zoom": step.zoom,
+                   "requested_head": step.head, "requested_head_deg": head_deg(step.head),
+                   "zoom_role": step.zoom_role,
+                   "zoom_commands": self.zoom_commands.get(step.id, []),
+                   "head_commands": self.head_commands.get(step.id, []), "captures": entries}
+            if step.sound:
+                clips = []
+                for n, data in enumerate(self.clips.get(step.id, []), 1):
+                    clips.append(f"steps/{index:02d}_{step.id}/take{n}.wav")
+                    files[clips[-1]] = data
+                row.update(sound=step.sound, sound_results=self.sound_results.get(step.id, []),
+                           answer=self.answers.get(step.id), clips=clips)
+            steps.append(row)
         summary = {"schema_version": "2", "procedure": self.identity(), "kind": self.procedure.kind,
                    "calibration_id": self.calibration_id(), "steps": steps, "head_events": self.head_events}
         if self.procedure.kind == "zoom":
             summary["start_zoom"] = self.start_zoom()  # None: not read, unreadable or the eyes differed
+        if self.procedure.kind == "sound":
+            summary.update(helper_status=self.helper_status, backend=(self.helper_status or {}).get("backend"),
+                           answers=self.answers, phrase=SOUND_PHRASE, tone=SOUND_TONE,
+                           record={"seconds": SOUND_RECORD_S, "channels": self.layout_channels()},
+                           channel_layout=self.channel_layout(),
+                           consent="The operator ticked 'the speaker agreed to this recording' before each "
+                                   "recording.")
         profile = self.analysis_profile()
         if profile.get("source"):
             summary["source"] = profile["source"]  # which camera geometry the analysers must use
@@ -415,7 +578,7 @@ class CaptureRun:
         return {"id": self.procedure.id, "name": self.procedure.name, "version": self.procedure.version}
 
     def build_zip(self, versions: dict) -> bytes:
-        if not self.pair_count():
+        if not self.pair_count() and not self.sound_count():
             raise RunLimit("Nothing captured yet.")
         return build_bundle(self.bundle_files(), versions, self.calibration_id(), procedure=self.identity())
 

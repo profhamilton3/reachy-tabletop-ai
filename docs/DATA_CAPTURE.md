@@ -117,6 +117,8 @@ Capture at each pose. Stop and report if the neck labours, sounds wrong, or read
 3. Run the last step (head to neutral), then press **Download capture bundle**. Choosing "None" or
    **Discard run** forgets the run.
 
+**Sound check (v1)** (speaker and microphones, no motion; it needs the audio helper and a consent tick per recording): see `docs/SOUND_CHECK.md`.
+
 ### Zoom field-of-view check (v4)
 
 Run this last in a robot session. Arm at rest on the table, taped 3x3 board clear.

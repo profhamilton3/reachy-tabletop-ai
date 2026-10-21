@@ -147,6 +147,8 @@ The step-by-step guide is **`docs/DATA_CAPTURE.md`**. The short version:
 
 For the tic-tac-toe demo (T3-Analysis: read the board, confirm it, get the next move), see **`docs/T3_ANALYSIS.md`**.
 
+For the speaker and microphone check (**Sound check**: the audio helper on the NUC, the SSH tunnel, no motion), see **`docs/SOUND_CHECK.md`**.
+
 To analyse a bundle yourself, run this from the repo root with the viewer's Python:
 
 ```bash
