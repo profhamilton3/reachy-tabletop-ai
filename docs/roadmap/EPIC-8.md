@@ -2,9 +2,19 @@
 
 **Project:** Reachy 1.2 Docker + native MuJoCo simulator  
 **Repository target:** `profhamilton3/reachy-1-2-sim`  
-**Status:** Proposed  
+**Status:** Partly built — see the status check below. PRs 8.1–8.5 have their proposed files (8.0 was not checked); 8.6 and 8.7 were not built as described (re-scoped work shipped under their work-item numbers); 8.8 and 8.9 were re-scoped; the Epic 8 exit gate is not met.  
 **Dependency:** Epic 6 complete; PR #3 control-panel scene must pass the Epic 8 entry gate below  
 **Gazebo:** Not planned. MuJoCo is the sole physics backend for this epic.
+
+> **Status checked 2026-10-21 against reachy-1-2-sim `7786a65`** (reachy-1-2-sim main), for reachy-tabletop-ai#17. The design text below is unchanged; only status claims were corrected. Paths are relative to reachy-1-2-sim. Starting evidence was `docs/Reachy-Memory-and-ML-Evidence-2026-09-10.md`; it was re-checked against current code, and the code has moved since (see 8.6).
+>
+> | PR | State at `7786a65` |
+> |---|---|
+> | 8.1–8.5 | Every file in each PR's "Proposed files" list exists, except `tests/integration/test_search_resume.py` and `tests/integration/test_search_pruning.py`, which exist as `tests/unit/test_search_resume.py` and `tests/unit/test_search_pruning.py`. Exit gates were not re-run here. |
+> | 8.6 | **Not built as described.** Not complete. See the PR 8.6 status. |
+> | 8.7 | **Not built as described.** See the PR 8.7 status. |
+> | 8.8 | Re-scoped: adaptive sampler shipped; browser UI not built (claims below verified). |
+> | 8.9 | Re-scoped: best-recipe export shipped; benchmark and release bundle not built (claims below verified). |
 
 ## 1. Purpose
 
@@ -747,6 +757,24 @@ No automatic promotion and no browser controls yet.
 
 **Work item:** `R12-806`
 
+### Status (checked 2026-10-21 against reachy-1-2-sim `7786a65`)
+
+**Not complete. Retrieval, similarity and warm starts are not built.**
+
+| Claim | Evidence |
+|---|---|
+| Basic hash-pair query exists | `ExperienceStore.query_compatible_trials`, `src/reachy_ai/experience/store.py:457`. It filters `SUCCEEDED` trials by `model_sha256` and `scene_sha256`, with optional task and study filters. |
+| Reuse gate (exact match, promoted-only; not similarity, not warm start) | `src/reachy_ai/experience/compatibility.py`: `check_reuse` (line 273), `select_reusable` (line 412). Its module docstring says it is "Not similarity, and not warm starts". Used by `web/panel_recipes.py:154,196` for panel planning. |
+| `src/reachy_ai/experience/query.py` | absent |
+| `src/reachy_ai/experience/similarity.py` | absent |
+| `src/reachy_ai/search/warm_start.py` | absent |
+| `tests/unit/test_experience_compatibility.py` | exists, but tests the reuse gate above, not the four-level hierarchy |
+| `tests/integration/test_warm_start_search.py` | absent |
+| Four-level context hierarchy; control-panel and pick/place similarity measures | absent (no code under `src/` implements them) |
+| Warm starts | `warm_start_trial_id` is a stored field only (`store.py:68,230`, `models.py:335`); nothing selects a warm start. |
+| Exit gate: warm start reaches an equal or better result in fewer trials than an unseeded comparison, comparison recorded | No implementation and no comparison on record. |
+| What `R12-806` shipped instead | Pareto-front convergence detection, `src/reachy_ai/search/convergence.py` (module docstring "R12-806"). |
+
 ### Proposed files
 
 ```text
@@ -798,6 +826,19 @@ No cross-identity reuse without an explicit, tested compatibility policy.
 ## PR 8.7 — Robustness curriculum and candidate promotion
 
 **Work item:** `R12-807`
+
+### Status (checked 2026-10-21 against reachy-1-2-sim `7786a65`)
+
+**Not built as described. No candidate has been promoted.**
+
+| Claim | Evidence |
+|---|---|
+| `src/reachy_ai/validation/` (`curriculum.py`, `promotion.py`, `report.py`) | absent (directory does not exist) |
+| `recipes/promoted/` | absent (`recipes/` holds `control_panel/`, `panel/`, `pick_place/`) |
+| `tests/integration/test_candidate_promotion.py` | absent |
+| `TrialRecord.promotion_state` | exists, default `"unpromoted"`: `src/reachy_ai/experience/models.py:336`, schema `store.py:69`. |
+| Anything reads it | Only the reuse gate: `compatibility.py:321` (rejects unpromoted trials) and `web/panel_recipes.py`. Nothing writes any other value (only a test does, `tests/unit/test_panel_recipes.py:122`), so with no promotion process the gate refuses everything. |
+| What `R12-807` shipped instead | Study report and cross-study comparison, `src/reachy_ai/search/report.py` (module docstring "R12-807"). |
 
 ### Proposed files
 
