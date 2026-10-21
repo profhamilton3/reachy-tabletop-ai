@@ -145,6 +145,8 @@ The step-by-step guide is **`docs/DATA_CAPTURE.md`**. The short version:
 4. After each procedure, press **Download capture bundle**. Keep the zip in `outputs/`, and never
    commit it (stage files by name, never `git add -A`). Attach it to issue #28.
 
+For the tic-tac-toe demo (T3-Analysis: read the board, confirm it, get the next move), see **`docs/T3_ANALYSIS.md`**.
+
 To analyse a bundle yourself, run this from the repo root with the viewer's Python:
 
 ```bash

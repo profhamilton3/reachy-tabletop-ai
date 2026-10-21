@@ -126,17 +126,27 @@ class _Pair:
 
 
 def _load(path) -> _Pair:
-    """A viewer pair bundle: the .zip (checked against its manifest) or an unpacked folder."""
-    path = Path(path)
-    if path.is_dir():
-        files = {p.name: p.read_bytes() for p in path.iterdir() if p.is_file()}
-    elif path.is_file():
+    """A viewer pair bundle: the .zip (checked against its manifest), its bytes, an unpacked folder, or a dict of
+    {file name: bytes} already unpacked (the viewer holds its pairs in memory)."""
+    if isinstance(path, dict):
+        files, path = path, Path("pair")
+    elif isinstance(path, (bytes, bytearray)):
         try:
-            _, files = read_bundle(path.read_bytes())
+            _, files = read_bundle(bytes(path))
         except BadBundle as exc:
-            raise BoardReadRefused(f"{path.name}: {exc}") from exc
+            raise BoardReadRefused(f"pair bundle: {exc}") from exc
+        path = Path("pair")
     else:
-        raise BoardReadRefused(f"{path} does not exist")
+        path = Path(path)
+        if path.is_dir():
+            files = {p.name: p.read_bytes() for p in path.iterdir() if p.is_file()}
+        elif path.is_file():
+            try:
+                _, files = read_bundle(path.read_bytes())
+            except BadBundle as exc:
+                raise BoardReadRefused(f"{path.name}: {exc}") from exc
+        else:
+            raise BoardReadRefused(f"{path} does not exist")
     for name in ("pair.json", f"{EYE}.jpg"):
         if name not in files:
             raise BoardReadRefused(f"{name} is missing from {path.name}")

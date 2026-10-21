@@ -51,3 +51,6 @@ docs/siva_email*.txt
 
 # Video — heavy and permanent once in history; keep it alongside the repo
 *.mov
+
+# Run data: capture bundles, T3 history logs, analysis output. Never committed.
+outputs/

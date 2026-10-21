@@ -77,6 +77,28 @@
     summary { cursor: pointer; color: #90caf9; font-size: 12px; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #aab5cb; font-size: 11px; line-height: 1.6; }
     footer { margin-top: 24px; }
+    #t3-panel { margin-top: 18px; padding: 18px; background: #16213e; border: 1px solid #2b3a63; border-radius: 8px; }
+    .t3-line { margin: 10px 0; font-size: 12px; line-height: 1.7; }
+    .t3-line.stale { color: #ffb74d; }
+    .t3-actions { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 12px 0; }
+    .t3-actions input[type=text] { font: inherit; font-size: 12px; padding: 8px; color: #e0e0e0; background: #101d32;
+      border: 1px solid #43638a; border-radius: 5px; width: 200px; }
+    .t3-views { display: flex; flex-wrap: wrap; gap: 24px; margin: 14px 0; }
+    .t3-views figure { margin: 0; }
+    .t3-views figcaption { font-size: 11px; color: #9aa6c1; margin-bottom: 6px; }
+    .t3-grid { display: grid; grid-template-columns: repeat(3, 88px); gap: 4px; }
+    .t3-cell { position: relative; width: 88px; height: 88px; padding: 4px; font-size: 38px; line-height: 1; border-width: 2px;
+      background: #101d32; border-style: solid; border-color: #2b3a63; border-radius: 6px; }
+    .t3-cell small { position: absolute; left: 5px; top: 4px; font-size: 10px; color: #7d8aa8; }
+    .t3-cell .ghost { position: absolute; right: 7px; bottom: 3px; font-size: 20px; opacity: .35; }
+    .t3-cell .mark { position: absolute; right: 6px; top: 4px; font-size: 11px; color: #ffb74d; }
+    .t3-cell.s-X { color: #64b5f6; } .t3-cell.s-O { color: #ffb74d; } .t3-cell.s-e { color: #4a5675; }
+    .t3-cell.s-h { color: #ce93d8; } .t3-cell.s-u { color: #fff176; border-style: dashed; border-color: #fff176; }
+    .t3-cell.line { background: #1b3a2e; } .t3-cell.move { border-color: #81c784; box-shadow: 0 0 0 2px #81c784; }
+    .t3-key i { font-style: normal; font-weight: 600; margin: 0 4px 0 10px; }
+    .k-x { color: #64b5f6; } .k-o { color: #ffb74d; } .k-e { color: #4a5675; } .k-h { color: #ce93d8; } .k-u { color: #fff176; } .k-c { color: #ffb74d; }
+    .t3-result { padding: 12px 14px; border: 1px solid #478f86; border-radius: 6px; background: #102d38; font-size: 14px; line-height: 1.7; }
+    .t3-result.bad { border-color: #ef5350; background: #3a1d1d; }
     [hidden] { display: none !important; }
     @media (max-width: 760px) { main { padding: 20px 12px; } header { align-items: start; flex-direction: column; }
       .cameras { grid-template-columns: 1fr; } h1 { font-size: 20px; } }
@@ -128,6 +150,43 @@
       <div class="actions"><button id="run-download">Download capture bundle</button>
         <button id="run-discard">Discard run</button></div>
       <p class="subtle" id="capture-note" role="status" aria-live="polite"></p>
+    </div>
+  </section>
+  <section id="t3-panel" aria-label="T3-Analysis">
+    <div class="depth-heading"><h2>T3-ANALYSIS <span class="subtle">· tic-tac-toe · camera and neck (board_view) only, never arm motion</span></h2>
+      <button id="t3-toggle" aria-expanded="false">Open T3-Analysis</button></div>
+    <div id="t3-body" hidden>
+      <p class="subtle">1. Capture the <b>empty</b> board once. 2. Analyze the board. 3. Fix the squares, then confirm. X is a cube, O a cylinder.
+        <span id="t3-head-mode"></span></p>
+      <div id="t3-reference" class="t3-line" role="status" aria-live="polite">No reference yet.</div>
+      <div class="t3-actions">
+        <label class="subtle"><input type="checkbox" id="t3-confirm-head"> I confirm: move the head to board_view for this capture</label>
+        <button id="t3-capture-empty">Capture empty board</button>
+        <button id="t3-analyze" disabled>Analyze board</button>
+        <button id="head-stop-t3" title="Interrupt a head move and hold the present position">Stop head</button>
+      </div>
+      <p class="subtle" id="t3-notice" role="status" aria-live="polite"></p>
+      <div id="t3-boards" hidden>
+        <div class="t3-views">
+          <figure><figcaption id="t3-label-reachy"></figcaption><div class="t3-grid" id="t3-grid-reachy"></div></figure>
+          <figure><figcaption id="t3-label-player"></figcaption><div class="t3-grid" id="t3-grid-player"></div></figure>
+        </div>
+        <p class="subtle">Click a square to cycle X, O, empty, other (#). A faint letter is a suggestion, not an answer.
+          <span class="t3-key"><i class="k-x">X</i> cube <i class="k-o">O</i> cylinder <i class="k-e">·</i> empty <i class="k-h">#</i> other <i class="k-u">?</i> unknown (set it) <i class="k-c">✎</i> you changed it</span></p>
+        <div class="t3-actions">
+          <button id="t3-accept">Accept suggestions</button>
+          <span class="subtle" id="t3-unknown-count"></span>
+        </div>
+        <div class="t3-actions">
+          <span class="subtle">Tags:</span>
+          <span id="t3-quick-tags"></span>
+          <input id="t3-tag-text" type="text" maxlength="60" placeholder="free-text tag" aria-label="Free-text tag">
+          <input id="t3-note" type="text" maxlength="500" placeholder="note (optional)" aria-label="Note">
+          <button id="t3-confirm" disabled>Confirm board</button>
+          <button id="t3-save" disabled>Save labelled pair</button>
+        </div>
+        <div id="t3-result" class="t3-result" role="status" aria-live="polite" hidden></div>
+      </div>
     </div>
   </section>
   <section id="analysis-panel" hidden aria-label="Captured-pair analysis">
@@ -614,6 +673,122 @@
   setInterval(() => { const can = !!status?.can_capture; if (runState && can !== lastCan) { lastCan = can; renderRun(); } }, 500);
   setInterval(paint, 500);
   poll();
+})();
+</script>
+<script>
+// T3-Analysis (tic-tac-toe). Talks only to /api/t3/*; the head is moved by the server, through the gated neck path.
+(() => {
+  const $ = id => document.getElementById(id);
+  const CELLS = ['r1c1','r1c2','r1c3','r2c1','r2c2','r2c3','r3c1','r3c2','r3c3'];
+  const CLASS = {X: 's-X', O: 's-O', '.': 's-e', '#': 's-h', '?': 's-u'};
+  let st = null, read = null, board = [], result = null, busy = false;
+
+  async function api(path, body, timeout = 120000) {
+    const response = await fetch(path, body === undefined ? {signal: AbortSignal.timeout(timeout)} :
+      {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body), signal: AbortSignal.timeout(timeout)});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw Error(typeof data.detail === 'string' ? data.detail : 'Request failed (' + response.status + ')');
+    return data;
+  }
+  const notice = text => { $('t3-notice').textContent = text || ''; };
+  const boardString = () => [0, 3, 6].map(i => board.slice(i, i + 3).join('')).join('/');
+  const unknowns = () => board.filter(c => c === '?').length;
+
+  function renderReference() {
+    const ref = st?.reference;
+    const line = $('t3-reference');
+    $('t3-head-mode').textContent = st ? ' Head motion: ' + st.head_motion + (st.head_motion === 'live' ? '.' :
+      ' (needs REACHY_ENABLE_MOTION=true and --allow-head-motion; the head is not moved, so analysis only works with the head already at board_view).') : '';
+    if (!ref) { line.textContent = 'No reference yet. Clear the board, then Capture empty board.'; line.className = 't3-line'; }
+    else if (ref.stale) { line.textContent = 'Reference is STALE: ' + ref.stale_reasons.join('; ') + '. Capture the empty board again.'; line.className = 't3-line stale'; }
+    else { line.textContent = `Reference ${ref.id.slice(0, 8)} (${ref.pose}, ${ref.source}, zoom ${ref.zoom}): all ${ref.squares_found.length} squares found (${ref.squares_found.join(' ')}).`; line.className = 't3-line'; }
+    $('t3-analyze').disabled = busy || !ref || ref.stale && ref.stale_reasons.some(r => !r.startsWith('the head is not at'));
+    $('t3-capture-empty').disabled = busy;
+  }
+
+  function cell(name) {
+    const i = CELLS.indexOf(name), button = document.createElement('button');
+    const ch = board[i], was = read.board.replace(/\//g, '')[i];
+    const sq = read.squares[i];
+    button.className = 't3-cell ' + CLASS[ch] + (result && result.move_cell === name ? ' move' : '') +
+      (result && result.lines.some(l => l.includes(name)) ? ' line' : '');
+    button.title = name + ': ' + sq.reason;
+    button.dataset.cell = name;
+    button.setAttribute('aria-label', `${name} ${ch === '.' ? 'empty' : ch === '?' ? 'unknown' : ch}` + (sq.suggested && ch === '?' ? `, suggestion ${sq.suggested}` : ''));
+    button.innerHTML = `<small>${name}</small>${ch === '.' ? '·' : ch}` +
+      (ch === '?' && sq.suggested ? `<span class="ghost">${sq.suggested}</span>` : '') + (ch !== was ? '<span class="mark">✎</span>' : '');
+    button.onclick = () => {
+      const order = st.cycle, next = ch === '?' ? order[0] : order[(order.indexOf(ch) + 1) % order.length];
+      board[i] = next; result = null; renderBoards();
+    };
+    return button;
+  }
+
+  function renderBoards() {
+    $('t3-boards').hidden = !read;
+    if (!read) return;
+    for (const view of ['reachy', 'player']) {
+      $('t3-label-' + view).textContent = st.view_labels[view];
+      $('t3-grid-' + view).replaceChildren(...st.views[view].flat().map(cell));
+    }
+    const n = unknowns();
+    $('t3-unknown-count').textContent = n ? `${n} square(s) unknown: set them or accept the suggestions` : 'No unknown squares';
+    $('t3-accept').disabled = !n;
+    $('t3-confirm').disabled = busy || n > 0;
+    $('t3-save').disabled = busy || !result;
+    const box = $('t3-result');
+    box.hidden = !result;
+    if (result) { box.textContent = result.text; box.className = 't3-result' + (result.valid ? '' : ' bad'); }
+  }
+
+  async function refresh() {
+    try { st = await api('/api/t3/state', undefined, 8000); renderReference(); } catch (e) { /* the viewer poll shows connection trouble */ }
+  }
+
+  async function capture(path, label) {
+    const ok = $('t3-confirm-head').checked; $('t3-confirm-head').checked = false;
+    busy = true; renderReference(); notice(label + ': moving the head to board_view, capturing, analysing…');
+    try {
+      const data = await api(path, {confirm: ok});
+      if (path.endsWith('analyze')) {
+        read = data; board = data.board.replace(/\//g, '').split(''); result = null;
+        notice('Board read. Set every unknown square, then confirm.');
+      } else { st = data; read = null; result = null; notice('Reference built.'); }
+    } catch (error) { notice(error.message); }
+    busy = false; await refresh(); renderBoards();
+  }
+  $('t3-capture-empty').onclick = () => capture('/api/t3/reference', 'Capture empty board');
+  $('t3-analyze').onclick = () => capture('/api/t3/analyze', 'Analyze board');
+  $('head-stop-t3').onclick = async () => {
+    try { const r = await api('/api/stereo/head/stop', {}); notice(r.dry_run ? 'Head stop (dry run: logged, not sent).' : 'Head stop: ' + r.record.outcome + '.'); }
+    catch (e) { notice(e.message); }
+  };
+  $('t3-accept').onclick = async () => {
+    try { const r = await api('/api/t3/accept-suggestions', {read_id: read.read_id, board: boardString()});
+      board = r.board.replace(/\//g, '').split(''); result = null;
+      notice(r.filled.length ? 'Filled from suggestions: ' + r.filled.join(', ') : 'No suggestions to accept.'); renderBoards(); }
+    catch (e) { notice(e.message); }
+  };
+  $('t3-confirm').onclick = async () => {
+    const tags = [...document.querySelectorAll('.t3-quick:checked')].map(c => c.value);
+    const free = $('t3-tag-text').value.trim(); if (free) tags.push(free);
+    busy = true; renderBoards();
+    try {
+      const r = await api('/api/t3/confirm', {read_id: read.read_id, board: boardString(), tags, note: $('t3-note').value});
+      result = r.result;
+      notice(`Confirmed and logged (${r.corrections.length} correction(s)) to ${r.history_file}.`);
+    } catch (e) { notice(e.message); }
+    busy = false; renderBoards();
+  };
+  $('t3-save').onclick = () => { const a = Object.assign(document.createElement('a'), {href: `/api/t3/reads/${read.read_id}/labelled-pair.zip`}); a.click(); };
+  $('t3-toggle').onclick = async () => {
+    const open = $('t3-body').hidden; $('t3-body').hidden = !open;
+    $('t3-toggle').setAttribute('aria-expanded', String(open)); $('t3-toggle').textContent = open ? 'Close T3-Analysis' : 'Open T3-Analysis';
+    if (open) { await refresh(); if (!$('t3-quick-tags').children.length) $('t3-quick-tags').append(...st.quick_tags.map(tag => {
+      const label = document.createElement('label'); label.className = 'subtle';
+      label.innerHTML = `<input type="checkbox" class="t3-quick" value="${tag}"> ${tag} `; return label; })); }
+  };
+  setInterval(() => { if (!$('t3-body').hidden && !busy) refresh(); }, 3000);
 })();
 </script>
 </body>

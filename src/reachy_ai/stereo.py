@@ -56,6 +56,7 @@ class StereoSettings:
     max_pair_skew_ms: float = 250
     zoom_commands: bool = False  # False: a requested zoom change is only logged (dry-run)
     head_motion: bool = False    # False: a head move is only logged; True still needs REACHY_ENABLE_MOTION
+    t3_history_dir: str = "outputs/t3_history"  # T3-Analysis appends one JSON line per confirmed board here
 
     def __post_init__(self):
         if self.source not in ("sim", "robot") or not self.robot_host:
@@ -690,6 +691,9 @@ def main():
     parser.add_argument("--allow-head-motion", action="store_true",
                         help="let a data-capture procedure move the neck (head only) after the operator's confirm "
                              "in the page; also needs REACHY_ENABLE_MOTION=true (default: dry-run, logged only)")
+    parser.add_argument("--t3-history-dir", default="outputs/t3_history",
+                        help="T3-Analysis history: one JSONL file per session, appended on each confirmed board "
+                             "(the viewer's only server-side write; default outputs/t3_history, never committed)")
     parser.add_argument("--stereo-calibration", default=os.environ.get("REACHY_STEREO_CALIBRATION"),
                         help="Physical source's calibration profile (JSON); "
                              "default calibration/reachy12_stereo_2026_08_27.json")
@@ -701,7 +705,7 @@ def main():
         sdk_port=args.sdk_port or (50051 if args.source == "sim" else 50055),
         camera_port=args.camera_port or (50051 if args.source == "sim" else 50057),
         fps=args.fps, preview_width=args.preview_width, zoom_commands=args.allow_zoom_commands,
-        head_motion=args.allow_head_motion,
+        head_motion=args.allow_head_motion, t3_history_dir=args.t3_history_dir,
     )
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     uvicorn.run(create_app(settings, detector_model=args.detector_model, sim_lens=args.sim_lens,
