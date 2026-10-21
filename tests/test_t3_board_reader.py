@@ -30,7 +30,7 @@ def truth_board(folder):
     return tuple(cells)
 
 
-def synthetic(tmp_path, detections=(), paint=None, mutate=None):
+def synthetic(tmp_path, detections=(), paint=None, mutate=None, shape="square"):
     """A copy of the empty reference pair with an analysis.json; `paint` = cell name gets a grey square on the image."""
     folder = tmp_path / "pair"
     shutil.copytree(EMPTY_REFERENCE, folder)
@@ -39,7 +39,12 @@ def synthetic(tmp_path, detections=(), paint=None, mutate=None):
         image = cv2.imread(str(folder / "right.jpg"))
         geometry = reader._geometry(reader._identity(json.loads((folder / "pair.json").read_text())))
         cx, cy = reader.to_raw(reference.quads[paint].mean(axis=0, keepdims=True), geometry)[0].astype(int)
-        cv2.rectangle(image, (cx - 22, cy - 22), (cx + 22, cy + 22), (128, 128, 128), -1)
+        if shape == "square":
+            cv2.rectangle(image, (cx - 22, cy - 22), (cx + 22, cy + 22), (128, 128, 128), -1)
+        elif shape == "round":
+            cv2.circle(image, (cx, cy), 26, (128, 128, 128), -1)
+        else:  # "thin": a bar too small to be a piece
+            cv2.rectangle(image, (cx - 30, cy - 3), (cx + 30, cy + 3), (128, 128, 128), -1)
         cv2.imwrite(str(folder / "right.jpg"), image)
         box = [int(cx - 25), int(cy - 25), 50, 50]
     else:
@@ -92,33 +97,53 @@ def test_empty_board_reads_all_empty(reference):
     assert result.settings["change_threshold"] == reader.ReaderSettings().change_threshold
 
 
+def suggestions(result):
+    return {sq.cell: sq.suggested for sq in result.squares if sq.state == t3.UNKNOWN}
+
+
 def test_populated_d_full_reads_truth_cells(reference):
     result = reader.read_board(T3 / "D_full", reference)
     truth = truth_board("D_full")
     assert truth == t3.parse("XOX/OXO/XOX")
-    assert result.board_string() == "?O?/O?O/OO?"
+    assert result.board_string() == "?O?/O?O/?O?"
     assert all(s.change_score > 0.5 for s in result.squares)    # every square holds a piece
     assert all(r != t3.EMPTY for r in result.board)             # never read as empty
-    # the one wrong piece is the detector's: it calls the cube on r3c1 a cylinder (0.50)
-    wrong = [c for c, got, want in zip(t3.CELLS, result.board, truth) if got in (t3.X, t3.O) and got != want]
-    assert wrong == ["r3c1"]
-    assert result.squares[t3.CELLS.index("r3c1")].detections[0]["label"] == "cylinder"
+    assert [c for c, got, want in zip(t3.CELLS, result.board, truth) if got in (t3.X, t3.O) and got != want] == []
+    # the detector calls the cube on r3c1 a cylinder (0.50): the shape disagrees, so it is unknown, suggesting X
+    square = result.squares[t3.CELLS.index("r3c1")]
+    assert (square.state, square.suggested, square.suggested_by) == (t3.UNKNOWN, t3.X, "shape")
+    assert "shape is square" in square.reason
+    # every suggestion made is right
+    assert all(got in (None, want) for got, want in zip(
+        (suggestions(result).get(c) for c in t3.CELLS), truth))
 
 
 def test_populated_e_full_swapped_reads_truth_cells(reference):
     result = reader.read_board(T3 / "E_full_swapped", reference)
     truth = truth_board("E_full_swapped")
     assert truth == t3.parse("OXO/XOX/OXO")
-    assert result.board_string() == "O??/XO?/O?O"
+    assert result.board_string() == "???/???/??O"
     assert [c for c, got, want in zip(t3.CELLS, result.board, truth) if got in (t3.X, t3.O) and got != want] == []
-    assert result.board.count(t3.UNKNOWN) == 4       # operator decides these in 1c
+    found = suggestions(result)
+    assert found["r1c1"] is None                                  # shape unsure, detector 0.49
+    assert all(found[c] == truth[t3.CELLS.index(c)] for c in found if found[c])
+    assert sum(1 for v in found.values() if v) == 7               # the operator confirms these in 1c
 
 
-def test_evidence_has_detections_reason_and_score(reference):
+def test_evidence_has_detections_shape_reason_and_score(reference):
     square = reader.read_board(T3 / "E_full_swapped", reference).squares[t3.CELLS.index("r3c3")]
     assert square.state == t3.O and square.change_score > 0.5
     assert square.detections[0]["label"] == "cylinder" and square.detections[0]["box_xywh"]
-    assert "cylinder detected" in square.reason
+    assert square.shape["class"] == "round" and 0.5 < square.shape["rectangularity"] < 0.845
+    assert square.shape["circularity"] > 0 and square.suggested is None
+    assert "agree" in square.reason
+
+
+def test_settings_recorded_with_shape_thresholds(reference):
+    settings = reader.read_board(T3 / "A_default", reference).settings
+    for key in ("min_label_confidence", "diff_threshold", "square_min_rect", "round_max_rect", "min_blob_area_px"):
+        assert key in settings
+    assert settings["min_label_confidence"] == 0.75
 
 
 # --- the unknown rules ------------------------------------------------------------------------------------------
@@ -137,9 +162,46 @@ def test_changed_but_undetected_is_unknown(tmp_path, reference):
     assert result.board_string() == ".../.?./..."      # the other eight squares are unchanged, so empty
 
 
-def test_changed_with_cube_detection_is_x(tmp_path, reference):
-    folder = synthetic(tmp_path, [{"label": "cube", "confidence": 0.7, "box_xywh": "paint"}], paint="r2c2")
-    assert reader.read_board(folder, reference).board_string() == ".../.X./..."
+def test_cube_detection_and_square_shape_agree_is_x(tmp_path, reference):
+    folder = synthetic(tmp_path, [{"label": "cube", "confidence": 0.9, "box_xywh": "paint"}], paint="r2c2")
+    result = reader.read_board(folder, reference)
+    assert result.board_string() == ".../.X./..."
+    assert result.squares[4].shape["class"] == "square"
+
+
+def test_cylinder_detection_and_round_shape_agree_is_o(tmp_path, reference):
+    folder = synthetic(tmp_path, [{"label": "cylinder", "confidence": 0.9, "box_xywh": "paint"}], paint="r2c2",
+                       shape="round")
+    result = reader.read_board(folder, reference)
+    assert result.squares[4].shape["class"] == "round"
+    assert result.board_string() == ".../.O./..."
+
+
+def test_detector_and_shape_disagree_is_unknown_with_shape_suggestion(tmp_path, reference):
+    folder = synthetic(tmp_path, [{"label": "cylinder", "confidence": 0.95, "box_xywh": "paint"}], paint="r2c2")
+    square = reader.read_board(folder, reference).squares[4]
+    assert (square.state, square.suggested, square.suggested_by) == (t3.UNKNOWN, t3.X, "shape")
+
+
+def test_low_confidence_label_is_unknown_with_shape_suggestion(tmp_path, reference):
+    folder = synthetic(tmp_path, [{"label": "cube", "confidence": 0.6, "box_xywh": "paint"}], paint="r2c2")
+    square = reader.read_board(folder, reference).squares[4]
+    assert (square.state, square.suggested) == (t3.UNKNOWN, t3.X)
+    assert "below 0.75" in square.reason
+
+
+def test_clear_shape_without_detection_suggests_the_shape(tmp_path, reference):
+    folder = synthetic(tmp_path, [], paint="r2c2", shape="round")
+    square = reader.read_board(folder, reference).squares[4]
+    assert (square.state, square.suggested, square.suggested_by) == (t3.UNKNOWN, t3.O, "shape")
+
+
+def test_unsure_shape_confident_detector_suggests_detector(tmp_path, reference):
+    folder = synthetic(tmp_path, [{"label": "cube", "confidence": 0.9, "box_xywh": "paint"}], paint="r2c2",
+                       shape="thin")
+    square = reader.read_board(folder, reference).squares[4]
+    assert square.shape["class"] == "unsure"
+    assert (square.state, square.suggested, square.suggested_by) == (t3.UNKNOWN, t3.X, "detector")
 
 
 def test_cube_and_cylinder_on_one_square_is_unknown(tmp_path, reference):
@@ -205,7 +267,8 @@ def test_cli(capsys):
     spec.loader.exec_module(module)
     assert module.main(["--reference", str(EMPTY_REFERENCE), "--pair", str(T3 / "E_full_swapped"), "--analyze"]) == 0
     out = capsys.readouterr().out
-    assert out.splitlines()[0] == "O??/XO?/O?O" and "Invalid board: unknown square(s)" in out
+    assert out.splitlines()[0] == "???/???/??O" and "Invalid board: unknown square(s)" in out
+    assert "(suggest X by shape)" in out
     assert module.main(["--reference", str(EMPTY_REFERENCE), "--pair", str(EMPTY_REFERENCE)]) == 2
 
 
