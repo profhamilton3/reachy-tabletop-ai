@@ -1,0 +1,161 @@
+{
+  "schema": "arm_routes.v1",
+  "poses": {
+    "PICK_SAFE": {
+      "joints_deg": {
+        "r_shoulder_pitch": 14.2,
+        "r_shoulder_roll": 1.36,
+        "r_arm_yaw": -16.35,
+        "r_elbow_pitch": -95.98,
+        "r_forearm_yaw": -3.16,
+        "r_wrist_pitch": -17.58,
+        "r_wrist_roll": 28.48
+      },
+      "provenance": {
+        "kind": "taught",
+        "source": "tests/MovePieceLogic.ipynb",
+        "cell": 1,
+        "sha256": "412854bb1409445d0e25c1ca187ba722dcaacac35c4fae398ea6f208c1bc5cec",
+        "by": "Siva"
+      }
+    },
+    "PICK": {
+      "joints_deg": {
+        "r_shoulder_pitch": 14.28,
+        "r_shoulder_roll": 2.15,
+        "r_arm_yaw": -15.21,
+        "r_elbow_pitch": -85.43,
+        "r_forearm_yaw": -6.68,
+        "r_wrist_pitch": -13.62,
+        "r_wrist_roll": 26.1
+      },
+      "provenance": {
+        "kind": "taught",
+        "source": "tests/MovePieceLogic.ipynb",
+        "cell": 1,
+        "sha256": "412854bb1409445d0e25c1ca187ba722dcaacac35c4fae398ea6f208c1bc5cec",
+        "by": "Siva"
+      }
+    },
+    "TRANSPORT": {
+      "joints_deg": {
+        "r_shoulder_pitch": 3.56,
+        "r_shoulder_roll": -2.59,
+        "r_arm_yaw": 25.22,
+        "r_elbow_pitch": -119.44,
+        "r_forearm_yaw": 0.62,
+        "r_wrist_pitch": 25.58,
+        "r_wrist_roll": 35.07
+      },
+      "provenance": {
+        "kind": "taught",
+        "source": "tests/MovePieceLogic.ipynb",
+        "cell": 2,
+        "sha256": "7a9aaa24f6fc5600bd7160220e88801518ac6750ed867eb7d931cab08d84644a",
+        "by": "Siva"
+      }
+    },
+    "B2_SAFE": {
+      "joints_deg": {
+        "r_shoulder_pitch": 8.22,
+        "r_shoulder_roll": -0.39,
+        "r_arm_yaw": 33.57,
+        "r_elbow_pitch": -113.64,
+        "r_forearm_yaw": 1.85,
+        "r_wrist_pitch": 13.36,
+        "r_wrist_roll": 30.15
+      },
+      "provenance": {
+        "kind": "taught",
+        "source": "tests/MovePieceLogic.ipynb",
+        "cell": 3,
+        "sha256": "a971e40c53599366ba0b71f50d967f4f62bd6ffd32c6ed405fd5df5d18bc246e",
+        "by": "Siva"
+      }
+    },
+    "B2_PLACE": {
+      "joints_deg": {
+        "r_shoulder_pitch": 7.78,
+        "r_shoulder_roll": -6.37,
+        "r_arm_yaw": 35.24,
+        "r_elbow_pitch": -75.94,
+        "r_forearm_yaw": -1.76,
+        "r_wrist_pitch": -25.22,
+        "r_wrist_roll": 22.5
+      },
+      "provenance": {
+        "kind": "taught",
+        "source": "tests/MovePieceLogic.ipynb",
+        "cell": 3,
+        "sha256": "a971e40c53599366ba0b71f50d967f4f62bd6ffd32c6ed405fd5df5d18bc246e",
+        "by": "Siva"
+      }
+    },
+    "REST": {
+      "joints_deg": {
+        "r_shoulder_pitch": 10.5,
+        "r_shoulder_roll": 15.0,
+        "r_arm_yaw": -55.0,
+        "r_elbow_pitch": -81.0,
+        "r_forearm_yaw": 84.5,
+        "r_wrist_pitch": -4.5,
+        "r_wrist_roll": -17.5
+      },
+      "provenance": {
+        "kind": "sim",
+        "adr": "ADR-0010",
+        "source": "reachy-1-2-sim src/reachy_ai/motion/rig_routes.py @ 1948823 (REST)",
+        "evidence": "docs/design/arm-motion-step1/"
+      }
+    },
+    "REST_OUT": {
+      "joints_deg": {
+        "r_shoulder_pitch": 0.0,
+        "r_shoulder_roll": -25.0,
+        "r_arm_yaw": -55.0,
+        "r_elbow_pitch": -81.0,
+        "r_forearm_yaw": 84.5,
+        "r_wrist_pitch": -4.5,
+        "r_wrist_roll": -17.5
+      },
+      "provenance": {
+        "kind": "sim",
+        "adr": "ADR-0010",
+        "source": "reachy-1-2-sim src/reachy_ai/motion/rig_routes.py @ 1948823 (REST_OUT = REST with shoulder_pitch 0, shoulder_roll -25)",
+        "evidence": "docs/design/arm-motion-step1/"
+      }
+    }
+  },
+  "routes": {
+    "B2_GRIP_TUNE": {
+      "purpose": "gripper_calibration",
+      "start": "REST",
+      "end": "REST",
+      "legs": [
+        {
+          "to": "REST_OUT",
+          "gripper_deg": 20.0,
+          "min_duration_s": 4.0
+        },
+        {
+          "to": "TRANSPORT",
+          "gripper_deg": 20.0,
+          "min_duration_s": 8.4
+        },
+        {
+          "to": "B2_SAFE",
+          "gripper_deg": -29.0,
+          "min_duration_s": 6.0
+        },
+        {
+          "to": "B2_PLACE",
+          "gripper_deg": -29.0,
+          "min_duration_s": 5.0,
+          "near_board": true
+        }
+      ],
+      "close_pose": "B2_PLACE",
+      "return": "reverse"
+    }
+  }
+}
