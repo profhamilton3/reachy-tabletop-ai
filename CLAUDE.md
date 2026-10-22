@@ -19,6 +19,9 @@ Never import from `reachy2_sdk` or `reachy2_core`. CI will catch this.
   - Head moves go only through `motion/primitives.py` (head-only functions) and `safety.head_gate_check()`: neck limits, minimum duration, operator approval, `REACHY_ENABLE_MOTION`.
   - In the stereo viewer a head move is live only with ALL of: `REACHY_ENABLE_MOTION=true`, `--allow-head-motion`, a fresh confirm tick per move, and a passed gate. Anything else is a logged dry run.
   - StereoLauncher.sh enables head motion and zoom commands by default (owner, 2026-10-20); REACHY_ENABLE_MOTION=true is set only on the viewer process. Code defaults stay dry-run.
+- OWNER DECISION (2026-10-22), Part A: "Gripper-only motion is allowed in capture procedures for gripper calibration: only `r_gripper` is powered, the arm stays at REST, every move needs a confirm and passes a gripper gate (travel limits, low speed and torque, a force-limited close, `REACHY_ENABLE_MOTION`), and the gripper returns to compliant at the end."
+  - Gripper moves go only through `motion/primitives.py` (gripper-only functions) and `safety.gripper_gate_check()`. They touch the `r_gripper` joint and nothing else: no `turn_on('r_arm')`, no `goto`, no `look_at`. Arm motion stays forbidden (Part B, #66, needs its own owner decision).
+  - In the stereo viewer a gripper move is live only with ALL of: `REACHY_ENABLE_MOTION=true`, `--allow-gripper-motion`, a fresh confirm tick per move, and a passed gate. Anything else is a logged dry run. StereoLauncher.sh passes the flag by default, like the head flag; `--dry-run` removes it.
 
 ## Test commands
 

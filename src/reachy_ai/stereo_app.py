@@ -1,11 +1,14 @@
-"""Small stereo-viewer FastAPI application: cameras and, for data-capture procedures, the neck only.
+"""Small stereo-viewer FastAPI application: cameras and, for data-capture procedures, the neck and r_gripper only.
 
-No task, arm or gripper route is mounted. The only motion routes (data capture, T3-Analysis) move the head through
+No task or arm route is mounted. The motion routes (data capture, T3-Analysis) move the head through
 motion.primitives behind the head safety gate (owner decision 2026-10-20: "Neck motion is required
 for vision data capture. Capture procedures may articulate the head through the neck for viewing and
 perception. Arm motion stays forbidden in capture procedures."). They are dry-run unless
 REACHY_ENABLE_MOTION=true and the viewer runs with --allow-head-motion, and each move needs a fresh
-operator confirm. The Sound check's routes call only the audio helper (REACHY_AUDIO_URL, #59): no motion.
+operator confirm. The one gripper route (the Gripper range, #27 Part A; owner decision 2026-10-22) powers
+r_gripper alone behind the gripper gate: dry-run unless REACHY_ENABLE_MOTION=true and --allow-gripper-motion, a
+fresh confirm per move, a Stop that releases it. The Sound check's routes call only the audio helper
+(REACHY_AUDIO_URL, #59): no motion.
 The Robot inventory's route (#62) only reads: the SDK through the SDK process, the helper's fixed NUC probes.
 """
 
@@ -37,6 +40,8 @@ from reachy_ai.perception.pair_detector import (
 from reachy_ai.perception.procedures import (
     PROCEDURES,
     CaptureRun,
+    GripperNotConfirmed,
+    GripperRefused,
     HeadNotConfirmed,
     HeadRefused,
     InventoryFailed,
@@ -46,6 +51,7 @@ from reachy_ai.perception.procedures import (
     ZoomNotConfirmed,
     encode_jpeg,
     get_procedure,
+    slim_gripper,
 )
 from reachy_ai.perception.stereo_depth import DepthUnavailable, PairDepth
 from reachy_ai.stereo import CommandBusy, StereoService, StereoSettings
@@ -76,6 +82,23 @@ class _ServiceHead:
 
     def move(self, preset):
         return self.service.request_head("move", preset, approved=True)
+
+
+class _ServiceGripper:
+    """Gripper mover for `CaptureRun.apply_gripper`: the SDK process runs the primitive, gate included."""
+
+    def __init__(self, service):
+        self.service = service
+
+    def read(self):
+        return self.service.request_gripper("read")
+
+    def move(self, target_deg, speed_limit, torque_limit, force_zero=None):
+        return self.service.request_gripper("move", target_deg, speed_limit, torque_limit, approved=True,
+                                            force_zero=force_zero)
+
+    def release(self):
+        return self.service.request_gripper("release", approved=True)
 
 
 def create_app(settings: StereoSettings, service: StereoService | None = None, detector_model=None, detector=None,
@@ -175,6 +198,7 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
         return {"procedures": [p.describe() for p in PROCEDURES.values()],
                 "zoom_commands": "live" if camera.settings.zoom_commands else "dry-run",
                 "head_motion": camera.head_motion_mode(),
+                "gripper_motion": camera.gripper_motion_mode(),
                 "head_presets": {name: list(angles) for name, angles in HEAD_PRESETS.items()}}
 
     @app.get("/api/stereo/capture-run")
@@ -237,6 +261,39 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
         except (RuntimeError, TimeoutError) as exc:
             raise HTTPException(503, str(exc)) from exc
         return {"dry_run": record.get("mode") != "live", "record": record, "state": run.state()}
+
+    @app.post("/api/stereo/capture-run/steps/{step_id}/gripper")
+    def run_gripper(step_id: str, confirm: bool = Body(False, embed=True)):
+        """Gripper range: this step's gripper operation. Stage 0 only reads and the end step only releases; a move
+        is refused without the operator's confirm, before Stage 0, after an abort, while another command runs, or
+        by the gate; dry-run unless REACHY_ENABLE_MOTION=true and --allow-gripper-motion."""
+        run = current_run()
+        try:
+            with run_lock:
+                record = run.apply_gripper(step_id, _ServiceGripper(camera), confirm)
+        except (GripperNotConfirmed, GripperRefused, CommandBusy) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, "Unknown step") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except (RuntimeError, TimeoutError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return {"dry_run": record.get("mode") == "dry-run", "record": slim_gripper(record), "state": run.state()}
+
+    @app.post("/api/stereo/gripper/stop")
+    def gripper_stop():
+        """Stop gripper: interrupt a running move and release (compliant). No confirm needed."""
+        try:
+            record = camera.request_gripper_stop()
+        except (RuntimeError, TimeoutError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        with run_lock:
+            run = app.state.run
+            if run is not None:
+                run.record_gripper_event(record)
+            state = None if run is None else run.state()
+        return {"dry_run": record.get("mode") != "live", "record": record, "state": state}
 
     def record_head_event(record):
         with run_lock:

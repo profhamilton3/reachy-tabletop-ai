@@ -118,7 +118,10 @@ def test_page_has_the_t3_panel_and_the_route_list_has_no_arm_route(viewer):
     t3_paths = {p for p in paths if p.startswith("/api/t3")}
     assert t3_paths == {"/api/t3/state", "/api/t3/reference", "/api/t3/analyze", "/api/t3/accept-suggestions",
                         "/api/t3/confirm", "/api/t3/speak", "/api/t3/reads/{read_id}/labelled-pair.zip"}
-    for path in paths:
+    # The Gripper range (#27 Part A, owner decision 2026-10-22) is the only gripper route: exactly these two.
+    gripper_paths = {p for p in paths if "gripper" in p}
+    assert gripper_paths == {"/api/stereo/capture-run/steps/{step_id}/gripper", "/api/stereo/gripper/stop"}
+    for path in paths - gripper_paths:
         assert not any(word in path for word in ("arm", "gripper", "grasp", "pick", "place", "task", "joint")), path
     assert viewer.post("/api/t3/move", json={}).status_code == 404
     assert viewer.post("/tasks").status_code == 404

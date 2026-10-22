@@ -145,6 +145,8 @@ The step-by-step guide is **`docs/DATA_CAPTURE.md`**. The short version:
 4. After each procedure, press **Download capture bundle**. Keep the zip in `outputs/`, and never
    commit it (stage files by name, never `git add -A`). Attach it to issue #28.
 
+For the gripper range (**Gripper range (Part A)**: the right gripper alone at REST, confirmed steps of at most 10°, hands clear, a hand near **Stop gripper**; live only with `REACHY_ENABLE_MOTION=true` and `--allow-gripper-motion`, which the launcher passes unless `--dry-run`), see **`docs/gripper-capture.md`**; the bundle format is `docs/gripper-capture-format.md`.
+
 For the tic-tac-toe demo (T3-Analysis: read the board, confirm it, get the next move), see **`docs/T3_ANALYSIS.md`**.
 
 For the speaker and microphone check (**Sound check**: the audio helper on the NUC, the SSH tunnel, no motion), see **`docs/SOUND_CHECK.md`**.
