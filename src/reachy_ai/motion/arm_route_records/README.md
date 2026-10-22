@@ -8,6 +8,7 @@ where the robot reads them. The format is `arm_route_record.v1`, `docs/design/ar
 | Record | Verdict | Why |
 |---|---|---|
 | `B2_GRIP_TUNE@89e62bda86b0.json` | **fail** | the target square: a centred cube and cylinder on r2c2 are moved by the palm on the B2_PLACE descent (design section 2.5) |
+| `PICK_GRIP_TUNE@175fe8747241.json` | **fail** | the target spot at PICK's tip (beside r2c3): the palm moves a centred cube (2.0 mm) and cylinder (5.0 mm) on the PICK_SAFE to PICK descent; sim hand geometry, reachy-1-2-sim #210 (design section 2.5) |
 
 - A record names the rig it was flown for: `rig.rig_layout_id` (`config.ARM_RIG_LAYOUT_ID`) and `rig.mount_id`
   (`config.ARM_MOUNT_ID`). It also names the sim scene it was flown in (`rig.scene_name`, `scene_sha256`,

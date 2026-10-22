@@ -156,6 +156,31 @@
       ],
       "close_pose": "B2_PLACE",
       "return": "reverse"
+    },
+    "PICK_GRIP_TUNE": {
+      "purpose": "gripper_calibration",
+      "start": "REST",
+      "end": "REST",
+      "legs": [
+        {
+          "to": "REST_OUT",
+          "gripper_deg": 20.0,
+          "min_duration_s": 4.0
+        },
+        {
+          "to": "PICK_SAFE",
+          "gripper_deg": -29.0,
+          "min_duration_s": 6.0
+        },
+        {
+          "to": "PICK",
+          "gripper_deg": -29.0,
+          "min_duration_s": 5.0,
+          "near_board": true
+        }
+      ],
+      "close_pose": "PICK",
+      "return": "reverse"
     }
   }
 }

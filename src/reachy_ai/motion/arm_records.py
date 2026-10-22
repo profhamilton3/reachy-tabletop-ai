@@ -34,7 +34,8 @@ _CONTACT = {"pair", "t_s", "steps", "at", "declared", "deviation_deg"}
 _SETTLE = {"at", "judged", "contacts"}
 _DECLARATION = {"pose", "pair", "condition"}
 _CONDITION = {"max_joint_deviation_deg"}
-_TARGET = {"close_pose", "approach_xy", "pieces"}
+_TARGET = {"close_pose", "approach_xy", "pieces", "spot_xy_m"}
+_TARGET_REQUIRED = {"close_pose", "approach_xy", "pieces"}
 _TARGET_PIECE = {"body", "steps", "centred_piece_contacts", "tolerance_mm"}
 _STEP = {"offset_mm", "moved_mm"}
 _LAYOUT_REQUIRED = {"name", "pieces", "judged"}
@@ -244,7 +245,15 @@ def validate_record(record, where="record"):
         if target in occupancy:
             _fail(where + ".occupancy", "must not include the target square %s" % target)
 
-    placement = _obj(where + ".target_placement", record["target_placement"], _TARGET)
+    placement = _obj(where + ".target_placement", record["target_placement"], _TARGET, _TARGET_REQUIRED)
+    if "spot_xy_m" in placement:
+        spot = _list(where + ".target_placement.spot_xy_m", placement["spot_xy_m"])
+        if len(spot) != 2:
+            _fail(where + ".target_placement.spot_xy_m", "must be [x, y] in metres")
+        for v in spot:
+            _num(where + ".target_placement.spot_xy_m[]", v)
+        if target is not None:
+            _fail(where + ".target_placement.spot_xy_m", "a record with a target square has no target spot")
     _str(where + ".target_placement.close_pose", placement["close_pose"])
     pieces = placement["pieces"]
     if not isinstance(pieces, dict):

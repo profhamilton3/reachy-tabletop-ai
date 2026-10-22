@@ -1,0 +1,870 @@
+{
+ "declared_contacts": [
+  {
+   "condition": null,
+   "pair": "r_forearm_col/table_top",
+   "pose": "REST"
+  },
+  {
+   "condition": {
+    "max_joint_deviation_deg": 1.0
+   },
+   "pair": "r_hand_back_col/table_top",
+   "pose": "REST"
+  },
+  {
+   "condition": {
+    "max_joint_deviation_deg": 1.0
+   },
+   "pair": "r_palm_col/table_top",
+   "pose": "REST"
+  }
+ ],
+ "head": {
+  "PICK": {
+   "at_limit": false,
+   "neck_deg": {
+    "neck_pitch": 56.98,
+    "neck_roll": 0.0,
+    "neck_yaw": -25.81
+   },
+   "off_axis_deg": 0.0,
+   "tip_in_view_left": true,
+   "tip_in_view_right": true,
+   "tip_px_left": [
+    345.6,
+    240.0
+   ],
+   "tip_px_right": [
+    294.9,
+    240.0
+   ]
+  },
+  "PICK_SAFE": {
+   "at_limit": false,
+   "neck_deg": {
+    "neck_pitch": 52.41,
+    "neck_roll": 0.0,
+    "neck_yaw": -29.04
+   },
+   "off_axis_deg": 0.0,
+   "tip_in_view_left": true,
+   "tip_in_view_right": true,
+   "tip_px_left": [
+    348.0,
+    240.0
+   ],
+   "tip_px_right": [
+    292.6,
+    240.0
+   ]
+  },
+  "REST": {
+   "at_limit": true,
+   "neck_deg": {
+    "neck_pitch": 64.0,
+    "neck_roll": 0.0,
+    "neck_yaw": -37.8
+   },
+   "off_axis_deg": 6.73,
+   "tip_in_view_left": true,
+   "tip_in_view_right": true,
+   "tip_px_left": [
+    343.9,
+    288.0
+   ],
+   "tip_px_right": [
+    298.3,
+    287.0
+   ]
+  },
+  "REST_OUT": {
+   "at_limit": true,
+   "neck_deg": {
+    "neck_pitch": 52.31,
+    "neck_roll": 0.0,
+    "neck_yaw": -45.0
+   },
+   "off_axis_deg": 17.37,
+   "tip_in_view_left": true,
+   "tip_in_view_right": true,
+   "tip_px_left": [
+    470.8,
+    240.0
+   ],
+   "tip_px_right": [
+    421.5,
+    240.0
+   ]
+  }
+ },
+ "layouts_flown": [
+  {
+   "judged": false,
+   "moved_mm": {},
+   "name": "empty board",
+   "piece_contacts": [],
+   "pieces": {}
+  },
+  {
+   "cell": "r1c1",
+   "clear_cm": 9.0,
+   "clear_geom": null,
+   "judged": false,
+   "moved_mm": {
+    "pool_box_1": 0.0
+   },
+   "name": "r1c1 cube",
+   "offset_mm": [
+    0.0,
+    0.0
+   ],
+   "piece": "cube",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_box_1": "r1c1"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r1c1",
+   "clear_cm": 9.0,
+   "clear_geom": null,
+   "judged": false,
+   "moved_mm": {
+    "pool_cyl_1": 0.0
+   },
+   "name": "r1c1 cylinder",
+   "offset_mm": [
+    0.0,
+    0.0
+   ],
+   "piece": "cylinder",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_cyl_1": "r1c1"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r1c2",
+   "clear_cm": 8.8,
+   "clear_geom": "r_upper_arm_col",
+   "judged": false,
+   "moved_mm": {
+    "pool_box_1": 0.0
+   },
+   "name": "r1c2 cube",
+   "offset_mm": [
+    -38.1,
+    -38.1
+   ],
+   "piece": "cube",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_box_1": "r1c2"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r1c2",
+   "clear_cm": 8.05,
+   "clear_geom": "r_upper_arm_col",
+   "judged": false,
+   "moved_mm": {
+    "pool_cyl_1": 0.0
+   },
+   "name": "r1c2 cylinder",
+   "offset_mm": [
+    -40.7,
+    -40.7
+   ],
+   "piece": "cylinder",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_cyl_1": "r1c2"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r1c3",
+   "clear_cm": -0.36,
+   "clear_geom": "r_forearm_col",
+   "judged": false,
+   "moved_mm": {
+    "pool_box_1": 1.96
+   },
+   "name": "r1c3 cube",
+   "offset_mm": [
+    38.1,
+    -38.1
+   ],
+   "piece": "cube",
+   "piece_contacts": [
+    "leg PICK_SAFE->PICK: r_forearm_col/pool_box_1 at 3.52-6.00 s",
+    "leg PICK->PICK_SAFE: r_forearm_col/pool_box_1 at 0.00-1.16 s"
+   ],
+   "pieces": {
+    "pool_box_1": "r1c3"
+   },
+   "status": "must_be_empty"
+  },
+  {
+   "cell": "r1c3",
+   "clear_cm": -1.78,
+   "clear_geom": "r_forearm_col",
+   "judged": false,
+   "moved_mm": {
+    "pool_cyl_1": 21.48
+   },
+   "name": "r1c3 cylinder",
+   "offset_mm": [
+    -40.7,
+    -40.7
+   ],
+   "piece": "cylinder",
+   "piece_contacts": [
+    "leg REST->REST_OUT: r_forearm_col/pool_cyl_1 at 0.00-1.30 s",
+    "leg PICK_SAFE->PICK: r_forearm_col/pool_cyl_1 at 2.99-6.00 s",
+    "leg PICK->PICK_SAFE: r_forearm_col/pool_cyl_1 at 0.00-1.97 s",
+    "leg REST_OUT->REST: r_forearm_col/pool_cyl_1 at 2.74-5.00 s"
+   ],
+   "pieces": {
+    "pool_cyl_1": "r1c3"
+   },
+   "status": "must_be_empty"
+  },
+  {
+   "cell": "r2c1",
+   "clear_cm": 9.0,
+   "clear_geom": null,
+   "judged": false,
+   "moved_mm": {
+    "pool_box_1": 0.0
+   },
+   "name": "r2c1 cube",
+   "offset_mm": [
+    0.0,
+    0.0
+   ],
+   "piece": "cube",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_box_1": "r2c1"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r2c1",
+   "clear_cm": 9.0,
+   "clear_geom": null,
+   "judged": false,
+   "moved_mm": {
+    "pool_cyl_1": 0.0
+   },
+   "name": "r2c1 cylinder",
+   "offset_mm": [
+    0.0,
+    0.0
+   ],
+   "piece": "cylinder",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_cyl_1": "r2c1"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r2c2",
+   "clear_cm": 9.0,
+   "clear_geom": null,
+   "judged": false,
+   "moved_mm": {
+    "pool_box_1": 0.0
+   },
+   "name": "r2c2 cube",
+   "offset_mm": [
+    0.0,
+    0.0
+   ],
+   "piece": "cube",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_box_1": "r2c2"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r2c2",
+   "clear_cm": 9.0,
+   "clear_geom": null,
+   "judged": false,
+   "moved_mm": {
+    "pool_cyl_1": 0.0
+   },
+   "name": "r2c2 cylinder",
+   "offset_mm": [
+    0.0,
+    0.0
+   ],
+   "piece": "cylinder",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_cyl_1": "r2c2"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r2c3",
+   "clear_cm": -0.07,
+   "clear_geom": "r_forearm_col",
+   "judged": false,
+   "moved_mm": {
+    "pool_box_1": 1.47
+   },
+   "name": "r2c3 cube",
+   "offset_mm": [
+    -38.1,
+    -38.1
+   ],
+   "piece": "cube",
+   "piece_contacts": [
+    "leg PICK_SAFE->PICK: r_forearm_col/pool_box_1 at 3.87-6.00 s",
+    "leg PICK->PICK_SAFE: r_forearm_col/pool_box_1 at 0.00-0.70 s"
+   ],
+   "pieces": {
+    "pool_box_1": "r2c3"
+   },
+   "status": "must_be_empty"
+  },
+  {
+   "cell": "r2c3",
+   "clear_cm": 0.47,
+   "clear_geom": "r_forearm_col",
+   "judged": false,
+   "moved_mm": {
+    "pool_cyl_1": 0.0
+   },
+   "name": "r2c3 cylinder",
+   "offset_mm": [
+    -40.7,
+    -40.7
+   ],
+   "piece": "cylinder",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_cyl_1": "r2c3"
+   },
+   "status": "must_be_empty"
+  },
+  {
+   "cell": "r3c1",
+   "clear_cm": 9.0,
+   "clear_geom": null,
+   "judged": false,
+   "moved_mm": {
+    "pool_box_1": 0.0
+   },
+   "name": "r3c1 cube",
+   "offset_mm": [
+    0.0,
+    0.0
+   ],
+   "piece": "cube",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_box_1": "r3c1"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r3c1",
+   "clear_cm": 9.0,
+   "clear_geom": null,
+   "judged": false,
+   "moved_mm": {
+    "pool_cyl_1": 0.0
+   },
+   "name": "r3c1 cylinder",
+   "offset_mm": [
+    0.0,
+    0.0
+   ],
+   "piece": "cylinder",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_cyl_1": "r3c1"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r3c2",
+   "clear_cm": 9.0,
+   "clear_geom": null,
+   "judged": false,
+   "moved_mm": {
+    "pool_box_1": 0.0
+   },
+   "name": "r3c2 cube",
+   "offset_mm": [
+    0.0,
+    0.0
+   ],
+   "piece": "cube",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_box_1": "r3c2"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r3c2",
+   "clear_cm": 9.0,
+   "clear_geom": null,
+   "judged": false,
+   "moved_mm": {
+    "pool_cyl_1": 0.0
+   },
+   "name": "r3c2 cylinder",
+   "offset_mm": [
+    0.0,
+    0.0
+   ],
+   "piece": "cylinder",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_cyl_1": "r3c2"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r3c3",
+   "clear_cm": 2.11,
+   "clear_geom": "r_thumb_col",
+   "judged": false,
+   "moved_mm": {
+    "pool_box_1": 0.0
+   },
+   "name": "r3c3 cube",
+   "offset_mm": [
+    -38.1,
+    -38.1
+   ],
+   "piece": "cube",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_box_1": "r3c3"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "cell": "r3c3",
+   "clear_cm": 2.83,
+   "clear_geom": "r_thumb_col",
+   "judged": false,
+   "moved_mm": {
+    "pool_cyl_1": 0.0
+   },
+   "name": "r3c3 cylinder",
+   "offset_mm": [
+    -40.7,
+    -40.7
+   ],
+   "piece": "cylinder",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_cyl_1": "r3c3"
+   },
+   "status": "may_be_occupied"
+  },
+  {
+   "judged": true,
+   "moved_mm": {
+    "pool_box_1": 0.0,
+    "pool_box_2": 0.0,
+    "pool_box_3": 0.0,
+    "pool_box_4": 0.0,
+    "pool_box_5": 0.0,
+    "pool_cyl_1": 0.0,
+    "pool_cyl_2": 0.0
+   },
+   "name": "every may_be_occupied cell",
+   "piece_contacts": [],
+   "pieces": {
+    "pool_box_1": "r1c1",
+    "pool_box_2": "r2c1",
+    "pool_box_3": "r2c2",
+    "pool_box_4": "r3c1",
+    "pool_box_5": "r3c2",
+    "pool_cyl_1": "r1c2",
+    "pool_cyl_2": "r3c3"
+   }
+  }
+ ],
+ "legs": [
+  {
+   "direction": "out",
+   "duration_s": 4.0,
+   "from": "REST",
+   "gripper_deg": 20.0,
+   "kinematic": {
+    "board_cm": -1.68,
+    "board_geom": "r_thumb_col",
+    "board_t_s": 0.0,
+    "left_arm_cm": 9.0,
+    "rig_cm": 9.0,
+    "self_cm": -1.07,
+    "zones": {
+     "REST": {
+      "kind": "declared",
+      "t_s": [
+       0.0,
+       1.1
+      ]
+     }
+    }
+   },
+   "physics": {
+    "arrival_deg": 0.72,
+    "arrival_weak_deg": 0.04,
+    "contacts": [
+     {
+      "at": "REST",
+      "declared": true,
+      "deviation_deg": {
+       "REST": 0.55,
+       "REST_OUT": 40.01
+      },
+      "pair": "r_forearm_col/table_top",
+      "steps": 296,
+      "t_s": [
+       0.002,
+       0.606
+      ]
+     },
+     {
+      "at": "REST",
+      "declared": true,
+      "deviation_deg": {
+       "REST": 0.14,
+       "REST_OUT": 40.0
+      },
+      "pair": "r_hand_back_col/table_top",
+      "steps": 23,
+      "t_s": [
+       0.324,
+       0.368
+      ]
+     },
+     {
+      "at": "REST",
+      "declared": true,
+      "deviation_deg": {
+       "REST": 0.15,
+       "REST_OUT": 40.01
+      },
+      "pair": "r_palm_col/table_top",
+      "steps": 107,
+      "t_s": [
+       0.184,
+       0.396
+      ]
+     }
+    ],
+    "follow_deg": 1.87
+   },
+   "to": "REST_OUT"
+  },
+  {
+   "direction": "out",
+   "duration_s": 8.77,
+   "from": "REST_OUT",
+   "gripper_deg": -29.0,
+   "kinematic": {
+    "board_cm": 7.37,
+    "board_geom": "r_forearm_col",
+    "board_t_s": 8.76,
+    "left_arm_cm": 9.0,
+    "rig_cm": 9.0,
+    "self_cm": 5.48,
+    "zones": {}
+   },
+   "physics": {
+    "arrival_deg": 0.57,
+    "arrival_weak_deg": 0.01,
+    "contacts": [],
+    "follow_deg": 0.78
+   },
+   "to": "PICK_SAFE"
+  },
+  {
+   "direction": "out",
+   "duration_s": 5.0,
+   "from": "PICK_SAFE",
+   "gripper_deg": -29.0,
+   "kinematic": {
+    "board_cm": 2.2,
+    "board_geom": "r_palm_col",
+    "board_t_s": 5.0,
+    "left_arm_cm": 9.0,
+    "rig_cm": 9.0,
+    "self_cm": 5.1,
+    "zones": {}
+   },
+   "physics": {
+    "arrival_deg": 0.55,
+    "arrival_weak_deg": 0.02,
+    "contacts": [],
+    "follow_deg": 0.56
+   },
+   "to": "PICK"
+  },
+  {
+   "direction": "return",
+   "duration_s": 5.0,
+   "from": "PICK",
+   "gripper_deg": -29.0,
+   "kinematic": {
+    "board_cm": 2.2,
+    "board_geom": "r_palm_col",
+    "board_t_s": 0.0,
+    "left_arm_cm": 9.0,
+    "rig_cm": 9.0,
+    "self_cm": 5.1,
+    "zones": {}
+   },
+   "physics": {
+    "arrival_deg": 0.57,
+    "arrival_weak_deg": 0.01,
+    "contacts": [],
+    "follow_deg": 0.83
+   },
+   "to": "PICK_SAFE"
+  },
+  {
+   "direction": "return",
+   "duration_s": 8.77,
+   "from": "PICK_SAFE",
+   "gripper_deg": 20.0,
+   "kinematic": {
+    "board_cm": 7.37,
+    "board_geom": "r_forearm_col",
+    "board_t_s": 0.0,
+    "left_arm_cm": 9.0,
+    "rig_cm": 9.0,
+    "self_cm": 5.48,
+    "zones": {}
+   },
+   "physics": {
+    "arrival_deg": 0.72,
+    "arrival_weak_deg": 0.04,
+    "contacts": [],
+    "follow_deg": 0.94
+   },
+   "to": "REST_OUT"
+  },
+  {
+   "direction": "return",
+   "duration_s": 4.0,
+   "from": "REST_OUT",
+   "gripper_deg": 20.0,
+   "kinematic": {
+    "board_cm": -1.68,
+    "board_geom": "r_thumb_col",
+    "board_t_s": 4.0,
+    "left_arm_cm": 9.0,
+    "rig_cm": 9.0,
+    "self_cm": -1.07,
+    "zones": {
+     "REST": {
+      "kind": "declared",
+      "t_s": [
+       2.9,
+       4.0
+      ]
+     }
+    }
+   },
+   "physics": {
+    "arrival_deg": 0.27,
+    "arrival_weak_deg": 0.08,
+    "contacts": [
+     {
+      "at": "REST",
+      "declared": true,
+      "deviation_deg": {
+       "REST": 1.04,
+       "REST_OUT": 39.73
+      },
+      "pair": "r_forearm_col/table_top",
+      "steps": 762,
+      "t_s": [
+       3.458,
+       5.0
+      ]
+     }
+    ],
+    "follow_deg": 1.08
+   },
+   "to": "REST"
+  }
+ ],
+ "method": {
+  "arrival_joints": [
+   "r_shoulder_pitch",
+   "r_shoulder_roll",
+   "r_arm_yaw",
+   "r_elbow_pitch",
+   "r_wrist_pitch"
+  ],
+  "arrival_max_deg": 3.0,
+  "board_distance": "analytic: lowest box corner / capsule end over the board top (Step 1 board_check)",
+  "cap_cm": 9.0,
+  "contact_lag_s": 0.25,
+  "follow_joints": [
+   "r_shoulder_pitch",
+   "r_shoulder_roll",
+   "r_arm_yaw",
+   "r_elbow_pitch"
+  ],
+  "follow_max_deg": 6.0,
+  "head_frame_px": [
+   640,
+   480
+  ],
+  "hold_s": 1.0,
+  "leg_start": "the measured position (design section 4.2)",
+  "max_avg_speed_deg_s": 10.0,
+  "moved": "largest displacement during the flight",
+  "near_board_cm": 1.0,
+  "occupancy_clear_cm": 2.0,
+  "occupancy_move_mm": 1.0,
+  "occupancy_offsets_per_axis": 7,
+  "piece_rig_left_self_distance": "exact for box and capsule pairs (geometry.py); mj_geomDistance for cylinder pairs",
+  "settle_s": 1.0,
+  "stream_hz": 50,
+  "target_step_mm": 1
+ },
+ "occupancy": {
+  "r1c1": "may_be_occupied",
+  "r1c2": "may_be_occupied",
+  "r1c3": "must_be_empty",
+  "r2c1": "may_be_occupied",
+  "r2c2": "may_be_occupied",
+  "r2c3": "must_be_empty",
+  "r3c1": "may_be_occupied",
+  "r3c2": "may_be_occupied",
+  "r3c3": "may_be_occupied"
+ },
+ "physics_settle": {
+  "at": "REST",
+  "contacts": [
+   {
+    "at": "REST",
+    "declared": true,
+    "deviation_deg": {
+     "REST": 0.08
+    },
+    "pair": "r_forearm_col/table_top",
+    "steps": 500,
+    "t_s": [
+     0.002,
+     1.0
+    ]
+   },
+   {
+    "at": "REST",
+    "declared": true,
+    "deviation_deg": {
+     "REST": 0.03
+    },
+    "pair": "r_hand_back_col/table_top",
+    "steps": 33,
+    "t_s": [
+     0.002,
+     0.066
+    ]
+   },
+   {
+    "at": "REST",
+    "declared": true,
+    "deviation_deg": {
+     "REST": 0.03
+    },
+    "pair": "r_palm_col/table_top",
+    "steps": 31,
+    "t_s": [
+     0.002,
+     0.062
+    ]
+   }
+  ],
+  "judged": true
+ },
+ "reasons": [
+  "target spot at PICK's tip: a centred cube moved 2.0 mm on the approach to PICK, before the pads close",
+  "target spot at PICK's tip: a centred cylinder moved 5.0 mm on the approach to PICK, before the pads close"
+ ],
+ "rig": {
+  "mount_id": "october-2026",
+  "rig_layout_id": "fwd-center-lab",
+  "scene_name": "FWDCenterLabSivaPool",
+  "scene_revision": "initial",
+  "scene_sha256": "7c27ec92cbb75edcac46f5bd51969c5e1c68af9d88c94aff978495897b3ee33c"
+ },
+ "route": "PICK_GRIP_TUNE",
+ "route_hash": "175fe87472417dc805ec8547911b42fe409b2b11d2d658a0da5c03a1d0cb2de1",
+ "routes_sha256": "4d197aa09b6621d2f671d9bf82efe2558285ab6a3f5197611ec408702cf919ee",
+ "schema": "arm_route_record.v1",
+ "sim": {
+  "commit": "2c5dcee96e442549c36ffffcb3acb5fdd9d069fb",
+  "model_sha256": "da3aeed2040a42982f70f7fa5ea27b612cc31578c6ee16590a63e744ea7d97ab",
+  "mujoco_version": "3.11.0",
+  "tool_sha256": "9a50b73e50d03ab07d2f449e784f32bcbd0b30442eefbf9e6e8e6207b58da35e"
+ },
+ "target_cell": null,
+ "target_placement": {
+  "approach_xy": [
+   0.858,
+   -0.5137
+  ],
+  "close_pose": "PICK",
+  "pieces": {
+   "cube": {
+    "body": "pool_box_1",
+    "centred_piece_contacts": [
+     "leg PICK_SAFE->PICK: r_palm_col/pool_box_1 at 2.63-6.00 s"
+    ],
+    "steps": [
+     {
+      "moved_mm": 2.04,
+      "offset_mm": 0
+     }
+    ],
+    "tolerance_mm": null
+   },
+   "cylinder": {
+    "body": "pool_cyl_1",
+    "centred_piece_contacts": [
+     "leg PICK_SAFE->PICK: r_palm_col/pool_cyl_1 at 1.74-6.00 s"
+    ],
+    "steps": [
+     {
+      "moved_mm": 5.04,
+      "offset_mm": 0
+     }
+    ],
+    "tolerance_mm": null
+   }
+  },
+  "spot_xy_m": [
+   0.4811,
+   -0.252
+  ]
+ },
+ "target_placement_tolerance_mm": {
+  "cube": null,
+  "cylinder": null
+ },
+ "verdict": "fail"
+}
