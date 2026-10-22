@@ -2,17 +2,19 @@
 # StereoLauncher.sh
 # Starts the workstation stereo viewer (reachy-stereo) in the background,
 # against the simulator or the physical Reachy 1.2. The viewer can move the
-# neck (never the arms) and command the camera zoom, only after the operator's
-# confirm tick in the page and a passed head safety gate. By default the launcher
-# turns both on (owner decision, 2026-10-20): it passes --allow-head-motion and
-# --allow-zoom-commands and sets REACHY_ENABLE_MOTION=true on the viewer's command
-# line only, never exported. --dry-run starts the viewer without any of them.
+# neck (never the arms), command the camera zoom and, in the Gripper range
+# procedure, move r_gripper alone, only after the operator's confirm tick in the
+# page and a passed safety gate. By default the launcher turns all three on (owner
+# decisions, 2026-10-20 and 2026-10-22): it passes --allow-head-motion,
+# --allow-zoom-commands and --allow-gripper-motion and sets REACHY_ENABLE_MOTION=true
+# on the viewer's command line only, never exported. --dry-run starts the viewer
+# without any of them.
 #
 # Usage:
 #   ./StereoLauncher.sh                        # simulator (already running, SDK on :50051)
 #   ./StereoLauncher.sh robot                  # physical robot at $REACHY_IP
 #   ./StereoLauncher.sh robot --ip <address>   # use <address> instead of $REACHY_IP
-#   ./StereoLauncher.sh --dry-run              # rehearsal: head and zoom buttons only log
+#   ./StereoLauncher.sh --dry-run              # rehearsal: head, zoom and gripper buttons only log
 #   ./StereoLauncher.sh -KILL                  # stop the viewer
 #
 # Options:
@@ -198,12 +200,15 @@ fi
 if [ "$DRY_RUN" = 1 ]; then
     echo "    head motion : DRY-RUN (logged only; nothing moves)"
     echo "    zoom        : DRY-RUN"
+    echo "    gripper     : DRY-RUN"
 else
     echo "    head motion : LIVE (neck only; each move needs a confirm tick)"
     echo "    zoom        : LIVE"
+    echo "    gripper     : LIVE (r_gripper only; each move needs a confirm tick)"
 fi
 if [ "$SOURCE" = robot ] && [ "$DRY_RUN" = 0 ]; then
     echo "    Keep a hand near 'Stop head'. Close any notebook connected to the robot."
+    echo "    Gripper range: hands clear of the gripper; a hand near 'Stop gripper' and the e-stop."
 fi
 if [ "$SOURCE" = sim ] && ! lsof -iTCP:50051 -sTCP:LISTEN >/dev/null 2>&1; then
     echo "  ⚠ nothing is listening on :50051; start the simulator first (e.g. ~/reachy-1-2-sim/SivaLabLauncher.sh)"
@@ -226,10 +231,10 @@ if [ "$DRY_RUN" = 1 ]; then
             ${EXTRA[@]+"${EXTRA[@]}"} >"$LOG" 2>&1 &
     fi
 elif [ "$SOURCE" = robot ]; then
-    REACHY_IP="$ROBOT_IP" REACHY_ENABLE_MOTION=true nohup "$BIN" --source robot --port "$PORT" --allow-head-motion --allow-zoom-commands \
+    REACHY_IP="$ROBOT_IP" REACHY_ENABLE_MOTION=true nohup "$BIN" --source robot --port "$PORT" --allow-head-motion --allow-zoom-commands --allow-gripper-motion \
         ${EXTRA[@]+"${EXTRA[@]}"} >"$LOG" 2>&1 &
 else
-    env -u REACHY_IP REACHY_ENABLE_MOTION=true nohup "$BIN" --source sim --port "$PORT" --allow-head-motion --allow-zoom-commands \
+    env -u REACHY_IP REACHY_ENABLE_MOTION=true nohup "$BIN" --source sim --port "$PORT" --allow-head-motion --allow-zoom-commands --allow-gripper-motion \
         ${EXTRA[@]+"${EXTRA[@]}"} >"$LOG" 2>&1 &
 fi
 PID=$!

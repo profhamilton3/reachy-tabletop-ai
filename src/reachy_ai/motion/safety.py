@@ -7,6 +7,11 @@ from dataclasses import dataclass
 
 from reachy_ai import config
 from reachy_ai.config import (
+    GRIPPER_LIMITS_DEG,
+    GRIPPER_MAX_SPEED_DEG_S,
+    GRIPPER_MAX_STEP_DEG,
+    GRIPPER_MAX_TORQUE_PCT,
+    GRIPPER_STEP_MARGIN_DEG,
     HEAD_LOOK_AT_X_MAX,
     HEAD_LOOK_AT_X_MIN,
     HEAD_LOOK_AT_Y_MAX,
@@ -135,6 +140,55 @@ def head_gate_check(
         failures.append(MOTION_DISABLED)
 
     return _report(failures)
+
+
+def gripper_gate_check(
+    target_deg: float | None,
+    speed_limit: float | None,
+    torque_limit: float | None,
+    operator_approved: bool = False,
+    motion_enabled: bool | None = None,
+    present_deg: float | None = None,
+) -> GateResult:
+    """Gripper-only moves (#27 Part A): travel limits, the step size, low speed and torque, approval and
+    REACHY_ENABLE_MOTION. Owner decision 2026-10-22: every move needs a confirm and passes this gate.
+
+    `target_deg` is the r_gripper goal in degrees; it must lie inside config.GRIPPER_LIMITS_DEG.
+    `speed_limit` (deg/s) and `torque_limit` (percent) must be above zero and no higher than the caps.
+    `present_deg` is the read-back taken before the move: |target - present| may not exceed
+    GRIPPER_MAX_STEP_DEG (plus GRIPPER_STEP_MARGIN_DEG of read-back noise). Without it (None, or not finite)
+    the step size is unknown and the move is refused.
+    """
+    failures: list[str] = []
+    low, high = GRIPPER_LIMITS_DEG
+
+    if not _finite(target_deg) or not low <= target_deg <= high:
+        failures.append(f"Gripper target {target_deg} deg outside the gripper limits [{low}, {high}]")
+
+    if not _finite(present_deg):
+        failures.append("Present gripper position unknown — step size cannot be checked, motion refused")
+    elif (_finite(target_deg)
+          and abs(target_deg - present_deg) > GRIPPER_MAX_STEP_DEG + GRIPPER_STEP_MARGIN_DEG):
+        failures.append(f"Gripper step {abs(target_deg - present_deg):.1f} deg ({present_deg:.1f} -> {target_deg}) "
+                        f"exceeds {GRIPPER_MAX_STEP_DEG} deg")
+
+    if not _finite(speed_limit) or not 0 < speed_limit <= GRIPPER_MAX_SPEED_DEG_S:
+        failures.append(f"Gripper speed limit {speed_limit} deg/s outside (0, {GRIPPER_MAX_SPEED_DEG_S}]")
+
+    if not _finite(torque_limit) or not 0 < torque_limit <= GRIPPER_MAX_TORQUE_PCT:
+        failures.append(f"Gripper torque limit {torque_limit} % outside (0, {GRIPPER_MAX_TORQUE_PCT}]")
+
+    if not operator_approved:
+        failures.append("Operator approval not given")
+
+    if not (config.REACHY_ENABLE_MOTION if motion_enabled is None else motion_enabled):
+        failures.append(MOTION_DISABLED)
+
+    return _report(failures)
+
+
+def _finite(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _largest_change(target_deg: dict[str, float], present_deg: dict[str, float] | None) -> float | None:

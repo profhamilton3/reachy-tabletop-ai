@@ -1,9 +1,9 @@
-"""Reachy v1 stereo acquisition, shared by all browser consumers. Camera and neck only, never arms.
+"""Reachy v1 stereo acquisition, shared by all browser consumers. Camera, neck and r_gripper only, never arms.
 
 The SDK owns its camera streaming threads. A single child process contains that
 connection so its blocking startup/first-frame calls can be stopped on timeout.
-No arm, gripper, focus, or robot-service command is issued here. Two commands exist, both requested
-only by a data-capture procedure after the operator's explicit confirm, both run in the child
+No arm, focus, or robot-service command is issued here. Three commands exist, all requested
+only by a data-capture procedure after the operator's explicit confirm, all run in the child
 process that owns the connection, one at a time (bounded queues of 1). The zoom queue also carries the
 Robot inventory's read-only request (#62: robot_inventory.sdk_inventory, which only reads):
 
@@ -14,6 +14,12 @@ Robot inventory's read-only request (#62: robot_inventory.sdk_inventory, which o
   the viewer is started with --allow-head-motion. Owner decision 2026-10-20: "Neck motion is
   required for vision data capture. Capture procedures may articulate the head through the neck for
   viewing and perception. Arm motion stays forbidden in capture procedures."
+- a gripper read, a bounded r_gripper move and a release (motion.primitives, behind
+  safety.gripper_gate_check; #27 Part A): dry-run unless REACHY_ENABLE_MOTION=true AND the viewer is
+  started with --allow-gripper-motion. Owner decision 2026-10-22: "Gripper-only motion is allowed in
+  capture procedures for gripper calibration: only `r_gripper` is powered, the arm stays at REST, every
+  move needs a confirm and passes a gripper gate (travel limits, low speed and torque, a force-limited
+  close, `REACHY_ENABLE_MOTION`), and the gripper returns to compliant at the end."
 """
 
 import argparse
@@ -37,7 +43,7 @@ import numpy as np
 LOG = logging.getLogger(__name__)
 EYES = ("left", "right")
 OBSERVATION_QUEUE = 4  # frames and head readbacks in flight; the newest are kept
-ZOOM_QUEUE = HEAD_QUEUE = 1  # commands in flight to the SDK process; a second one is refused
+ZOOM_QUEUE = HEAD_QUEUE = GRIPPER_QUEUE = 1  # commands in flight to the SDK process; a second one is refused
 INVENTORY_TIMEOUT_S = 90.0  # the inventory's reads are bounded one by one (robot_inventory.READ_TIMEOUT_S)
 
 
@@ -58,6 +64,7 @@ class StereoSettings:
     max_pair_skew_ms: float = 250
     zoom_commands: bool = False  # False: a requested zoom change is only logged (dry-run)
     head_motion: bool = False    # False: a head move is only logged; True still needs REACHY_ENABLE_MOTION
+    gripper_motion: bool = False  # False: a gripper move is only logged; True still needs REACHY_ENABLE_MOTION
     t3_history_dir: str = "outputs/t3_history"  # T3-Analysis appends one JSON line per confirmed board here
 
     def __post_init__(self):
@@ -107,14 +114,15 @@ class _LatestObservations:
                 self.dropped[_source(message)] = self.dropped.get(_source(message), 0) + 1
 
 
-def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None, head=None):
+def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None, head=None, gripper=None):
     """Reuse the notebooks' ReachySDK + last_frame path, once per application.
 
     Frames and head readbacks go to the bounded `messages` queue, newest kept.
     Ready, error and diagnostics messages go to `control`, which is unbounded:
     they are few, and a failure report must never be dropped. `commands` carries explicit
     zoom requests from a data-capture procedure, and the Robot inventory's read-only request; `head` is
-    (requests, halt): head moves and releases, and the Stop event. Results come back on `control`.
+    (requests, halt): head moves and releases, and the Stop event; `gripper` is the same for the gripper (a
+    Stop releases it). Results come back on `control`.
     """
     # Ctrl+C belongs to the web-server parent, which disposes this worker.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -265,8 +273,42 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
                           "error": type(exc).__name__}
             publish({"kind": "head_result", "id": request["id"], "record": record, "finished_ns": time.monotonic_ns()})
 
+    def gripper_commands():
+        # The only thread that powers or commands r_gripper. Stop is an event, so it reaches a running move.
+        from reachy_ai.motion import primitives
+        requests, halt = gripper
+        live = settings.gripper_motion  # primitives also require REACHY_ENABLE_MOTION and a passed gate
+        while not stop.is_set():
+            if halt.is_set():
+                record = {**primitives.gripper_release(robot, allow_live=live, reason="stop"), "action": "stop"}
+                halt.clear()
+                publish({"kind": "gripper_result", "id": "stop", "record": record,
+                         "finished_ns": time.monotonic_ns()})
+                continue
+            try:
+                request = requests.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                if request["action"] == "read":
+                    record = {"action": "read", "mode": "read-only", "outcome": "read",
+                              "readback": primitives.gripper_read(robot)}
+                elif request["action"] == "move":
+                    record = primitives.gripper_step(
+                        robot, request["target_deg"], request["speed_limit"], request["torque_limit"],
+                        operator_approved=request["approved"], allow_live=live, force_zero=request.get("force_zero"),
+                        stop_event=halt)
+                else:
+                    record = primitives.gripper_release(robot, allow_live=live)
+            except Exception as exc:  # noqa: BLE001 - report the type only
+                record = {"action": request["action"], "outcome": "error", "error": type(exc).__name__}
+            publish({"kind": "gripper_result", "id": request["id"], "record": record,
+                     "finished_ns": time.monotonic_ns()})
+
     if commands is not None:
         threading.Thread(target=zoom_commands, daemon=True).start()
+    if gripper is not None:
+        threading.Thread(target=gripper_commands, daemon=True).start()
     if head is not None:
         threading.Thread(target=head_commands, daemon=True).start()
     for eye in EYES:
@@ -328,6 +370,10 @@ class StereoService:
         self.head_halt = None
         self._head_waits: dict[str, dict] = {}
         self.head_busy = False
+        self.gripper_requests = None
+        self.gripper_halt = None
+        self._gripper_waits: dict[str, dict] = {}
+        self.gripper_busy = False
         self.command_done_ns: int | None = None  # when the last zoom or head command finished
         self.head_target: dict | None = None     # the last live head move's record, until released
         self.last_head_command: dict | None = None  # the last head command that was not refused, any mode
@@ -352,6 +398,7 @@ class StereoService:
             self.dropped = {}
             self.superseded = {}
             self.head_busy = False
+            self.gripper_busy = False
             self.head_target = self.last_head_command = None  # a new connection knows nothing of earlier commands
 
     def _run(self):
@@ -362,11 +409,13 @@ class StereoService:
             control = context.Queue()
             commands = context.Queue(maxsize=ZOOM_QUEUE)
             head_requests, head_halt = context.Queue(maxsize=HEAD_QUEUE), context.Event()
+            gripper_requests, gripper_halt = context.Queue(maxsize=GRIPPER_QUEUE), context.Event()
             self.commands, self.head_requests, self.head_halt = commands, head_requests, head_halt
+            self.gripper_requests, self.gripper_halt = gripper_requests, gripper_halt
             worker_stop = context.Event()
             worker = context.Process(target=_sdk_worker,
                                      args=(self.settings, messages, control, worker_stop, commands,
-                                           (head_requests, head_halt)),
+                                           (head_requests, head_halt), (gripper_requests, gripper_halt)),
                                      daemon=True)
             worker.start()
             started = time.monotonic()
@@ -390,6 +439,7 @@ class StereoService:
                 control.close()
                 commands.close()
                 head_requests.close()
+                gripper_requests.close()
                 with self.lock:
                     self.state = "reconnecting"
                     self.frames.clear()
@@ -445,6 +495,8 @@ class StereoService:
                     wait["event"].set()
             elif kind == "head_result":
                 self._apply_head_result(message)
+            elif kind == "gripper_result":
+                self._apply_gripper_result(message)
             elif kind == "head":
                 self.head = {"joints": message["values"], "observed_ns": message["observed_ns"]}
             elif kind == "error":
@@ -565,6 +617,67 @@ class StereoService:
             wait["message"] = message
             wait["event"].set()
 
+    def _apply_gripper_result(self, message):
+        self._command_finished(message)
+        if message["id"] != "stop":
+            self.gripper_busy = False
+        wait = self._gripper_waits.get(message["id"])
+        if wait is not None:
+            wait["message"] = message
+            wait["event"].set()
+
+    def gripper_motion_mode(self) -> str:
+        from reachy_ai import config
+        return "live" if self.settings.gripper_motion and config.REACHY_ENABLE_MOTION else "dry-run"
+
+    def request_gripper(self, action: str, target_deg: float | None = None, speed_limit: float | None = None,
+                        torque_limit: float | None = None, approved: bool = False, force_zero: float | None = None,
+                        timeout_s: float = 60.0) -> dict:
+        """Ask the SDK process for a gripper 'read' (no motion), a bounded 'move' or a 'release'; return its record.
+
+        One at a time, and never while the neck moves: CommandBusy otherwise. Live or dry-run is decided in the
+        SDK process (primitives + gate); the caller has already checked the confirm."""
+        if self.gripper_requests is None or self.state != "live":
+            raise RuntimeError("Robot connection is not live")
+        request_id = uuid.uuid4().hex
+        wait = {"event": threading.Event(), "message": None}
+        with self.lock:
+            if self.gripper_busy:
+                raise CommandBusy("A gripper command is already running; wait for it or press Stop gripper")
+            if self.head_busy:
+                raise CommandBusy("A head move is running; wait for it before moving the gripper")
+            try:
+                self.gripper_requests.put_nowait({"id": request_id, "action": action, "target_deg": target_deg,
+                                                  "speed_limit": speed_limit, "torque_limit": torque_limit,
+                                                  "approved": bool(approved), "force_zero": force_zero})
+            except queue.Full:
+                raise CommandBusy("A gripper command is already pending") from None
+            self.gripper_busy = True
+            self._gripper_waits[request_id] = wait
+        try:
+            if not wait["event"].wait(timeout_s):
+                raise TimeoutError("No gripper result from the SDK process")
+        finally:
+            with self.lock:
+                self._gripper_waits.pop(request_id, None)
+        return wait["message"]["record"]
+
+    def request_gripper_stop(self, timeout_s: float = 10.0) -> dict:
+        """Stop: interrupt a running gripper move and release the gripper. Needs no confirm."""
+        if self.gripper_halt is None:
+            raise RuntimeError("Robot connection is not live")
+        with self.lock:
+            wait = self._gripper_waits.setdefault("stop", {"event": threading.Event(), "message": None})
+        self.gripper_halt.set()
+        try:
+            if not wait["event"].wait(timeout_s):
+                raise TimeoutError("No stop result from the SDK process")
+        finally:
+            with self.lock:
+                if self._gripper_waits.get("stop") is wait:
+                    self._gripper_waits.pop("stop")
+        return wait["message"]["record"]
+
     def neck_sign_check(self) -> dict | None:
         """The SDK process's IK sign check ({result, detail}), or None before it has run."""
         with self.lock:
@@ -587,6 +700,8 @@ class StereoService:
         with self.lock:
             if self.head_busy:
                 raise CommandBusy("A head move is already running; wait for it or press Stop")
+            if self.gripper_busy:
+                raise CommandBusy("A gripper command is running; wait for it before moving the head")
             try:
                 self.head_requests.put_nowait({"id": request_id, "action": action, "preset": preset,
                                                "approved": bool(approved)})
@@ -628,6 +743,8 @@ class StereoService:
         with self.lock:
             if self.head_busy:
                 return "A head move is running; capture after it has finished."
+            if self.gripper_busy:
+                return "A gripper move is running; capture after it has finished."
             ready_ns = None if self.command_done_ns is None else self.command_done_ns + int(settle_s * 1e9)
             if ready_ns is not None and any(f.observed_ns < ready_ns for f in self.frames.values()):
                 return f"Frames predate the last command plus {settle_s} s of settling; try again in a moment."
@@ -672,8 +789,9 @@ class StereoService:
             can_capture = all(eyes[e]["state"] == "live" for e in EYES)
             can_capture = can_capture and skew is not None and skew <= self.settings.max_pair_skew_ms
             return {"schema_version": "1", "source": self.settings.source, "session_id": self.session,
-                    "motion_controls": "head only", "head_motion": self.head_motion_mode(),
-                    "head_busy": self.head_busy, "neck_sign_check": self.neck_sign_check(),
+                    "motion_controls": "head and gripper", "head_motion": self.head_motion_mode(),
+                    "gripper_motion": self.gripper_motion_mode(), "head_busy": self.head_busy,
+                    "gripper_busy": self.gripper_busy, "neck_sign_check": self.neck_sign_check(),
                     "recording": False, "eyes": eyes,
                     "observation_skew_ms": round(skew, 1) if skew is not None else None,
                     "can_capture": can_capture, "diagnostics": dict(self.diagnostics),
@@ -744,6 +862,10 @@ def main():
     parser.add_argument("--allow-head-motion", action="store_true",
                         help="let a data-capture procedure move the neck (head only) after the operator's confirm "
                              "in the page; also needs REACHY_ENABLE_MOTION=true (default: dry-run, logged only)")
+    parser.add_argument("--allow-gripper-motion", action="store_true",
+                        help="let the Gripper range procedure move r_gripper (gripper only, never an arm) after the "
+                             "operator's confirm in the page; also needs REACHY_ENABLE_MOTION=true "
+                             "(default: dry-run, logged only)")
     parser.add_argument("--t3-history-dir", default="outputs/t3_history",
                         help="T3-Analysis history: one JSONL file per session, appended on each confirmed board "
                              "(the viewer's only server-side write; default outputs/t3_history, never committed)")
@@ -758,7 +880,8 @@ def main():
         sdk_port=args.sdk_port or (50051 if args.source == "sim" else 50055),
         camera_port=args.camera_port or (50051 if args.source == "sim" else 50057),
         fps=args.fps, preview_width=args.preview_width, zoom_commands=args.allow_zoom_commands,
-        head_motion=args.allow_head_motion, t3_history_dir=args.t3_history_dir,
+        head_motion=args.allow_head_motion, gripper_motion=args.allow_gripper_motion,
+        t3_history_dir=args.t3_history_dir,
     )
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     uvicorn.run(create_app(settings, detector_model=args.detector_model, sim_lens=args.sim_lens,

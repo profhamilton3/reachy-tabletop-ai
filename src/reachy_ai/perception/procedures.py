@@ -1,7 +1,7 @@
 """Operator data-capture procedures (#28): step definitions, the capture run, and its bundle.
 
-Camera and neck only, never arms. A procedure is a list of numbered operator steps; the operator
-captures a stereo pair per step. A procedure can ask for two robot commands, each only after an
+Camera, neck and (Gripper range) r_gripper only, never arms. A procedure is a list of numbered operator steps; the
+operator captures a stereo pair per step. A procedure can ask for two robot commands, each only after an
 explicit operator confirm: a camera zoom level (`CaptureRun.apply_zoom`, through
 `camera_zoom.ZoomSetter`) and a named head pose (`CaptureRun.apply_head`, through
 `motion.primitives` and the head safety gate). The Sound check (#59) moves nothing at all: its steps call
@@ -11,8 +11,13 @@ reads the SDK through the viewer's SDK process (`robot_inventory.sdk_inventory`)
 NUC probes, and takes the operator's answers; the NUC output is redacted by the helper and again here.
 Owner decision 2026-10-20: "Neck motion is required
 for vision data capture. Capture procedures may articulate the head through the neck for viewing and
-perception. Arm motion stays forbidden in capture procedures." No arm or gripper command exists
-here. Nothing is written to disk by this module: the run lives in memory (pairs and audio clips alike) and
+perception. Arm motion stays forbidden in capture procedures." No arm command exists here.
+The Gripper range (#27 Part A) adds one more command after an explicit confirm: a bounded r_gripper move
+(`CaptureRun.apply_gripper`, through `motion.primitives` and the gripper safety gate). Owner decision
+2026-10-22: "Gripper-only motion is allowed in capture procedures for gripper calibration: only `r_gripper`
+is powered, the arm stays at REST, every move needs a confirm and passes a gripper gate (travel limits, low
+speed and torque, a force-limited close, `REACHY_ENABLE_MOTION`), and the gripper returns to compliant at the
+end." Nothing is written to disk by this module: the run lives in memory (pairs and audio clips alike) and
 `CaptureRun.build_zip` returns the bundle bytes.
 
 The viewer (stereo_app.py) and the CLI fallbacks (scripts/zoom_fov_check.py,
@@ -21,15 +26,37 @@ scripts/ruler_depth_test.py) both drive these same objects; the offline analyser
 """
 from __future__ import annotations
 
+import csv
+import hashlib
 import io
 import logging
+import subprocess
 import wave
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+from reachy_ai import config
 from reachy_ai.audio.audio_client import AudioHelperError
 from reachy_ai.camera_zoom import SCENE_ZOOM, ZOOM_ORDER, zoom_read_warning
-from reachy_ai.config import HEAD_PRESETS, NECK_JOINTS
+from reachy_ai.config import (
+    GRIPPER_LIMITS_DEG,
+    GRIPPER_MAX_FORCE,
+    GRIPPER_MAX_LOAD,
+    GRIPPER_MAX_SPEED_DEG_S,
+    GRIPPER_MAX_STEP_DEG,
+    GRIPPER_MAX_TEMP_C,
+    GRIPPER_MAX_TORQUE_PCT,
+    GRIPPER_SAMPLE_HZ,
+    GRIPPER_SWEEP_OPEN_DEG,
+    GRIPPER_SWEEP_SHUT_DEG,
+    GRIPPER_SWEEP_SPEED_DEG_S,
+    GRIPPER_SWEEP_TORQUE_PCT,
+    HEAD_PRESETS,
+    NECK_JOINTS,
+)
+from reachy_ai.motion.primitives import GRIPPER_ABORTS
 from reachy_ai.pair_bundle import build_bundle, json_bytes
 from reachy_ai.robot_inventory import count_replacements, redact, topic_lines, workstation_names
 
@@ -69,6 +96,14 @@ class HeadRefused(PermissionError):
     """The head safety gate refused the move; nothing was sent."""
 
 
+class GripperNotConfirmed(PermissionError):
+    """A gripper move was requested without the operator's explicit confirm."""
+
+
+class GripperRefused(PermissionError):
+    """The gripper safety gate (or the run's own rules) refused the move; nothing was sent."""
+
+
 class RunLimit(ValueError):
     pass
 
@@ -101,11 +136,14 @@ class Step:
     zoom_role: str | None = None     # "start" (read-back only), "check" (read-back vs the profile) or "restore"
     sound: str | None = None         # "status", "tone", "say", "loopback" or "baseline" (the audio helper)
     inventory: str | None = None     # "sdk", "nuc" or "answers" (the Robot inventory, #62)
+    gripper: str | None = None       # "read" (Stage 0, read-only), "move" (needs confirm) or "release"
+    gripper_target_deg: float | None = None  # the r_gripper goal of a "move" step
 
     def describe(self) -> dict:
         return {"id": self.id, "label": self.label, "zoom": self.zoom, "distance_m": self.distance_m,
                 "head": self.head, "head_deg": head_deg(self.head), "capture": self.capture,
                 "zoom_role": self.zoom_role, "sound": self.sound, "inventory": self.inventory,
+                "gripper": self.gripper, "gripper_target_deg": self.gripper_target_deg,
                 "instruction": self.instruction}
 
 
@@ -114,7 +152,7 @@ class Procedure:
     id: str
     name: str
     version: str
-    kind: str                        # "zoom" | "depth" | "head" | "sound" | "inventory": which analyser reads it
+    kind: str                        # "zoom" | "depth" | "head" | "sound" | "inventory" | "gripper": its analyser
     summary: str
     setup: tuple[str, ...]
     steps: tuple[Step, ...]
@@ -311,8 +349,69 @@ def robot_inventory_procedure() -> Procedure:
                                 "on it), add a free note if you like, and press 'Save answers'.")))
 
 
+#: Gripper range (#27 Part A): format_version 1 of docs/gripper-capture-format.md. Any change bumps it.
+GRIPPER_FORMAT_VERSION = 1
+GRIPPER_CSV_COLUMNS = ("step_id", "attempt", "time_s", "target_deg", "present_deg", "load", "force",
+                       "temperature_c", "torque_limit_pct", "speed_limit_deg_s")
+#: The offline sim check that gated Part A (reachy-1-2-sim @ 1948823, MuJoCo 3.11, REST keyframe, arm motors off,
+#: only r_gripper actuated; docs/gripper-capture.md has the method). Recorded in every run record.
+GRIPPER_SIM_CHECK = {
+    "sim_commit": "1948823", "scene": "FWDCenterLabSivaPool",
+    "finger_touches_table": False, "finger_clearance_mm": {"geom_distance": 37.0, "analytic": 32.8},
+    "hand_contacts_at_rest": ["r_hand_back_col", "r_palm_col"],
+    "gripper_reached_deg": -67.97,
+    "arm_motion_deg": {"over_no_command_control": 0.48, "from_settled_arm": [0.43, 0.73],
+                       "from_keyframe_incl_creep": 1.26},
+    "tip_torso_m": [0.141, -0.397, -0.397], "aim_neck_deg": {"roll": 0.0, "pitch": 64.0, "yaw": -38.0},
+    "fingers_in_view": True, "min_edge_margin_px": 167,
+}
+
+
+def gripper_step_id(direction: str, index: int) -> str:
+    return f"gripper_{direction}_{index:02d}"
+
+
+def gripper_range_procedure(speed=GRIPPER_SWEEP_SPEED_DEG_S, torque=GRIPPER_SWEEP_TORQUE_PCT) -> Procedure:
+    def move(direction, index, target):
+        return Step(
+            id=gripper_step_id(direction, index), label=f"Gripper {direction} to {target:g}", gripper="move",
+            gripper_target_deg=float(target),
+            instruction=f"Hands clear of the gripper. Tick the confirm box and press 'Move gripper' (r_gripper to "
+                        f"{target:g} deg at {speed:g} deg/s, {torque:g} % torque; dry-run unless the viewer was "
+                        f"started with --allow-gripper-motion and REACHY_ENABLE_MOTION=true), wait for the "
+                        f"read-back, then press Capture. Stop gripper releases it at any time.")
+    steps = (
+        Step(id="gripper_stage0", label="Stage 0: read the gripper", gripper="read", capture=False,
+             instruction="Press 'Read gripper' (read-only, nothing is sent): position, goal, compliance, torque and "
+                         "speed limits, temperature, load and the force sensor, and whether the SDK has a gripper "
+                         "object with open() and close(). The force reading is the zero for the whole run."),
+        head_step("gripper_view", step_id="gripper_head_aim", label="Head: aim at the hand",
+                  warning="The hand should be in both eyes; if it is not, press Stop head and report."),
+        *(move("open", i, t) for i, t in enumerate(GRIPPER_SWEEP_OPEN_DEG, 1)),
+        *(move("shut", i, t) for i, t in enumerate(GRIPPER_SWEEP_SHUT_DEG, 1)),
+        Step(id="gripper_release", label="End: release the gripper", gripper="release", capture=False,
+             instruction="Press 'Release gripper' (r_gripper compliant, no confirm needed). The head stays where "
+                         "it is; use 'Release head' or the next procedure's first step to move it."),
+    )
+    return Procedure(
+        id="gripper_range", name="Gripper range (Part A)", version="1", kind="gripper",
+        summary="The right gripper at REST, gripper only: Stage 0 reads it, the head aims at the hand, then an empty "
+                "sweep open and shut in confirmed steps of at most 10 deg at low speed and torque, sampled at about "
+                "20 Hz with a stereo pair per step. The analyser reports the range found, where -68 is reached, "
+                "the force sensor's zero and drift, and any abort.",
+        setup=("The arm rests on the table (REST). Only r_gripper is powered: no arm joint is ever turned on.",
+               "Keep hands, cables and objects clear of the gripper and the hand. Siva stays at the robot with a "
+               "hand near 'Stop gripper' and the hardware e-stop.",
+               "Every move needs its own confirm tick. A temperature, load or force limit, the position not "
+               "following (an end stop), a timeout or Stop releases the gripper; after an abort the run refuses "
+               "further moves: start a new run.",
+               "SDK 0.7.0 has no gripper.open() or close(): the bundle records that and skips them."),
+        steps=steps)
+
+
 PROCEDURES = {p.id: p for p in (zoom_fov_procedure(), depth_ruler_procedure(), board_view_approach_procedure(),
-                                head_sweep_procedure(), sound_check_procedure(), robot_inventory_procedure())}
+                                head_sweep_procedure(), sound_check_procedure(), robot_inventory_procedure(),
+                                gripper_range_procedure())}
 
 
 def get_procedure(procedure_id: str) -> Procedure:
@@ -347,6 +446,11 @@ class CaptureRun:
     inventory_results: dict[str, list[dict]] = field(default_factory=dict)  # every inventory attempt per step
     inventory_answers: dict | None = None  # Robot inventory: the operator's answers
     redact_hosts: tuple[str, ...] = ()  # extra names the viewer's redaction pass removes (the robot host)
+    gripper_commands: dict[str, list[dict]] = field(default_factory=dict)  # every gripper attempt per step
+    gripper_events: list[dict] = field(default_factory=list)  # Stop, not tied to a step
+    gripper_stage0: dict | None = None  # the first Stage 0 read that found the position
+    gripper_aborted: str | None = None  # the outcome that ended the run's moves (an abort, not an end stop)
+    created_utc: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     commands_attempted: bool = False  # a zoom command (live or dry-run) has been asked for
     _start: str | None = None  # the starting zoom: the first complete read, fixed once a command was attempted
 
@@ -397,6 +501,10 @@ class CaptureRun:
         if step.zoom and not any(not r.get("error") for r in self.zoom_commands.get(step_id, [])):
             return (f"Zoom {step.zoom} has not been commanded for this step yet: tick the confirm box and press "
                     f"'Set zoom {step.zoom}' (wait for it to finish) before capturing.")
+        if step.gripper == "move" and not any(r.get("outcome") not in ("refused", "error")
+                                              for r in self.gripper_commands.get(step_id, [])):
+            return ("The gripper has not been moved for this step yet: tick the confirm box and press "
+                    "'Move gripper' (wait for it to finish) before capturing.")
         return None
 
     def start_zoom(self) -> str | None:
@@ -447,6 +555,60 @@ class CaptureRun:
         if record.get("outcome") == "refused":
             raise HeadRefused("Head move refused: " + "; ".join(record.get("gate", {}).get("failures", [])))
         return record
+
+    def force_zero(self) -> float | None:
+        """The force sensor's zero for the run: its Stage 0 reading, or None if it could not be read."""
+        return None if self.gripper_stage0 is None else self.gripper_stage0.get("force")
+
+    def apply_gripper(self, step_id: str, mover, confirmed: bool = False) -> dict:
+        """Run this step's gripper operation through `mover` (`read()`, `move(target, speed, torque, force_zero)`
+        and `release()`, each returning the primitives' record).
+
+        'read' (Stage 0) and 'release' need no confirm: one only reads, the other only removes power. A 'move'
+        is refused with GripperNotConfirmed without the confirm, and with GripperRefused before Stage 0 has
+        read the gripper, after an abort (`gripper_aborted`: start a new run), or when the gate refuses; none
+        of those sends anything. Whether a passed move is live or a logged dry run is the mover's. Every
+        attempt, refused ones included, is recorded in the run (and so the bundle)."""
+        step = self.procedure.step(step_id)
+        if step.gripper is None:
+            raise ValueError(f"step {step_id!r} does not command the gripper")
+        attempts = self.gripper_commands.setdefault(step_id, [])
+        if step.gripper == "read":
+            record = mover.read()
+            attempts.append(record)
+            if self.gripper_stage0 is None and (record.get("readback") or {}).get("position_deg") is not None:
+                self.gripper_stage0 = record["readback"]
+            return record
+        if step.gripper == "release":
+            record = mover.release()
+            attempts.append(record)
+            return record
+        refusal = {"action": "move", "target_deg": step.gripper_target_deg, "outcome": "refused", "mode": "dry-run"}
+        if self.gripper_aborted:
+            attempts.append({**refusal, "gate": {"passed": False, "failures": [
+                f"Run aborted ({self.gripper_aborted}): start a new run"]}})
+            raise GripperRefused(f"The run was aborted ({self.gripper_aborted}) and the gripper released: "
+                                 "start a new run.")
+        if self.gripper_stage0 is None:
+            attempts.append({**refusal, "gate": {"passed": False, "failures": ["Stage 0 has not read the gripper"]}})
+            raise GripperRefused("Run Stage 0 first: it reads the gripper and sets the force sensor's zero.")
+        if not confirmed:
+            attempts.append({**refusal, "gate": {"passed": False, "failures": ["Operator approval not given"]}})
+            raise GripperNotConfirmed("A gripper move needs the operator's explicit confirm.")
+        record = mover.move(step.gripper_target_deg, GRIPPER_SWEEP_SPEED_DEG_S, GRIPPER_SWEEP_TORQUE_PCT,
+                            force_zero=self.force_zero())
+        attempts.append(record)
+        if record.get("outcome") == "refused":
+            raise GripperRefused("Gripper move refused: " + "; ".join(record.get("gate", {}).get("failures", [])))
+        if record.get("outcome") in GRIPPER_ABORTS:
+            self.gripper_aborted = record["outcome"]
+        return record
+
+    def record_gripper_event(self, record: dict) -> None:
+        """A Stop, kept in order with the run. A Stop is an abort: the run takes no further moves."""
+        self.gripper_events.append(record)
+        if record.get("action") == "stop":
+            self.gripper_aborted = self.gripper_aborted or "stop"
 
     def apply_sound(self, step_id: str, client, confirmed: bool = False) -> dict:
         """Run this step's audio-helper operation through `client` (an `AudioClient`).
@@ -629,10 +791,12 @@ class CaptureRun:
                 "steps": [{**s.describe(), "captured": len(self.captures.get(s.id, [])),
                            "zoom_commands": self.zoom_commands.get(s.id, []),
                            "head_commands": self.head_commands.get(s.id, []),
+                           "gripper_commands": [slim_gripper(r) for r in self.gripper_commands.get(s.id, [])],
                            "sound_results": self.sound_results.get(s.id, []), "answer": self.answers.get(s.id),
                            "inventory_results": self.inventory_results.get(s.id, [])}
                           for s in self.procedure.steps],
-                "head_events": self.head_events, "pairs": self.pair_count(), "max_pairs": MAX_PAIRS_PER_RUN,
+                "head_events": self.head_events, "gripper_events": self.gripper_events,
+                "gripper_aborted": self.gripper_aborted, "pairs": self.pair_count(), "max_pairs": MAX_PAIRS_PER_RUN,
                 "can_download": bool(self.pair_count() or self.sound_count() or self.inventory_count())}
 
     def calibration_id(self) -> Any:
@@ -647,7 +811,62 @@ class CaptureRun:
                 return (record["meta"].get("camera_context") or {}).get("analysis_profile") or {}
         return {}
 
-    def bundle_files(self) -> dict[str, bytes]:
+    def gripper_samples_csv(self) -> bytes:
+        """Every sample of every move, in step order, as docs/gripper-capture-format.md section 'samples.csv'."""
+        rows = []
+        for step in self.procedure.steps:
+            for attempt, record in enumerate(self.gripper_commands.get(step.id, []), 1):
+                rows += [(step.id, attempt, sample) for sample in record.get("samples") or []]
+        origin = min((sample["t"] for _, _, sample in rows), default=0.0)
+        out = io.StringIO()
+        writer = csv.writer(out, lineterminator="\n")
+        writer.writerow(GRIPPER_CSV_COLUMNS)
+        for step_id, attempt, sample in rows:
+            writer.writerow([step_id, attempt, f"{sample['t'] - origin:.3f}", sample["target_deg"],
+                             sample["present_deg"], *(("" if sample[k] is None else sample[k]) for k in
+                                                      ("load", "force", "temperature_c")),
+                             sample["torque_limit_pct"], sample["speed_limit_deg_s"]])
+        return out.getvalue().encode()
+
+    def gripper_run_record(self, versions: dict | None) -> dict:
+        """The JSON run record of docs/gripper-capture-format.md (format_version 1)."""
+        versions = versions or {}
+        stage0 = self.gripper_stage0
+        sdk_api = (stage0 or {}).get("sdk_open_close")
+        have = bool(sdk_api and sdk_api.get("gripper_object") and sdk_api.get("open") and sdk_api.get("close"))
+        return {
+            "format_version": GRIPPER_FORMAT_VERSION, "kind": "gripper", "units": GRIPPER_UNITS,
+            "sdk_version": versions.get("sdk"), "viewer_version": versions.get("viewer"),
+            "utc_time": self.created_utc, "script": "reachy_ai.perception.procedures:gripper_range_procedure",
+            "script_sha256": file_sha256(Path(__file__)), "code_sha": git_sha(),
+            "procedure": self.identity(),
+            "stage_parameters": {
+                "sweep_speed_limit_deg_s": GRIPPER_SWEEP_SPEED_DEG_S,
+                "sweep_torque_limit_pct": GRIPPER_SWEEP_TORQUE_PCT,
+                "sample_hz": GRIPPER_SAMPLE_HZ, "max_step_deg": GRIPPER_MAX_STEP_DEG,
+                "travel_limits_deg": list(GRIPPER_LIMITS_DEG), "max_speed_limit_deg_s": GRIPPER_MAX_SPEED_DEG_S,
+                "max_torque_limit_pct": GRIPPER_MAX_TORQUE_PCT,
+                "abort_limits": {"temperature_c": GRIPPER_MAX_TEMP_C, "abs_load": GRIPPER_MAX_LOAD,
+                                 "abs_force_minus_zero": GRIPPER_MAX_FORCE},
+                "follow_tolerance_deg": config.GRIPPER_FOLLOW_TOL_DEG,
+                "stall_window_s": config.GRIPPER_STALL_WINDOW_S,
+                "stall_min_progress_deg": config.GRIPPER_STALL_MIN_PROGRESS_DEG,
+                "step_timeout_s": config.GRIPPER_STEP_TIMEOUT_S,
+                "sweep_open_deg": list(GRIPPER_SWEEP_OPEN_DEG), "sweep_shut_deg": list(GRIPPER_SWEEP_SHUT_DEG),
+                "head_aim_neck_deg": head_deg("gripper_view")},
+            "step0": {"stage0": stage0, "sim_check": GRIPPER_SIM_CHECK},
+            "force_zero": self.force_zero(),
+            "sdk_open_close": ({"outcome": "not_exercised",
+                                "note": "this SDK has gripper.open() and close(), but Part A does not command them"}
+                               if have else
+                               {"outcome": "skipped",
+                                "note": "the SDK has no gripper object with open() and close() "
+                                        "(reachy_sdk 0.7.0 has joints.r_gripper only)"}),
+            "aborted": self.gripper_aborted, "gripper_events": self.gripper_events,
+            "files": {"samples": "gripper/samples.csv", "run_record": "gripper/run_record.json"},
+        }
+
+    def bundle_files(self, versions: dict | None = None) -> dict[str, bytes]:
         files: dict[str, bytes] = {}
         steps = []
         for index, step in enumerate(self.procedure.steps, 1):
@@ -669,7 +888,10 @@ class CaptureRun:
                    "requested_head": step.head, "requested_head_deg": head_deg(step.head),
                    "zoom_role": step.zoom_role,
                    "zoom_commands": self.zoom_commands.get(step.id, []),
-                   "head_commands": self.head_commands.get(step.id, []), "captures": entries}
+                   "head_commands": self.head_commands.get(step.id, []),
+                   "gripper": step.gripper, "gripper_target_deg": step.gripper_target_deg,
+                   "gripper_commands": [slim_gripper(r) for r in self.gripper_commands.get(step.id, [])],
+                   "captures": entries}
             if step.sound:
                 clips = []
                 for n, data in enumerate(self.clips.get(step.id, []), 1):
@@ -684,6 +906,11 @@ class CaptureRun:
                    "calibration_id": self.calibration_id(), "steps": steps, "head_events": self.head_events}
         if self.procedure.kind == "zoom":
             summary["start_zoom"] = self.start_zoom()  # None: not read, unreadable or the eyes differed
+        if self.procedure.kind == "gripper":
+            files["gripper/samples.csv"] = self.gripper_samples_csv()
+            files["gripper/run_record.json"] = json_bytes(self.gripper_run_record(versions))
+            summary.update(format_version=GRIPPER_FORMAT_VERSION, gripper_aborted=self.gripper_aborted,
+                           gripper_events=self.gripper_events)
         if self.procedure.kind == "sound":
             summary.update(helper_status=self.helper_status, backend=(self.helper_status or {}).get("backend"),
                            answers=self.answers, phrase=SOUND_PHRASE, tone=SOUND_TONE,
@@ -714,9 +941,42 @@ class CaptureRun:
         return {"id": self.procedure.id, "name": self.procedure.name, "version": self.procedure.version}
 
     def build_zip(self, versions: dict) -> bytes:
-        if not self.pair_count() and not self.sound_count() and not self.inventory_count():
+        if not (self.pair_count() or self.sound_count() or self.inventory_count() or self.gripper_commands):
             raise RunLimit("Nothing captured yet.")
-        return build_bundle(self.bundle_files(), versions, self.calibration_id(), procedure=self.identity())
+        return build_bundle(self.bundle_files(versions), versions, self.calibration_id(), procedure=self.identity())
+
+
+GRIPPER_UNITS = {"angle": "degrees (r_gripper, joint.goal_position / present_position as the SDK reports them)",
+                 "load": "the SDK's present_load, unscaled", "force": "the gripper force sensor's reading, unscaled",
+                 "temperature": "degrees Celsius", "torque_limit": "percent", "speed_limit": "degrees per second",
+                 "time": "seconds since the first sample of the run (monotonic clock)"}
+
+
+def slim_gripper(record: dict) -> dict:
+    """A gripper record without its samples (they go to samples.csv), with their count."""
+    slim = {k: v for k, v in record.items() if k != "samples"}
+    if "samples" in record:
+        slim["n_samples"] = len(record["samples"])
+    if isinstance(slim.get("release"), dict):
+        slim["release"] = slim_gripper(slim["release"])
+    return slim
+
+
+def file_sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def git_sha() -> str | None:
+    """The checkout's HEAD commit, or None when it is not a git checkout (read only: `git rev-parse`)."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parent, capture_output=True,
+                             text=True, timeout=3, check=True)
+        return out.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def neck_readback(meta: dict) -> dict | None:

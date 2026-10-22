@@ -1,7 +1,8 @@
 # Data capture — operator guide (#28)
 
 The stereo viewer walks you through the physical checks of `docs/PERCEPTION_STAGE1.md` and hands you one zip
-to send back. **Camera and neck only: nothing here moves an arm or the gripper.** Owner decision, 2026-10-20:
+to send back. **Camera and neck only: nothing here moves an arm.** The one exception is the *Gripper range* procedure (#27 Part A),
+which moves the right gripper alone (see below and `docs/gripper-capture.md`). Owner decision, 2026-10-20:
 
 > "Neck motion is required for vision data capture. Capture procedures may articulate the head through the
 > neck for viewing and perception. Arm motion stays forbidden in capture procedures."
@@ -116,6 +117,8 @@ Capture at each pose. Stop and report if the neck labours, sounds wrong, or read
    press **Capture**. A step can be captured again; the zip keeps every pair (up to 5 per step, 24 per run).
 3. Run the last step (head to neutral), then press **Download capture bundle**. Choosing "None" or
    **Discard run** forgets the run.
+
+**Gripper range (Part A, v1)** (the right gripper alone, at REST, in confirmed steps of at most 10°; owner decision 2026-10-22: gripper-only motion is allowed in capture procedures for gripper calibration, the arm stays at REST, every move needs a confirm and passes the gripper gate, and the gripper returns to compliant at the end): see `docs/gripper-capture.md`; the bundle layout is `docs/gripper-capture-format.md`. It needs `REACHY_ENABLE_MOTION=true` and `--allow-gripper-motion` (the launcher passes both; `--dry-run` drops them) and a hand near **Stop gripper**.
 
 **Sound check (v1)** (speaker and microphones, no motion; it needs the audio helper and a consent tick per recording): see `docs/SOUND_CHECK.md`.
 

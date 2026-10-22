@@ -48,7 +48,7 @@
     #capture-steps label { display: flex; gap: 6px; align-items: center; }
     #capture-select { max-width: 360px; }
     #head-controls { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 10px 0; }
-    #head-stop { background: #b71c1c; border-color: #ef5350; color: #fff; font-weight: 600; }
+    #head-stop, #gripper-stop { background: #b71c1c; border-color: #ef5350; color: #fff; font-weight: 600; }
     #notice { min-height: 24px; margin: 14px 0; color: #ffb74d; font-size: 12px; line-height: 1.6; }
     #pair-info { overflow-wrap: anywhere; }
     #analysis-panel { margin-top: 18px; padding: 18px; background: #16213e;
@@ -134,7 +134,7 @@
   <p id="notice" role="status" aria-live="polite">Connecting to camera service…</p>
   <p id="zoom-warning" role="alert" hidden></p>
   <section id="capture-panel" aria-label="Data capture">
-    <h2>DATA CAPTURE <span class="subtle">· camera and neck only, never arm motion; the Sound check and Robot inventory move nothing</span></h2>
+    <h2>DATA CAPTURE <span class="subtle">· camera, neck and (Gripper range only) the r_gripper joint, never arm motion; the Sound check and Robot inventory move nothing</span></h2>
     <label class="subtle" for="capture-select">Procedure</label>
     <select id="capture-select"><option value="">None</option></select>
     <div id="head-controls" aria-label="Head controls">
@@ -142,6 +142,8 @@
       <label class="subtle"><input type="checkbox" id="confirm-release"> I confirm: release the head (motors off, it may sag)</label>
       <button id="head-release">Release head</button>
       <span class="subtle" id="head-mode"></span>
+      <button id="gripper-stop" title="Interrupt a gripper move and release the gripper (compliant)">Stop gripper</button>
+      <span class="subtle" id="gripper-mode"></span>
     </div>
     <div id="capture-body" hidden>
       <p class="subtle" id="capture-summary"></p>
@@ -552,7 +554,7 @@
     paint();
   };
   // --- Data capture (camera and neck only, never arms). The run is held in server memory; the bundle is a download. ---
-  let procedures = [], runState = null, zoomMode = 'dry-run', headMode = 'dry-run', runBusy = false, lastCan = null;
+  let procedures = [], runState = null, zoomMode = 'dry-run', headMode = 'dry-run', gripperMode = 'dry-run', runBusy = false, lastCan = null;
   const confirmed = {};  // per step and command; cleared after every command so each one needs a fresh confirm
   const volumeNotes = {};  // Sound check: the operator's volume note per step, kept across re-renders
   const SOUND_BUTTONS = {status: 'Check helper', tone: 'Play tone', say: 'Say phrase', loopback: 'Record loopback', baseline: 'Record baseline'};
@@ -585,7 +587,7 @@
     if (!runState) return;
     const proc = procedures.find(p => p.id === runState.procedure.id);
     $('capture-summary').textContent = `${runState.procedure.name} v${runState.procedure.version} · ${runState.procedure.summary}`
-      + ` · zoom commands: ${zoomMode} · head motion: ${headMode}`;
+      + ` · zoom commands: ${zoomMode} · head motion: ${headMode} · gripper motion: ${gripperMode}`;
     $('capture-instructions').replaceChildren(...(proc?.instructions || []).map(t => Object.assign(document.createElement('li'), {textContent: t})));
     const rows = runState.steps.map(step => {
       const li = document.createElement('li');
@@ -631,6 +633,20 @@
           li.append(volume, answer('Heard it', true), answer('Not heard', false));
         }
       }
+      if (step.gripper === 'read') {
+        const read = Object.assign(document.createElement('button'), {textContent: 'Read gripper', disabled: runBusy});
+        read.onclick = () => runStep(step.id, 'gripper', {confirm: false}, 'Gripper read ');
+        li.append(read);
+      } else if (step.gripper === 'release') {
+        const rel = Object.assign(document.createElement('button'), {textContent: 'Release gripper', disabled: runBusy});
+        rel.onclick = () => runStep(step.id, 'gripper', {confirm: false}, 'Gripper release ');
+        li.append(rel);
+      } else if (step.gripper === 'move') {
+        const [box, label] = confirmBox('gripper', `I confirm: hands clear, move the gripper to ${step.gripper_target_deg}°`);
+        const move = Object.assign(document.createElement('button'), {textContent: 'Move gripper', disabled: runBusy});
+        move.onclick = () => { const ok = box.checked; confirmed['gripper' + step.id] = false; runStep(step.id, 'gripper', {confirm: ok}, 'Gripper move '); };
+        li.append(label, move);
+      }
       if (step.inventory === 'answers') {
         const arm = Object.assign(document.createElement('select'), {disabled: runBusy});
         for (const [value, text] of [['', 'Arm resting on the table? (not answered)'], ['yes', 'Arm resting on the table: yes'], ['no', 'Arm resting on the table: no']])
@@ -653,18 +669,28 @@
       }
       const head = step.head_commands.at(-1);
       const neck = head?.readback_deg ? ` (neck ${Object.values(head.readback_deg).map(v => v.toFixed(1)).join(', ')}°)` : '';
+      const grip = step.gripper_commands?.at(-1);
       const sound = step.sound_results?.at(-1);
       const inventory = step.inventory_results?.at(-1);
       li.append(Object.assign(document.createElement('span'), {className: 'subtle',
         textContent: (step.capture ? `${step.captured} pair${step.captured === 1 ? '' : 's'} captured` : step.sound ? 'sound' : step.inventory ? 'reads only' : 'no capture') +
           (sound ? ` · ${soundSummary(sound)}` : '') + (inventory ? ` · ${inventorySummary(inventory)}` : '') +
           (step.answer ? ` · operator: ${step.answer.heard ? 'heard it' : 'not heard'}${step.answer.volume_note ? ` (${step.answer.volume_note})` : ''}` : '') +
+          (grip ? ` · ${gripperSummary(grip)}` : '') +
           (head ? ` · head ${head.mode === 'live' ? head.outcome : head.outcome === 'refused' ? 'refused' : 'dry-run'}${neck}` : '') +
           (step.zoom_commands.length ? zoomSummary(step.zoom_commands) : '')}));
       return li;
     });
     $('capture-steps').replaceChildren(...rows);
     $('run-download').disabled = !runState.can_download;
+  }
+  function gripperSummary(r) {
+    const rb = r.readback || {};
+    const pos = rb.position_deg == null ? '' : ` at ${rb.position_deg.toFixed(1)}°`;
+    if (r.action === 'read') return `gripper read${pos} · load ${rb.present_load ?? '?'} · force ${rb.force ?? '?'} · ${rb.temperature_c ?? '?'} °C`;
+    if (r.outcome === 'refused') return `gripper refused: ${(r.gate?.failures || []).join('; ') || 'by the run'}`;
+    if (r.mode !== 'live') return r.action === 'release' ? 'gripper release (dry run: logged, not sent)' : 'gripper dry-run';
+    return `gripper ${r.outcome}${pos}` + (r.n_samples ? ` · ${r.n_samples} samples` : '');
   }
   function zoomSummary(commands) {
     const last = commands.at(-1);
@@ -718,14 +744,26 @@
     renderRun();
   }
   $('head-stop').onclick = () => headCommand('stop', null, 'Head stop');
+  $('gripper-stop').onclick = async () => {
+    try {
+      const response = await fetch('/api/stereo/gripper/stop', {method: 'POST', signal: AbortSignal.timeout(30000)});
+      const result = await response.json();
+      if (!response.ok) throw Error(result.detail || 'Request failed');
+      if (result.state) runState = result.state;
+      note('Gripper stop' + (result.dry_run ? ' (dry run: logged, not sent).' : `: ${result.record.outcome}.`));
+    } catch (error) { note(error.message); }
+    renderRun();
+  };
   $('head-release').onclick = () => {
     const ok = $('confirm-release').checked; $('confirm-release').checked = false;
     headCommand('release', {confirm: ok}, 'Head release');
   };
   fetch('/api/stereo/procedures').then(r => r.json()).then(data => {
-    procedures = data.procedures; zoomMode = data.zoom_commands; headMode = data.head_motion;
+    procedures = data.procedures; zoomMode = data.zoom_commands; headMode = data.head_motion; gripperMode = data.gripper_motion;
     $('head-mode').textContent = `head motion: ${headMode}` + (headMode === 'live' ? '' :
       ' (needs REACHY_ENABLE_MOTION=true and --allow-head-motion)');
+    $('gripper-mode').textContent = `gripper motion: ${gripperMode}` + (gripperMode === 'live' ? '' :
+      ' (needs REACHY_ENABLE_MOTION=true and --allow-gripper-motion)');
     $('capture-select').append(...procedures.map(p => Object.assign(document.createElement('option'), {value: p.id, textContent: `${p.name} (v${p.version})`})));
   }).catch(() => note('Procedures unavailable'));
   setInterval(() => { const can = !!status?.can_capture; if (runState && can !== lastCan) { lastCan = can; renderRun(); } }, 500);

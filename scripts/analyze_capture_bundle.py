@@ -5,6 +5,7 @@
     python scripts/analyze_capture_bundle.py reachy-capture-head_sweep.zip [--calibration PATH]
     python scripts/analyze_capture_bundle.py reachy-capture-sound_check.zip
     python scripts/analyze_capture_bundle.py reachy-capture-robot_inventory.zip
+    python scripts/analyze_capture_bundle.py reachy-capture-gripper_range.zip
 
 The bundle comes from the stereo viewer's "Data capture" dropdown (or the CLI fallbacks) and is checked
 against its SHA-256 manifest first. Which analyser runs follows the procedure kind:
@@ -30,9 +31,15 @@ against its SHA-256 manifest first. Which analyser runs follows the procedure ki
          the ReSpeaker there, with how many channels (6: the 6-channel firmware, 1: the 1-channel one); #59 the
          playback devices and the helper's --play-device; #6 the IMU topic, its message type and one sample's
          fields; the system versions; the SDK version, joint count and every read error.
+  gripper (Gripper range, #27 Part A; docs/gripper-capture-format.md, format_version 1) the range the gripper
+         moved over in the empty sweep, where the open and shut ends were (the position stopped following), whether
+         -68 deg (the sim's validated release) was reached, where the SDK's gripper.open() / close() go (or why
+         that was skipped), the force sensor's Stage 0 zero and its drift over the run, the peak load and
+         temperature, and every abort. A format_version it does not know is reported, not read.
 """
 
 import argparse
+import csv
 import io
 import json
 import math
@@ -52,6 +59,7 @@ import ruler_depth_test as ruler  # noqa: E402
 import zoom_fov_check as zoom_check  # noqa: E402
 
 from reachy_ai.camera_zoom import EYES, SCENE_ZOOM, ZOOM_READBACK  # noqa: E402
+from reachy_ai.config import GRIPPER_FOLLOW_TOL_DEG  # noqa: E402
 from reachy_ai.pair_bundle import read_bundle  # noqa: E402
 from reachy_ai.perception.procedures import (  # noqa: E402
     INVENTORY_PROBES,
@@ -561,6 +569,125 @@ def analyze_sound(capture, files):
             "rows": rows, "answers": answers, "notes": notes, "findings": findings}
 
 
+#: Gripper range: the run-record versions this analyser reads (docs/gripper-capture-format.md).
+GRIPPER_FORMATS = (1,)
+#: The sim's validated release opening; the capture asks whether the real gripper can reach it.
+GRIPPER_RELEASE_DEG = -68.0
+GRIPPER_REST_SAMPLES = 3  # the first samples of a move, before the gripper has moved, are its rest readings
+
+
+def linear_slope(points):
+    """Least-squares slope of (t, y) points, or None for fewer than two distinct times."""
+    if len(points) < 2:
+        return None
+    t = [p[0] for p in points]
+    y = [p[1] for p in points]
+    mt, my = statistics.fmean(t), statistics.fmean(y)
+    den = sum((a - mt) ** 2 for a in t)
+    return None if den == 0 else sum((a - mt) * (b - my) for a, b in zip(t, y)) / den
+
+
+def analyze_gripper(capture, files):
+    """The range, the ends, -68, open()/close(), the force sensor's zero and drift, and every abort."""
+    findings, notes = [], []
+    record = json.loads(files["gripper/run_record.json"]) if "gripper/run_record.json" in files else {}
+    version = record.get("format_version", capture.get("format_version"))
+    if version not in GRIPPER_FORMATS:
+        return {"kind": "gripper", "format_version": version, "readable": False, "notes": notes,
+                "findings": [f"format_version {version!r} is not one this analyser reads (known: "
+                             f"{list(GRIPPER_FORMATS)}); nothing was analysed."]}
+    rows = []
+    for row in csv.DictReader(io.StringIO(files.get("gripper/samples.csv", b"").decode())):
+        def num(key):
+            try:
+                return float(row[key]) if row.get(key) not in (None, "") else None
+            except ValueError:
+                return None
+        rows.append({"step": row["step_id"], "attempt": int(row["attempt"]), "t": num("time_s"),
+                     "target": num("target_deg"), "present": num("present_deg"), "load": num("load"),
+                     "force": num("force"), "temperature": num("temperature_c")})
+    if not rows:
+        findings.append("No gripper samples in the bundle: nothing moved (a dry run, or every move was refused).")
+    present = [r["present"] for r in rows if r["present"] is not None]
+    by_direction = {}
+    for direction in ("open", "shut"):
+        values = [r["present"] for r in rows
+                  if r["step"].startswith(f"gripper_{direction}_") and r["present"] is not None]
+        if values:
+            by_direction[direction] = {"min_deg": round(min(values), 2), "max_deg": round(max(values), 2),
+                                       "samples": len(values)}
+    steps = [s for s in capture["steps"] if s.get("gripper") == "move"]
+    moves = [(s["id"], cmd) for s in steps for cmd in s.get("gripper_commands") or []]
+    outcomes = {}
+    for _, cmd in moves:
+        outcomes[cmd.get("outcome")] = outcomes.get(cmd.get("outcome"), 0) + 1
+    ends = []
+    for step_id, cmd in moves:
+        if cmd.get("outcome") == "end_stop":
+            ends.append({"step": step_id, "target_deg": cmd.get("target_deg"),
+                         "stopped_at_deg": (cmd.get("readback") or {}).get("position_deg")})
+    aborts = [{"step": step_id, "outcome": cmd.get("outcome"), "target_deg": cmd.get("target_deg"),
+               "at_deg": (cmd.get("readback") or {}).get("position_deg")}
+              for step_id, cmd in moves
+              if cmd.get("outcome") in ("temperature", "load", "force", "stop", "timeout", "error")]
+    aborts += [{"step": None, "outcome": e.get("action"), "target_deg": None, "at_deg": None}
+               for e in record.get("gripper_events") or []]
+    lowest = min(present) if present else None
+    reached_68 = lowest is not None and lowest <= GRIPPER_RELEASE_DEG + GRIPPER_FOLLOW_TOL_DEG
+    if present and not reached_68:
+        findings.append(f"The gripper opened to {lowest:.1f} deg only: the sim's {GRIPPER_RELEASE_DEG:g} deg release "
+                        "is NOT reachable on this robot (the sim's validated release opens to it).")
+    for end in ends:
+        findings.append(f"{end['step']}: the position stopped following at {end['stopped_at_deg']} deg (target "
+                        f"{end['target_deg']}): a mechanical end.")
+    for abort in aborts:
+        findings.append(f"ABORT {abort['outcome']} at {abort['step'] or 'a Stop between steps'}: the gripper was "
+                        "released and the run took no further moves.")
+    # force sensor: the Stage 0 zero, and drift over the run from the rest readings at the start of each move
+    zero = record.get("force_zero")
+    forces = [(r["t"], r["force"]) for r in rows if r["force"] is not None and r["t"] is not None]
+    rest = []
+    seen = {}
+    for r in rows:
+        key = (r["step"], r["attempt"])
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] <= GRIPPER_REST_SAMPLES and r["force"] is not None and r["t"] is not None:
+            rest.append((r["t"], r["force"]))
+    force = {"zero": zero, "samples": len(forces)}
+    if forces:
+        values = [f for _, f in forces]
+        force.update(min=min(values), max=max(values), span=round(max(values) - min(values), 4))
+        if zero is not None:
+            force["max_abs_from_zero"] = round(max(abs(v - zero) for v in values), 4)
+        if len(rest) >= 2:
+            slope = linear_slope(rest)
+            force["rest_first"], force["rest_last"] = rest[0][1], rest[-1][1]
+            force["drift_total"] = round(rest[-1][1] - rest[0][1], 4)
+            force["drift_per_min"] = None if slope is None else round(slope * 60, 4)
+    else:
+        findings.append("The force sensor gave no readings (unreadable or absent): its zero and drift are unknown.")
+    if zero is None:
+        notes.append("Stage 0 did not read the force sensor, so no zero was recorded and moves were checked against 0.")
+    loads = [abs(r["load"]) for r in rows if r["load"] is not None]
+    temps = [r["temperature"] for r in rows if r["temperature"] is not None]
+    if not loads:
+        notes.append("present_load gave no readings (the SDK's Joint documentation calls it unreliable).")
+    stage0 = (record.get("step0") or {}).get("stage0") or {}
+    open_close = record.get("sdk_open_close") or {}
+    return {"kind": "gripper", "format_version": version, "readable": True, "sdk_version": record.get("sdk_version"),
+            "utc_time": record.get("utc_time"), "code_sha": record.get("code_sha"),
+            "range_deg": None if not present else {"min": round(min(present), 2), "max": round(max(present), 2),
+                                                   "span": round(max(present) - min(present), 2)},
+            "by_direction": by_direction, "moves": outcomes, "ends": ends,
+            "reaches_release_deg": {"target": GRIPPER_RELEASE_DEG, "lowest_deg": None if lowest is None
+                                    else round(lowest, 2), "reached": bool(reached_68)},
+            "sdk_open_close": open_close, "force": force,
+            "peak_abs_load": max(loads) if loads else None, "peak_temperature_c": max(temps) if temps else None,
+            "stage0": {k: stage0.get(k) for k in ("position_deg", "goal_deg", "compliant", "torque_limit_pct",
+                                                  "speed_limit_deg_s", "temperature_c", "present_load", "force")},
+            "aborts": aborts, "notes": notes, "findings": findings}
+
+
 def probe_reply(capture, files, name):
     """A probe's reply from its bundle file, or the capture.json summary if there is no file."""
     entry = (capture.get("probes") or {}).get(name) or {"outcome": "not_run", "reason": "not in the bundle"}
@@ -758,6 +885,30 @@ def print_inventory(result):
           + (f" · note: {op['note']}" if op.get("note") else ""))
 
 
+def print_gripper(result):
+    if not result["readable"]:
+        return
+    print(f"format_version {result['format_version']} · SDK {result['sdk_version']} · {result['utc_time']} · "
+          f"code {result['code_sha']}")
+    rng = result["range_deg"]
+    print("range found:", "no samples" if rng is None else f"{rng['min']} .. {rng['max']} deg (span {rng['span']})")
+    for direction, d in result["by_direction"].items():
+        print(f"  {direction} sweep: {d['min_deg']} .. {d['max_deg']} deg ({d['samples']} samples)")
+    r = result["reaches_release_deg"]
+    print(f"{r['target']:g} deg (the sim's release): " + ("n/a, nothing moved" if r["lowest_deg"] is None else
+          f"{'REACHED' if r['reached'] else 'NOT reached'} (lowest {r['lowest_deg']} deg)"))
+    oc = result["sdk_open_close"]
+    print(f"gripper.open() / close(): {oc.get('outcome', 'unknown')} - {oc.get('note', '')}")
+    f = result["force"]
+    print(f"force sensor: zero {f['zero']}, {f['samples']} readings" + (
+        f", range {f['min']} .. {f['max']}, max |reading - zero| {f.get('max_abs_from_zero')}, rest drift "
+        f"{f.get('drift_total')} total / {f.get('drift_per_min')} per min" if f["samples"] else ""))
+    print(f"peak |load| {result['peak_abs_load']} · peak temperature {result['peak_temperature_c']} C · "
+          f"moves {result['moves']}")
+    print("aborts:", "none" if not result["aborts"] else "; ".join(
+        f"{a['outcome']} at {a['step'] or 'between steps'}" for a in result["aborts"]))
+
+
 def level_text(value):
     return "silent" if value is None else f"{value:.1f}"
 
@@ -797,6 +948,8 @@ def print_report(manifest, capture, result):
                   + (f" | {', '.join(flags)}" if flags else ""))
     elif result["kind"] == "inventory":
         print_inventory(result)
+    elif result["kind"] == "gripper":
+        print_gripper(result)
     elif result["kind"] == "head":
         for r in result["rows"]:
             where = (f"torso {r['centre_torso_m']} m" if "centre_torso_m" in r else r.get("reason", "not placed"))
@@ -837,6 +990,8 @@ def main():
         result = analyze_sound(capture, files)
     elif capture["kind"] == "inventory":
         result = analyze_inventory(capture, files)
+    elif capture["kind"] == "gripper":
+        result = analyze_gripper(capture, files)
     else:
         source, sim_lens, where = bundle_geometry(capture, files)
         # --calibration is a robot profile; a sim bundle uses the sim's own geometry.

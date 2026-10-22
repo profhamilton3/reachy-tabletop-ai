@@ -70,5 +70,6 @@ def test_web_snapshot_expiry_color_and_read_only_routes(monkeypatch):
         assert client.get("/stream/other").status_code == 422
         assert client.post("/tasks").status_code == 404
         status = client.get("/api/stereo/status").json()
-        assert status["motion_controls"] == "head only" and status["head_motion"] == "dry-run"
+        assert status["motion_controls"] == "head and gripper" and status["head_motion"] == "dry-run"
+        assert status["gripper_motion"] == "dry-run"
     assert lifecycle == ["start", "stop"]
