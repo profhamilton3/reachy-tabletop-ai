@@ -822,7 +822,7 @@ def test_no_file_imports_the_reachy_2_sdk(path):
 
 def test_the_gripper_primitives_never_power_an_arm_or_move_anything_else():
     source = (ROOT / "src/reachy_ai/motion/primitives.py").read_text()
-    section = source[source.index("# --- Gripper (#27 Part A)"):]
+    section = source[source.index("# --- Gripper (#27 Part A)"):source.index("# --- Arm (#66 A2")]
     forbidden = {"turn_on", "turn_off", "turn_off_smoothly", "goto", "look_at", "_look_at", "goto_joints",
                  "inverse_kinematics", "forward_kinematics", "l_arm", "head", "joints"}
     attributes = {n.attr for n in ast.walk(ast.parse(section)) if isinstance(n, ast.Attribute)}

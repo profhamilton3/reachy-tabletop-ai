@@ -1,6 +1,8 @@
 """Deterministic motion primitives. All physical robot movement goes through this module.
 
-HEAD (the neck) and the right GRIPPER, for data capture only; never an arm.
+HEAD (the neck) and the right GRIPPER, for data capture only; never an arm in a capture procedure.
+The ARM primitives at the end (#66 A2, docs/design/arm-motion.md section 4) are not called by any viewer thread,
+flag or procedure yet (that is A3); every one of them is gated, a dry run by default, and every abort HOLDS.
 
 HEAD, for vision data capture (#28). Owner decision 2026-10-20: "Neck motion is required for
 vision data capture. Capture procedures may articulate the head through the neck for viewing and
@@ -38,6 +40,7 @@ the target) or, for any of end_stop / temperature / load / force / stop / timeou
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any, Callable
 
@@ -58,7 +61,15 @@ from reachy_ai.config import (
     HEAD_READBACK_SETTLE_S,
     NECK_JOINTS,
 )
-from reachy_ai.motion.safety import MOTION_DISABLED, Pose3D, gripper_gate_check, head_gate_check
+from reachy_ai.motion import arm_routes
+from reachy_ai.motion.safety import (
+    HEAD_LOOK_AT_BOX,
+    MOTION_DISABLED,
+    Pose3D,
+    arm_gate_check,
+    gripper_gate_check,
+    head_gate_check,
+)
 
 LOG = logging.getLogger(__name__)
 HEAD_PART = "head"
@@ -415,3 +426,393 @@ def _drive_gripper(robot, target, speed, torque, force_zero, stop_event, sleep, 
         if now - began > GRIPPER_STEP_TIMEOUT_S:
             return "timeout"
         sleep(1 / GRIPPER_SAMPLE_HZ)
+
+
+# --- Arm (#66 A2; docs/design/arm-motion.md sections 4 and 6) ---------------------------------------------
+# Only this thread of code powers or commands the seven arm joints, and never `turn_on('r_arm')` or
+# `turn_on('reachy')`: reachy_sdk 0.7.0 powers a joint through `joint.compliant`, one joint at a time, and only at REST.
+# `r_gripper` is not one of the seven: a leg only ever sets its goal to its own read-back.
+
+ARM_PART = "r_arm"
+ARM_GROSS_JOINTS = ("r_shoulder_pitch", "r_shoulder_roll", "r_arm_yaw", "r_elbow_pitch")
+ARM_CRITICAL_JOINTS = ARM_GROSS_JOINTS + ("r_wrist_pitch",)
+ARM_WEAK_JOINTS = ("r_forearm_yaw", "r_wrist_roll")
+#: How a leg ended. Every outcome but "reached" HOLDS the arm (goal = present, still powered), never powers it off.
+ARM_ABORTS = ("following", "load", "temperature", "readback", "timeout", "stop", "error")
+ARM_END_OUTCOMES = ("reached", *ARM_ABORTS)
+ARM_SAMPLE_EVERY = 5      # keep every 5th streamed tick (10 Hz) in the record
+ARM_SAMPLE_CAP = 600
+
+
+class ArmStepExceeded(AssertionError):
+    """A streamed goal would move a joint further than config.ARM_MAX_GOAL_STEP_DEG from the previous one."""
+
+
+def _arm_joints(robot) -> dict[str, Any]:
+    joints = robot.r_arm.joints
+    return {name: getattr(joints, name) for name in arm_routes.ARM_JOINTS}
+
+
+def _joint_reads(joint) -> tuple[dict, dict]:
+    reads = {"position_deg": lambda: float(joint.present_position), "goal_deg": lambda: float(joint.goal_position),
+             "compliant": lambda: bool(joint.compliant), "torque_limit_pct": lambda: float(joint.torque_limit),
+             "temperature_c": lambda: float(joint.temperature), "present_load": lambda: float(joint.present_load)}
+    values, errors = {}, {}
+    for name, read in reads.items():
+        values[name], error = _try(read)
+        if error:
+            errors[name] = error
+    return values, errors
+
+
+def arm_read(robot) -> dict:
+    """The seven arm joints and the gripper (position, goal, compliance, torque limit, temperature, load), plus
+    `forward_kinematics()` (the tip in the torso frame, metres). Read-only; each read on its own, None where it failed
+    (`errors` names the exception type)."""
+    names = ("position_deg", "goal_deg", "compliant", "torque_limit_pct", "temperature_c", "present_load")
+    empty = {n: None for n in names}
+    if robot is None:
+        return {"connected": False, "joints": {j: dict(empty) for j in arm_routes.ARM_JOINTS},
+                "gripper": dict(empty), "fk_tip_m": None, "fk_matrix": None, "errors": {}}
+    joints, errors = {}, {}
+    for name in arm_routes.ARM_JOINTS + (arm_routes.GRIPPER_JOINT,):
+        joint, joint_error = _try(lambda n=name: getattr(robot.r_arm.joints, n))
+        if joint_error:
+            joints[name], errors[name] = dict(empty), {"joint": joint_error}
+            continue
+        joints[name], joint_errors = _joint_reads(joint)
+        if joint_errors:
+            errors[name] = joint_errors
+    matrix, fk_error = _try(lambda: [[float(v) for v in row] for row in robot.r_arm.forward_kinematics()])
+    tip = None if matrix is None else [matrix[0][3], matrix[1][3], matrix[2][3]]
+    if fk_error:
+        errors["forward_kinematics"] = fk_error
+    gripper = joints.pop(arm_routes.GRIPPER_JOINT)
+    LOG.info("arm read: %s%s", {n: j["position_deg"] for n, j in joints.items()},
+             f" (read errors: {errors})" if errors else "")
+    return {"connected": True, "joints": joints, "gripper": gripper, "fk_tip_m": tip, "fk_matrix": matrix,
+            "errors": errors}
+
+
+def _present_deg(reading: dict) -> dict[str, float] | None:
+    values = {n: j["position_deg"] for n, j in reading["joints"].items()}
+    return values if all(v is not None for v in values.values()) else None
+
+
+def _hold(robot) -> list[str]:
+    """goal = present on each arm joint, one at a time. Never power off. The exception types of what failed."""
+    errors = []
+    for name, joint in _arm_joints(robot).items():
+        try:
+            joint.goal_position = joint.present_position
+        except Exception as exc:  # noqa: BLE001 - keep holding the other joints
+            errors.append(f"{name}: {type(exc).__name__}")
+    return errors
+
+
+def hold_arm(robot, *, allow_live: bool, motion_enabled: bool | None = None) -> dict:
+    """Stop: hold the arm where it is (goal = present on the seven joints). It stays powered. Needs no approval: it
+    only cancels motion. Live under the same flags as a move; otherwise logged only."""
+    live = allow_live and _motion_enabled(motion_enabled) and robot is not None
+    record = {"action": "stop", "mode": "live" if live else "dry-run"}
+    if live:
+        LOG.info("ARM STOP: holding the present arm position")
+        record["hold_errors"] = _hold(robot)
+    else:
+        LOG.info("DRY-RUN arm stop (nothing sent)")
+    record["readback"] = arm_read(robot)
+    record["outcome"] = "held" if live else "dry-run"
+    return record
+
+
+def _rest(doc, route_name):
+    route = doc["routes"][route_name]
+    return route["start"], doc["poses"][route["start"]]["joints_deg"]
+
+
+def _deviation(present: dict[str, float] | None, pose: dict[str, float]) -> float | None:
+    if present is None:
+        return None
+    return max(abs(present[j] - pose[j]) for j in arm_routes.ARM_JOINTS)
+
+
+def arm_power_at_rest(robot, doc: dict, route_name: str, *, operator_approved: bool, allow_live: bool,
+                      motion_enabled: bool | None = None) -> dict:
+    """Make the arm stiff, only if the read-back is within config.ARM_REST_TOL_DEG of the route's REST (its start
+    pose). Per joint: goal = present, then `compliant = False`. Never `turn_on` of a part, never the gripper."""
+    reading = arm_read(robot)
+    present = _present_deg(reading)
+    failures = []
+    try:
+        rest_name, rest = _rest(doc, route_name)
+    except (KeyError, TypeError):
+        rest_name, rest = None, None
+        failures.append(f"Route {route_name!r} is not in the route file")
+    deviation = _deviation(present, rest) if rest is not None else None
+    if rest is not None:
+        if deviation is None:
+            failures.append("Present arm angles unknown — REST cannot be checked")
+        elif deviation > config.ARM_REST_TOL_DEG:
+            failures.append(f"The arm is {deviation:.1f} deg from {rest_name}, over {config.ARM_REST_TOL_DEG} deg")
+    if not operator_approved:
+        failures.append("Operator approval not given")
+    if not _motion_enabled(motion_enabled):
+        failures.append(MOTION_DISABLED)
+    blocking = [f for f in failures if f != MOTION_DISABLED]
+    live = not failures and allow_live and robot is not None
+    record = {"action": "power", "route": route_name, "rest_pose": rest_name, "deviation_deg": deviation,
+              "mode": "live" if live else "dry-run", "gate_failures": failures}
+    if blocking:
+        LOG.warning("ARM POWER refused: %s", "; ".join(blocking))
+        record["outcome"] = "refused"
+    elif not live:
+        LOG.info("DRY-RUN arm power at %s (nothing sent)", rest_name)
+        record["outcome"] = "dry-run"
+    else:
+        LOG.info("ARM POWER at %s: joint by joint, goal = present, then stiff", rest_name)
+        record["outcome"] = "powered"
+        for name, joint in _arm_joints(robot).items():
+            try:
+                joint.goal_position = joint.present_position
+                joint.compliant = False
+            except Exception as exc:  # noqa: BLE001 - the joints already stiff hold their own present position
+                record["outcome"], record["error"] = "error", f"{name}: {type(exc).__name__}"
+                LOG.error("ARM POWER failed at %s: %s", name, type(exc).__name__)
+                break
+    record["readback"] = arm_read(robot)
+    return record
+
+
+def arm_release_at_rest(robot, doc: dict, route_name: str, *, last_outcome: str | None, last_pose: str | None,
+                        operator_approved: bool, allow_live: bool, motion_enabled: bool | None = None,
+                        duration: float = 2.0) -> dict:
+    """`turn_off_smoothly('r_arm')`, only at REST: the read-back within config.ARM_REST_TOL_DEG of the route's REST
+    and the last leg `reached` at REST. Refused anywhere else: nothing ever powers the arm off mid-air."""
+    reading = arm_read(robot)
+    deviation, failures = None, []
+    try:
+        rest_name, rest = _rest(doc, route_name)
+        deviation = _deviation(_present_deg(reading), rest)
+        if deviation is None:
+            failures.append("Present arm angles unknown — REST cannot be checked")
+        elif deviation > config.ARM_REST_TOL_DEG:
+            failures.append(f"The arm is {deviation:.1f} deg from {rest_name}, over {config.ARM_REST_TOL_DEG} deg")
+        if last_outcome != "reached" or last_pose != rest_name:
+            failures.append(f"The last leg must have reached {rest_name} (it was {last_outcome} at {last_pose})")
+    except (KeyError, TypeError):
+        rest_name = None
+        failures.append(f"Route {route_name!r} is not in the route file")
+    if not operator_approved:
+        failures.append("Operator approval not given")
+    if not _motion_enabled(motion_enabled):
+        failures.append(MOTION_DISABLED)
+    blocking = [f for f in failures if f != MOTION_DISABLED]
+    live = not failures and allow_live and robot is not None
+    record = {"action": "release", "route": route_name, "rest_pose": rest_name, "deviation_deg": deviation,
+              "duration_s": duration, "mode": "live" if live else "dry-run", "gate_failures": failures}
+    if blocking:
+        LOG.warning("ARM RELEASE refused: %s", "; ".join(blocking))
+        record["outcome"] = "refused"
+    elif not live:
+        LOG.info("DRY-RUN arm release at %s (nothing sent)", rest_name)
+        record["outcome"] = "dry-run"
+    else:
+        LOG.info("ARM RELEASE at %s: turn_off_smoothly(%r) over %.1f s", rest_name, ARM_PART, duration)
+        error = _try(lambda: robot.turn_off_smoothly(ARM_PART, duration=duration))[1]
+        record["outcome"] = "released" if error is None else "error"
+        if error:
+            record["error"] = error
+    record["readback"] = arm_read(robot)
+    return record
+
+
+def _plan(start: dict[str, float], target: dict[str, float], duration: float):
+    """Minimum-jerk goals at STREAM_HZ from `start` (the present read-back) to `target`: (goals, largest per-goal
+    step in degrees, counting the first from `start`)."""
+    n = max(1, math.ceil(duration * STREAM_HZ - 1e-9))
+    goals, previous, largest = [], dict(start), 0.0
+    for k in range(1, n + 1):
+        s = k / n
+        blend = s ** 3 * (10 - 15 * s + 6 * s * s)
+        goal = {j: start[j] + (target[j] - start[j]) * blend for j in arm_routes.ARM_JOINTS}
+        largest = max(largest, max(abs(goal[j] - previous[j]) for j in goal))
+        goals.append(goal)
+        previous = goal
+    return goals, largest
+
+
+def play_leg(robot, doc: dict, route_name: str, record: dict | None, leg_index: int, *, operator_approved: bool,
+             allow_live: bool, motion_enabled: bool | None = None, speed_deg_s: float | None = None,
+             stop_event=None, freeze_event=None, gate_context: dict | None = None,
+             sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic) -> dict:
+    """Fly one leg of a route (section 4.2/4.3): the gate first, then minimum-jerk goals at STREAM_HZ from the
+    present read-back, then a read-back. `record` is the clearance record; `gate_context` carries the other plain
+    inputs of `safety.arm_gate_check` (motion_lock_free, stop_unresolved, rig_check_done, empty_confirmed,
+    board_reads, fk_tip_m, rest_tip_m, hand_in_view). Nothing is sent unless the gate passed and `allow_live`.
+
+    It ends `reached` (the arm stays powered at the pose) or one of ARM_ABORTS: `following` (a gross joint more than
+    config.ARM_FOLLOW_TOL_DEG from its goal for ARM_FOLLOW_WINDOW_S), `load`, `temperature`, `readback` (arrived
+    outside the tolerance), `timeout`, `stop` (`stop_event`, or `freeze_event`) or `error`. Every abort HOLDS: goal =
+    present on all seven joints; the arm stays powered. The gripper is only ever set to its own read-back."""
+    reading = arm_read(robot)
+    present = _present_deg(reading)
+    leg = None
+    try:
+        leg = arm_routes.expand_legs(doc, route_name)[leg_index]
+    except (KeyError, IndexError, TypeError):
+        pass
+    duration, goals, largest = None, None, None
+    if leg is not None:
+        base = present if present is not None else dict(leg.q_from)
+        duration = arm_routes.leg_duration_s(base, leg.q_to, leg.min_duration_s, speed_deg_s)
+        goals, largest = _plan(base, leg.q_to, duration)
+    temperatures = {n: j["temperature_c"] for n, j in reading["joints"].items()}
+    gate = arm_gate_check(doc, route_name, leg_index, record, present, temperatures, duration, largest,
+                          operator_approved, motion_enabled, **(gate_context or {}))
+    blocking = [f for f in gate.failures if f != MOTION_DISABLED]
+    if leg is not None and gate.passed and any(j["compliant"] is not False for j in reading["joints"].values()):
+        blocking.append("The arm is not powered: arm_power_at_rest first")   # a goal on a compliant joint moves nothing
+    live = gate.passed and not blocking and allow_live and robot is not None
+    gripper_now = reading["gripper"]["position_deg"]
+    out = {"action": "leg", "route": route_name, "leg_index": leg_index,
+           "from": getattr(leg, "start", None), "to": getattr(leg, "to", None),
+           "direction": getattr(leg, "direction", None), "duration_s": duration, "max_goal_step_deg": largest,
+           "gripper_deg_requested": getattr(leg, "gripper_deg", None), "gripper_present_deg": gripper_now,
+           "gripper_step_needed": (leg is not None and gripper_now is not None
+                                   and abs(gripper_now - leg.gripper_deg) > config.GRIPPER_FOLLOW_TOL_DEG),
+           "mode": "live" if live else "dry-run", "gate": {"passed": gate.passed, "failures": gate.failures + [
+               f for f in blocking if f not in gate.failures]}, "samples": []}
+    what = f"{out['from']} -> {out['to']}"
+    if blocking:
+        LOG.warning("ARM LEG refused: %s: %s", what, "; ".join(blocking))
+        out["outcome"] = "refused"
+    elif not live:
+        LOG.info("DRY-RUN arm leg %s over %.2f s (nothing sent)", what, duration)
+        out["outcome"] = "dry-run"
+    else:
+        LOG.info("ARM LEG %s over %.2f s (live)", what, duration)
+        try:
+            out["outcome"] = _fly(robot, leg, goals, duration, stop_event, freeze_event, sleep, clock, out)
+        except Exception as exc:  # noqa: BLE001 - report the type only; the hold below is the safe state
+            out["outcome"], out["error"] = "error", type(exc).__name__
+            LOG.error("ARM LEG failed: %s", type(exc).__name__)
+        if out["outcome"] != "reached":
+            out["hold_errors"] = _hold(robot)
+            out["held"] = not out["hold_errors"]
+            out["only_retreat_offered"] = True
+            LOG.warning("ARM LEG %s ended %s: arm held", what, out["outcome"])
+    out["readback"] = arm_read(robot)
+    LOG.info("arm leg %s: %s", what, out["outcome"])
+    return out
+
+
+def _check_sample(robot, goal, now, state, out) -> str | None:
+    """One poll during a leg: the abort it shows, or None. Positions must be readable (else it raises)."""
+    joints = _arm_joints(robot)
+    present = {n: float(j.present_position) for n, j in joints.items()}
+    loads = {n: _try(lambda j=j: float(j.present_load))[0] for n, j in joints.items()}
+    temps = {n: _try(lambda j=j: float(j.temperature))[0] for n, j in joints.items()}
+    out["max_following_deg"] = max(out.get("max_following_deg", 0.0),
+                                   max(abs(present[n] - goal[n]) for n in ARM_GROSS_JOINTS))
+    if any(t is not None and t > config.ARM_MAX_TEMP_C for t in temps.values()):
+        return "temperature"
+    if any(v is not None and abs(v) > config.ARM_MAX_LOAD for v in loads.values()):
+        return "load"
+    if any(abs(present[n] - goal[n]) > config.ARM_FOLLOW_TOL_DEG for n in ARM_GROSS_JOINTS):
+        state["off_since"] = now if state.get("off_since") is None else state["off_since"]
+        if now - state["off_since"] >= config.ARM_FOLLOW_WINDOW_S:
+            return "following"
+    else:
+        state["off_since"] = None
+    state["present"] = present
+    return None
+
+
+def _fly(robot, leg, goals, duration, stop_event, freeze_event, sleep, clock, out) -> str:
+    joints = _arm_joints(robot)
+    gripper = robot.r_arm.joints.r_gripper
+    if gripper.compliant is False:       # hold the gripper where it is: never a goal it was not read at
+        gripper.goal_position = gripper.present_position
+    began, state, previous = clock(), {}, {n: float(j.present_position) for n, j in joints.items()}
+    limit = config.ARM_TIMEOUT_FACTOR * duration + config.ARM_TIMEOUT_EXTRA_S
+    for tick, goal in enumerate(goals, 1):
+        if (stop_event is not None and stop_event.is_set()) or (freeze_event is not None and freeze_event.is_set()):
+            out["stop_reason"] = "freeze" if freeze_event is not None and freeze_event.is_set() else "stop"
+            return "stop"
+        now = clock()
+        if now - began > limit:
+            return "timeout"
+        abort = _check_sample(robot, previous, now, state, out)
+        if abort:
+            return abort
+        for name, joint in joints.items():
+            if abs(goal[name] - previous[name]) > config.ARM_MAX_GOAL_STEP_DEG + 1e-9:
+                raise ArmStepExceeded(f"{name}: {abs(goal[name] - previous[name]):.3f} deg in one goal")
+        for name, joint in joints.items():
+            joint.goal_position = goal[name]
+        previous = goal
+        if tick % ARM_SAMPLE_EVERY == 0 and len(out["samples"]) < ARM_SAMPLE_CAP:
+            out["samples"].append({"t": round(now - began, 3), "goal": dict(goal), "present": state.get("present")})
+        sleep(1 / STREAM_HZ)
+    settle_began = clock()
+    while clock() - settle_began < config.ARM_SETTLE_S:
+        if stop_event is not None and stop_event.is_set():
+            return "stop"
+        abort = _check_sample(robot, previous, clock(), state, out)
+        if abort:
+            return abort
+        sleep(1 / STREAM_HZ)
+    final = {n: float(j.present_position) for n, j in joints.items()}
+    errors = {n: abs(final[n] - leg.q_to[n]) for n in final}
+    out["arrival_deg"] = {"critical": max(errors[n] for n in ARM_CRITICAL_JOINTS),
+                          "weak": max(errors[n] for n in ARM_WEAK_JOINTS)}
+    return "reached" if out["arrival_deg"]["critical"] <= config.ARM_READBACK_CRITICAL_TOL_DEG else "readback"
+
+
+def arm_head_follow(robot, record: dict | None, waypoint: str, *, operator_approved: bool, allow_live: bool,
+                    motion_enabled: bool | None = None, ik: str = "sdk",
+                    duration: float = HEAD_DEFAULT_DURATION_S, stop_event=None,
+                    sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic) -> dict:
+    """The head follows the gripper (section 6), once per waypoint, after a leg `reached` and never during one:
+    read `forward_kinematics()`, clamp the tip into the head look-at box, then the gated neck move.
+
+    ik="sdk" (the robot): the SDK head IK (`look_at_point`), then `head_gate_check`, then the streamed neck. A
+    difference over config.ARM_HEAD_FOLLOW_DIFF_DEG from the record's angles is logged, not gated.
+    ik="record" (the sim, whose SDK head IK is a stub): the record's neck angles for this waypoint, through the same
+    gated neck move. Where the record says the tip is in neither camera frame the head holds its last pose.
+    Not `gaze.project` (sim #208)."""
+    reading = arm_read(robot)
+    tip = reading["fk_tip_m"]
+    row = ((record or {}).get("head") or {}).get(waypoint)
+    out = {"action": "head_follow", "waypoint": waypoint, "ik": ik, "fk_tip_m": tip, "clamped_tip_m": None}
+    if tip is None:
+        out["outcome"] = "skipped"
+        out["reason"] = "forward_kinematics unreadable"
+        return out
+    if row is not None and not (row["tip_in_view_left"] or row["tip_in_view_right"]):
+        out["outcome"] = "held"
+        out["reason"] = "the record says the hand is in neither camera frame inside the neck limits"
+        return out
+    (x0, x1), (y0, y1), (z0, z1) = HEAD_LOOK_AT_BOX
+    clamped = [min(max(tip[0], x0), x1), min(max(tip[1], y0), y1), min(max(tip[2], z0), z1)]
+    out["clamped_tip_m"] = clamped
+    common = dict(operator_approved=operator_approved, allow_live=allow_live, motion_enabled=motion_enabled,
+                  stop_event=stop_event, sleep=sleep, clock=clock)
+    if ik == "record":
+        if row is None:
+            out["outcome"] = "skipped"
+            out["reason"] = f"the record has no head angles for {waypoint}"
+            return out
+        move = _move_neck(robot, dict(row["neck_deg"]), duration, preset=None, look_at=Pose3D(*clamped), **common)
+    elif ik == "sdk":
+        move = look_at_point(robot, *clamped, duration, **common)
+        if row is not None and move.get("target_deg"):
+            diff = max(abs(move["target_deg"][n] - row["neck_deg"][n]) for n in NECK_JOINTS)
+            out["ik_vs_record_deg"] = diff
+            if diff > config.ARM_HEAD_FOLLOW_DIFF_DEG:
+                LOG.warning("head follow %s: SDK IK is %.1f deg from the record's neck angles", waypoint, diff)
+    else:
+        raise ValueError(f"ik must be 'sdk' or 'record', not {ik!r}")
+    out["move"] = move
+    out["outcome"] = move["outcome"]
+    return out

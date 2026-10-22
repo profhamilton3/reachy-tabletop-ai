@@ -30,6 +30,7 @@ import csv
 import hashlib
 import io
 import logging
+import re
 import subprocess
 import wave
 from dataclasses import dataclass, field
@@ -56,6 +57,7 @@ from reachy_ai.config import (
     HEAD_PRESETS,
     NECK_JOINTS,
 )
+from reachy_ai.motion import arm_routes
 from reachy_ai.motion.primitives import GRIPPER_ABORTS
 from reachy_ai.pair_bundle import build_bundle, json_bytes
 from reachy_ai.robot_inventory import count_replacements, redact, topic_lines, workstation_names
@@ -104,6 +106,11 @@ class GripperRefused(PermissionError):
     """The gripper safety gate (or the run's own rules) refused the move; nothing was sent."""
 
 
+class TeachRefused(ValueError):
+    """A Teach arm pose reading was refused (an arm joint is not compliant, or a joint could not be read); nothing
+    was written, and the arm's compliance is never changed here."""
+
+
 class RunLimit(ValueError):
     pass
 
@@ -138,13 +145,14 @@ class Step:
     inventory: str | None = None     # "sdk", "nuc" or "answers" (the Robot inventory, #62)
     gripper: str | None = None       # "read" (Stage 0, read-only), "move" (needs confirm) or "release"
     gripper_target_deg: float | None = None  # the r_gripper goal of a "move" step
+    teach: str | None = None         # "REST", "REST_OUT" or "custom": a read-only Teach arm pose step (#66 A2)
 
     def describe(self) -> dict:
         return {"id": self.id, "label": self.label, "zoom": self.zoom, "distance_m": self.distance_m,
                 "head": self.head, "head_deg": head_deg(self.head), "capture": self.capture,
                 "zoom_role": self.zoom_role, "sound": self.sound, "inventory": self.inventory,
                 "gripper": self.gripper, "gripper_target_deg": self.gripper_target_deg,
-                "instruction": self.instruction}
+                "teach": self.teach, "instruction": self.instruction}
 
 
 @dataclass(frozen=True)
@@ -152,7 +160,7 @@ class Procedure:
     id: str
     name: str
     version: str
-    kind: str                        # "zoom" | "depth" | "head" | "sound" | "inventory" | "gripper": its analyser
+    kind: str                        # "zoom" | "depth" | "head" | "sound" | "inventory" | "gripper" | "teach"
     summary: str
     setup: tuple[str, ...]
     steps: tuple[Step, ...]
@@ -349,6 +357,40 @@ def robot_inventory_procedure() -> Procedure:
                                 "on it), add a free note if you like, and press 'Save answers'.")))
 
 
+#: Teach arm pose (#66 A2): format_version 1 of the bundle's teach/ files. Any change bumps it.
+TEACH_FORMAT_VERSION = 1
+TEACH_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,31}$")
+TEACH_SOURCE = "Teach arm pose procedure (arm_teach v1): read-back of the arm moved by hand, compliant"
+
+
+def arm_teach_procedure() -> Procedure:
+    """Not in PROCEDURES yet: the viewer has no endpoint to run it (A3 adds that with the arm thread), so it would
+    be a listed procedure the page cannot run."""
+    return Procedure(
+        id="arm_teach", name="Teach arm pose", version="1", kind="teach",
+        summary="Siva moves the compliant arm by hand to REST, then REST_OUT, then any other pose. Each step reads "
+                "the seven arm joints, the gripper and the arm's forward kinematics, and nothing else. The bundle "
+                "holds the readings with their timestamps and a JSON pose block in arm_routes.json's format "
+                "(provenance 'taught'), ready to paste.",
+        setup=("READ ONLY: this procedure sends no goal, no power, no compliance change and no motion of any kind. "
+               "The arm must already be compliant (limp); if any arm joint is stiff the reading is refused and the "
+               "procedure does not change that.",
+               "Support the arm with your hand while you move it: it is not powered. Hold each pose still for the "
+               "reading.",
+               "A reading is not a route: pasting a pose block into arm_routes.json changes the route's hash, so the "
+               "route needs a new clearance record before the robot may play it."),
+        steps=(Step(id="teach_rest", label="REST", teach="REST", capture=False,
+                    instruction="Move the arm to its REST pose by hand, hold it still, and press 'Read pose' "
+                                "(label REST). Reads only; the arm stays compliant."),
+               Step(id="teach_rest_out", label="REST_OUT", teach="REST_OUT", capture=False,
+                    instruction="Move the arm to REST_OUT by hand, hold it still, and press 'Read pose' "
+                                "(label REST_OUT). Reads only."),
+               Step(id="teach_custom", label="Custom pose", teach="custom", capture=False,
+                    instruction="Move the arm to any other pose, type its name (capital letters, digits and "
+                                "underscores, e.g. B2_SAFE), and press 'Read pose'. You can repeat this step; the "
+                                "latest reading of a name is the one in the pose block.")))
+
+
 #: Gripper range (#27 Part A): format_version 1 of docs/gripper-capture-format.md. Any change bumps it.
 GRIPPER_FORMAT_VERSION = 1
 GRIPPER_CSV_COLUMNS = ("step_id", "attempt", "time_s", "target_deg", "present_deg", "load", "force",
@@ -450,6 +492,7 @@ class CaptureRun:
     gripper_events: list[dict] = field(default_factory=list)  # Stop, not tied to a step
     gripper_stage0: dict | None = None  # the first Stage 0 read that found the position
     gripper_aborted: str | None = None  # the outcome that ended the run's moves (an abort, not an end stop)
+    teach_results: dict[str, list[dict]] = field(default_factory=dict)  # every Teach arm pose attempt per step
     created_utc: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     commands_attempted: bool = False  # a zoom command (live or dry-run) has been asked for
     _start: str | None = None  # the starting zoom: the first complete read, fixed once a command was attempted
@@ -697,6 +740,69 @@ class CaptureRun:
         attempts.append(record)
         return record
 
+    def apply_teach(self, step_id: str, reader, label: str | None = None, by: str = "operator") -> dict:
+        """One Teach arm pose reading; READ ONLY. `reader()` returns `primitives.arm_read(robot)`. Refused with
+        TeachRefused (and recorded as refused) if a joint position cannot be read or ANY arm joint is not compliant:
+        nothing here ever changes compliance, power or a goal. The reading is kept with its UTC time."""
+        step = self.procedure.step(step_id)
+        if step.teach is None:
+            raise ValueError(f"step {step_id!r} is not a Teach arm pose step")
+        name = step.teach if step.teach != "custom" else str(label or "").strip()
+        attempts = self.teach_results.setdefault(step_id, [])
+        taught_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        refusal = None
+        if not TEACH_NAME.match(name):
+            refusal = f"a pose name is capital letters, digits and underscores (2 to 32), got {name!r}"
+        reading = None
+        if refusal is None:
+            try:
+                reading = reader()
+            except Exception as exc:  # noqa: BLE001 - recorded, then refused
+                refusal = f"the arm could not be read ({type(exc).__name__})"
+        if refusal is None:
+            joints = reading.get("joints") or {}
+            unreadable = [j for j in arm_routes.ARM_JOINTS if (joints.get(j) or {}).get("position_deg") is None]
+            stiff = [j for j in arm_routes.ARM_JOINTS if (joints.get(j) or {}).get("compliant") is not True]
+            if unreadable:
+                refusal = f"no position for {', '.join(unreadable)}"
+            elif stiff:
+                refusal = (f"{', '.join(stiff)} not compliant: the arm must be limp to be moved by hand "
+                           f"(this procedure does not change that)")
+        if refusal is not None:
+            attempts.append({"op": "read", "label": name, "outcome": "refused", "reason": refusal,
+                             "taught_utc": taught_utc})
+            raise TeachRefused(refusal)
+        pose = {j: round(float(joints[j]["position_deg"]), 2) for j in arm_routes.ARM_JOINTS}
+        record = {"op": "read", "label": name, "outcome": "read", "taught_utc": taught_utc,
+                  "index": sum(1 for rows in self.teach_results.values() for r in rows if r["outcome"] == "read"),
+                  "by": str(by or "operator").strip()[:MAX_NOTE_CHARS] or "operator", "joints_deg": pose,
+                  "gripper_deg": (reading.get("gripper") or {}).get("position_deg"),
+                  "fk_tip_m": reading.get("fk_tip_m"), "reading": reading}
+        attempts.append(record)
+        return record
+
+    def teach_count(self) -> int:
+        return sum(1 for rows in self.teach_results.values() for r in rows if r["outcome"] == "read")
+
+    def teach_pose_block(self) -> dict:
+        """{NAME: {"joints_deg", "provenance"}} in arm_routes.json's format, from the latest reading of each name.
+        Provenance is 'taught': `cell` is the reading's index in this run, `sha256` the hash of its joints and time."""
+        latest: dict[str, dict] = {}
+        for rows in self.teach_results.values():
+            for r in rows:
+                if r["outcome"] == "read":
+                    latest[r["label"]] = r if r["label"] not in latest or r["index"] > latest[r["label"]]["index"] \
+                        else latest[r["label"]]
+        block = {}
+        for name in sorted(latest):
+            r = latest[name]
+            digest = hashlib.sha256(json_bytes({"label": name, "joints_deg": r["joints_deg"],
+                                                "taught_utc": r["taught_utc"]})).hexdigest()
+            block[name] = {"joints_deg": dict(r["joints_deg"]),
+                           "provenance": {"kind": "taught", "source": TEACH_SOURCE, "cell": r["index"],
+                                          "sha256": digest, "by": r["by"], "taught_utc": r["taught_utc"]}}
+        return block
+
     def _run_probes(self, client) -> dict:
         """Every probe of INVENTORY_PROBES; an unreachable helper marks them all 'not run', never guessed."""
         probes: dict[str, dict] = {}
@@ -793,11 +899,13 @@ class CaptureRun:
                            "head_commands": self.head_commands.get(s.id, []),
                            "gripper_commands": [slim_gripper(r) for r in self.gripper_commands.get(s.id, [])],
                            "sound_results": self.sound_results.get(s.id, []), "answer": self.answers.get(s.id),
-                           "inventory_results": self.inventory_results.get(s.id, [])}
+                           "inventory_results": self.inventory_results.get(s.id, []),
+                           "teach_results": [_slim_teach(r) for r in self.teach_results.get(s.id, [])]}
                           for s in self.procedure.steps],
                 "head_events": self.head_events, "gripper_events": self.gripper_events,
                 "gripper_aborted": self.gripper_aborted, "pairs": self.pair_count(), "max_pairs": MAX_PAIRS_PER_RUN,
-                "can_download": bool(self.pair_count() or self.sound_count() or self.inventory_count())}
+                "can_download": bool(self.pair_count() or self.sound_count() or self.inventory_count()
+                                     or self.teach_count())}
 
     def calibration_id(self) -> Any:
         for taken in self.captures.values():
@@ -901,6 +1009,9 @@ class CaptureRun:
                            answer=self.answers.get(step.id), clips=clips)
             if step.inventory:
                 row.update(inventory=step.inventory, inventory_results=self.inventory_results.get(step.id, []))
+            if step.teach:
+                row.update(teach=step.teach,
+                           teach_results=[_slim_teach(r) for r in self.teach_results.get(step.id, [])])
             steps.append(row)
         summary = {"schema_version": "2", "procedure": self.identity(), "kind": self.procedure.kind,
                    "calibration_id": self.calibration_id(), "steps": steps, "head_events": self.head_events}
@@ -930,6 +1041,14 @@ class CaptureRun:
                            # replies built here (helper unreachable) carry no commands and need no helper pass
                            redaction={"helper": all(p.get("redacted") for p in probes.values() if "commands" in p),
                                       "viewer_pass": True, "viewer_replacements": missed})
+        if self.procedure.kind == "teach":
+            readings = [r for rows in self.teach_results.values() for r in rows]
+            files["teach/readings.json"] = json_bytes(sorted(readings, key=lambda r: (r["taught_utc"], r["label"])))
+            files["teach/poses.json"] = json_bytes(self.teach_pose_block())
+            summary.update(format_version=TEACH_FORMAT_VERSION, poses=sorted(self.teach_pose_block()),
+                           pose_block="teach/poses.json", readings="teach/readings.json",
+                           note="Read-only: no goal, power or compliance change was sent. A pose block is not a "
+                                "route: pasting it changes the route's hash and needs a new clearance record.")
         profile = self.analysis_profile()
         if profile.get("source"):
             summary["source"] = profile["source"]  # which camera geometry the analysers must use
@@ -941,7 +1060,8 @@ class CaptureRun:
         return {"id": self.procedure.id, "name": self.procedure.name, "version": self.procedure.version}
 
     def build_zip(self, versions: dict) -> bytes:
-        if not (self.pair_count() or self.sound_count() or self.inventory_count() or self.gripper_commands):
+        if not (self.pair_count() or self.sound_count() or self.inventory_count() or self.gripper_commands
+                or self.teach_count()):
             raise RunLimit("Nothing captured yet.")
         return build_bundle(self.bundle_files(versions), versions, self.calibration_id(), procedure=self.identity())
 
@@ -950,6 +1070,11 @@ GRIPPER_UNITS = {"angle": "degrees (r_gripper, joint.goal_position / present_pos
                  "load": "the SDK's present_load, unscaled", "force": "the gripper force sensor's reading, unscaled",
                  "temperature": "degrees Celsius", "torque_limit": "percent", "speed_limit": "degrees per second",
                  "time": "seconds since the first sample of the run (monotonic clock)"}
+
+
+def _slim_teach(record: dict) -> dict:
+    """A Teach arm pose attempt without the full reading (the state view; the bundle keeps the reading)."""
+    return {k: v for k, v in record.items() if k != "reading"}
 
 
 def slim_gripper(record: dict) -> dict:

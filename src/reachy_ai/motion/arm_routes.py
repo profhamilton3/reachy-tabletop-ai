@@ -5,8 +5,10 @@ route player and the arm gate (A1, A2) build on it.
 """
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
+from reachy_ai import config
 from reachy_ai.motion.arm_route_hash import named_poses, route_hash
 
 SCHEMA = "arm_routes.v1"
@@ -194,3 +196,46 @@ def pose_rule(doc, route_name):
     if sim:
         return False, "%s: sim pose(s) %s" % (PLAYABLE_AFTER_TEACHING, ", ".join(sim))
     return True, None
+
+
+@dataclass(frozen=True)
+class ArmLeg:
+    """One flown leg of a route: its own legs out, then the same legs in reverse back to the start (design 3.1).
+
+    `q_from` and `q_to` hold the seven arm joints in degrees. `gripper_deg` is the gripper the leg's destination
+    pose is flown with: the player never drives it during the leg, a separate gripper step applies it first (4.2).
+    """
+    index: int
+    direction: str               # "out" or "return"
+    start: str                   # pose names
+    to: str
+    q_from: dict
+    q_to: dict
+    gripper_deg: float
+    min_duration_s: float
+    near_board: bool
+
+
+def leg_duration_s(q_from, q_to, min_duration_s, speed_deg_s=None):
+    """max(min_duration_s, largest arm-joint change / speed), rounded UP to 10 ms so the average speed never
+    exceeds `speed_deg_s` (default config.ARM_MAX_AVG_SPEED_DEG_S; design 4.2)."""
+    speed = config.ARM_MAX_AVG_SPEED_DEG_S if speed_deg_s is None else speed_deg_s
+    largest = max(abs(q_to[j] - q_from[j]) for j in ARM_JOINTS)
+    return math.ceil(max(float(min_duration_s), largest / speed) * 100 - 1e-9) / 100
+
+
+def expand_legs(doc, route_name):
+    """The legs of `route_name` as flown, out then back (same order as the sim's clearance record, so
+    `record["legs"][i]` describes `legs[i]`). A pose's gripper is its arriving leg's; the start pose keeps the
+    first leg's. A return leg keeps the outbound leg's minimum duration and near_board flag."""
+    route = doc["routes"][route_name]
+    legs = route["legs"]
+    names = [route["start"]] + [leg["to"] for leg in legs]
+    grips = [legs[0]["gripper_deg"]] + [leg["gripper_deg"] for leg in legs]
+    q = [{j: float(doc["poses"][n]["joints_deg"][j]) for j in ARM_JOINTS} for n in names]
+    out = [dict(direction="out", start=names[i], to=names[i + 1], q_from=q[i], q_to=q[i + 1],
+                gripper_deg=float(grips[i + 1]), min_duration_s=float(leg["min_duration_s"]),
+                near_board=bool(leg.get("near_board", False))) for i, leg in enumerate(legs)]
+    back = [dict(leg, direction="return", start=leg["to"], to=leg["start"], q_from=leg["q_to"], q_to=leg["q_from"],
+                 gripper_deg=float(grips[i])) for i, leg in reversed(list(enumerate(out)))]
+    return [ArmLeg(index=i, **leg) for i, leg in enumerate(out + back)]
