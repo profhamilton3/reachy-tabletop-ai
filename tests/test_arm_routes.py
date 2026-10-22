@@ -286,11 +286,23 @@ def test_hash_module_is_stdlib_only_and_python_38_clean():
 
 # --- records ------------------------------------------------------------------------------------------------------
 
+RECORD_TEMPLATE = ROOT / "tests" / "fixtures" / "arm_route_records" / "B2_GRIP_TUNE_sim_output.json"
+
+
 def record(doc, name="B2_GRIP_TUNE", verdict="pass", layout=config.ARM_RIG_LAYOUT_ID, mount=config.ARM_MOUNT_ID,
            digest=None):
-    digest = digest or route_hash(name, doc, ARM_LIMITS_DEG)
-    return {"route": name, "route_hash": digest, "verdict": verdict,
-            "rig": {"rig_layout_id": layout, "mount_id": mount, "scene_name": "FWDCenterLabSivaPool"}}
+    """A schema-valid record, from the sim's real B2_GRIP_TUNE output (a fail: the target square). A "pass" one
+    has no reasons and a target placement that holds to 1 mm."""
+    rec = json.loads(RECORD_TEMPLATE.read_text(encoding="utf-8"))
+    rec.update(route=name, route_hash=digest or route_hash(name, doc, ARM_LIMITS_DEG), verdict=verdict)
+    rec["rig"].update(rig_layout_id=layout, mount_id=mount)
+    if verdict == "pass":
+        rec["reasons"] = []
+        for kind, piece in rec["target_placement"]["pieces"].items():
+            piece["steps"] = [{"offset_mm": 0, "moved_mm": 0.0}, {"offset_mm": 1, "moved_mm": 0.2},
+                              {"offset_mm": 2, "moved_mm": 1.3}]
+            piece["tolerance_mm"] = rec["target_placement_tolerance_mm"][kind] = 1
+    return rec
 
 
 def write(directory, rec):
@@ -340,6 +352,88 @@ def test_record_loader_refusals(doc, tmp_path):
         arm_records.load_records(tmp_path)
 
 
+def test_committed_b2_grip_tune_record_is_valid_and_fails_on_the_target_square(doc):
+    (rec,) = [r for r in arm_records.load_records() if r["route"] == "B2_GRIP_TUNE"]
+    assert rec["route_hash"] == arm_routes.route_hashes(doc)["B2_GRIP_TUNE"]
+    assert arm_records.record_status(doc, "B2_GRIP_TUNE", [rec]) == "fail"
+    assert rec["reasons"] and all(r.startswith("target r2c2: a centred ") for r in rec["reasons"])
+    assert rec["target_cell"] == "r2c2" and "r2c2" not in rec["occupancy"]
+    assert rec["target_placement_tolerance_mm"] == {"cube": None, "cylinder": None}
+    assert sorted(c for c, s in rec["occupancy"].items() if s == "must_be_empty") == ["r1c2", "r1c3", "r2c3", "r3c2"]
+    conditional = {(d["pose"], d["pair"]): d["condition"] for d in rec["declared_contacts"]}
+    assert conditional == {("B2_PLACE", "r_forearm_col/table_top"): None, ("REST", "r_forearm_col/table_top"): None,
+                           ("REST", "r_hand_back_col/table_top"): {"max_joint_deviation_deg": 1.0},
+                           ("REST", "r_palm_col/table_top"): {"max_joint_deviation_deg": 1.0}}
+
+
+def test_the_template_is_the_committed_sim_output_modulo_nothing():
+    committed = sorted(arm_records.RECORDS_DIR.glob("B2_GRIP_TUNE@*.json"))
+    assert [p.read_bytes() for p in committed] == [RECORD_TEMPLATE.read_bytes()]
+
+
+def _refused(rec, text, tmp_path):
+    folder = tmp_path / str(abs(hash(text)))
+    folder.mkdir()
+    (folder / ("%s@%s.json" % (rec["route"], rec["route_hash"][:12]))).write_text(json.dumps(rec))
+    with pytest.raises(arm_records.RecordError, match=text):
+        arm_records.load_records(folder)
+
+
+def _rest_palm(rec):
+    for leg in rec["legs"]:
+        for c in leg["physics"]["contacts"]:
+            if c["pair"] == "r_palm_col/table_top" and c["at"] == "REST":
+                return c
+    raise AssertionError("no palm contact at REST in the template")
+
+
+def test_record_schema_is_strict_and_self_consistent(doc, tmp_path):
+    good = record(doc)
+    arm_records.validate_record(copy.deepcopy(good))
+    arm_records.validate_record(record(doc, verdict="fail"))
+    cases = []
+    cases.append(({**good, "extra": 1}, r"unknown field\(s\) \['extra'\]"))
+    cases.append(({**good, "schema": "arm_route_record.v0"}, "must be 'arm_route_record.v1'"))
+    cases.append(({**good, "reasons": ["x"]}, "'pass' needs no reasons"))
+    cases.append(({**record(doc, verdict="fail"), "reasons": []}, "'fail' needs at least one"))
+    bad = copy.deepcopy(good)
+    bad["rig"]["extra"] = "x"
+    cases.append((bad, r"rig: unknown field"))
+    # a conditional declaration: the palm at REST is declared only within 1 deg of REST
+    bad = copy.deepcopy(good)
+    _rest_palm(bad)["deviation_deg"]["REST"] = 2.0
+    cases.append((bad, "2.0 deg from REST \\(the declaration allows 1.0\\)"))
+    bad = copy.deepcopy(good)
+    bad["declared_contacts"] = [d for d in bad["declared_contacts"] if d["pair"] != "r_palm_col/table_top"]
+    cases.append((bad, "nothing declares r_palm_col/table_top at REST"))
+    bad = copy.deepcopy(good)
+    bad["declared_contacts"][0]["condition"] = {"max_joint_deviation_deg": 0}
+    cases.append((bad, "must be positive"))
+    bad = copy.deepcopy(good)
+    _rest_palm(bad)["declared"] = False
+    cases.append((bad, "a passing record has an undeclared contact"))
+    # the target square
+    bad = copy.deepcopy(good)
+    bad["occupancy"]["r2c2"] = "must_be_empty"
+    cases.append((bad, "must not include the target square r2c2"))
+    bad = copy.deepcopy(good)
+    bad["target_placement_tolerance_mm"]["cube"] = 2
+    cases.append((bad, "does not follow from the steps"))
+    bad = copy.deepcopy(good)
+    bad["target_placement"]["pieces"]["cube"]["steps"][1]["offset_mm"] = 3
+    cases.append((bad, "1 mm steps from the centre"))
+    bad = copy.deepcopy(good)
+    cube = bad["target_placement"]["pieces"]["cube"]
+    cube["steps"] = [{"offset_mm": 0, "moved_mm": 2.46}]
+    cube["tolerance_mm"] = bad["target_placement_tolerance_mm"]["cube"] = None
+    cases.append((bad, "a centred target piece was disturbed, so the verdict cannot pass"))
+    bad = copy.deepcopy(good)
+    del bad["target_placement_tolerance_mm"]["cylinder"]
+    cases.append((bad, "must name exactly the pieces"))
+    for rec, text in cases:
+        _refused(rec, text, tmp_path)
+
+
 def test_record_status_and_playability(doc):
     def taught(d):
         for name in ("REST", "REST_OUT"):
@@ -363,7 +457,7 @@ def test_status_script_lists_the_route(doc):
                          capture_output=True, text=True, check=False)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "B2_GRIP_TUNE" in out.stdout and hashes(doc) in out.stdout
-    assert "record    none" in out.stdout and "OD-A5" in out.stdout
+    assert "record    fail" in out.stdout and "OD-A5" in out.stdout
 
 
 # --- no SDK, stereo or primitives --------------------------------------------------------------------------------
