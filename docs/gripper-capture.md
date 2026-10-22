@@ -81,7 +81,7 @@ them back.
 ## `gripper.open()` and `close()`
 
 `reachy_sdk` 0.7.0 has no gripper object: `robot.r_arm` has no `gripper`, and `ReachyClient.open_gripper()` /
-`close_gripper()` call attributes that do not exist. The capture therefore does not command them; the run record
+`close_gripper()` used to call attributes that do not exist; they now refuse live (#68). The capture therefore does not command them; the run record
 says `sdk_open_close: skipped` with that reason. If a future SDK has them, Stage 0 notices and records `not_exercised`.
 
 ## Send the bundle
