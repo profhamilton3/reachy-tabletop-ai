@@ -24,7 +24,8 @@ route comes from Step 1. Every open choice is in section 11, with a recommended 
 **Step 1's verdict, in five lines:**
 1. **Usable now:** Siva's MovePieceLogic poses (`PICK_SAFE`, `PICK`, `TRANSPORT`, `B2_SAFE`, `B2_PLACE`). All are
    inside the sim's joint limits and land on the October board. Joined to REST through the sim's `REST_OUT`, they make
-   one Part B route (`B2_GRIP_TUNE`) that the physics flies cleanly, provided **r1c3 is empty**.
+   one Part B route (`B2_GRIP_TUNE`) that the physics flies cleanly, provided the record's **`must_be_empty` cells**
+   (r1c2, r1c3, r2c3, r3c2) are empty. Its record still fails on the target square (section 2.5).
 2. **Not usable as taught:** CalibrateBoard's B2/B3 chains. 12 poses have wrist roll of 45.2–60.8° (the URDF and sim
    allow ±45°). 2 have shoulder roll of 31.6–32.9° (the sim allows +20.3°).
 3. **Not usable at all:** the straight line REST ↔ TRANSPORT. In physics it throws a soda can on r1c3 1.13 m.
@@ -178,8 +179,21 @@ route comes from Step 1. Every open choice is in section 11, with a recommended 
 
 - **The B2 descent's forearm sweeps r1c3.** Kinematically it reaches 3.5 cm into a lab cylinder there and 5.5 cm into
   the can.
-- **So `B2_GRIP_TUNE` carries an occupancy constraint: r1c3 must be empty.** That is how the multi-object question
-  enters every route (section 8.3).
+- **So `B2_GRIP_TUNE` carries an occupancy constraint: the record's `must_be_empty` cells.** That is how the
+  multi-object question enters every route (section 8.3). The clearance record (A0b, `tools/route_clearance`) puts
+  each lab piece at its worst position in each cell, toward the route, not at the centre as above:
+  - **`must_be_empty`: r1c2, r1c3, r2c3, r3c2**, the cells around B2. At their edge facing B2 the hand or forearm
+    reaches into a piece: a cube on r2c3 is moved 21 mm, one on r1c2 7 mm. Pieces centred on r2c3 and r3c3 (the
+    layout above) do not move; at their worst position the r2c3 one does.
+  - **`may_be_occupied`: r1c1, r2c1, r3c1, r3c3.** Flown all four at once: nothing moved.
+  - **r2c2 is the target square,** outside the map.
+- **The target piece's placement tolerance.** The record also gives `target_placement_tolerance_mm` per lab piece:
+  the largest offset from the centre of r2c2, in 1 mm steps toward the approach (+y, column 1's side), at which the
+  approach to B2_PLACE moves the piece < 1 mm before the pads close. **In the sim there is none, for either piece:**
+  the palm lands on a centred cube (moved 2.5 mm) and a centred cylinder (4.2 mm) on the B2_PLACE descent, as in
+  section 2.6. So the `B2_GRIP_TUNE` record's verdict is `fail`, with that as its only reason. Siva placed real
+  cubes at this pose, so this is the sim's grasp gap (section 2.6, OD-A13); until it is resolved or the owner
+  decides otherwise, `B2_GRIP_TUNE` has no passing record.
 
 ### 2.6 The sim does not reproduce the taught grasps
 
@@ -251,25 +265,68 @@ The file is `src/reachy_ai/motion/arm_routes.json` (package data). It is loaded 
 A record is produced in the sim repo by `tools/route_clearance/` (section 10) and committed here as
 `src/reachy_ai/motion/arm_route_records/<route>@<hash12>.json`:
 
+The format is `arm_route_record.v1`. `motion/arm_records.py` loads it strictly (every object has exactly its
+fields) and checks it against itself (below).
+
 ```
-route, route_hash, verdict ("pass" | "fail" + reasons),
-rig: {rig_layout_id: "FWDCenterLabMCC", mount_id: "october-2026", scene_name, scene_sha256, scene_revision}
-     (perceived-scene §1.2 RigIdentity fields, source = "sim"),
+schema: "arm_route_record.v1",
+route, route_hash, verdict ("pass" | "fail"), reasons: [...]       # empty exactly when the verdict is "pass"
+rig: {rig_layout_id: "fwd-center-lab", mount_id: "october-2026", scene_name, scene_sha256, scene_revision}
+     (perceived-scene §1.2 RigIdentity fields, source = "sim"; the ids are config.ARM_RIG_LAYOUT_ID / ARM_MOUNT_ID),
 sim: {commit, model_sha256, mujoco_version, tool_sha256},
-legs: [{from, to, kinematic: {board_cm, rig_cm, left_arm_cm, self_cm}, physics: {follow_deg, arrival_deg, contacts}}],
-declared_contacts: [("REST", "r_forearm_col/table_top"), ("B2_PLACE", "r_forearm_col/table_top")],
-occupancy: {cell: "may_be_occupied" | "must_be_empty"}, layouts_flown: [...],
-head: {waypoint: {neck_deg, tip_in_view_left, tip_in_view_right}}     # section 6
+routes_sha256,                                                     # the route document the tool read
+legs: [{from, to, direction ("out" | "return"), duration_s, gripper_deg,
+        kinematic: {board_cm, board_geom, board_t_s, rig_cm, left_arm_cm, self_cm, zones},
+        physics: {follow_deg, arrival_deg, arrival_weak_deg,
+                  contacts: [{pair, t_s, steps, at, declared, deviation_deg: {pose: deg}}]}}],
+physics_settle: {at, judged, contacts},                            # the 1 s settle at the start pose, judged
+declared_contacts: [{pose, pair, condition: null | {max_joint_deviation_deg}}],
+occupancy: {cell: "may_be_occupied" | "must_be_empty"},            # every cell except the target square
+target_cell,                                                       # the cell under close_pose, or null
+target_placement_tolerance_mm: {piece: mm | null},
+target_placement: {close_pose, approach_xy, pieces: {piece: {body, steps: [{offset_mm, moved_mm}],
+                                                             centred_piece_contacts, tolerance_mm}}},
+layouts_flown: [...],
+head: {waypoint: {neck_deg, at_limit, off_axis_deg, tip_in_view_left, tip_in_view_right, tip_px_left, tip_px_right}},
+method: {...}                                                      # the tool's constants, so a reader can check a rule
 ```
+
+**Declared contacts** for `B2_GRIP_TUNE` (owner decision, 2026-10-22):
+- `(REST, r_forearm_col/table_top)` and `(B2_PLACE, r_forearm_col/table_top)`, **unconditional**. Each covers its pair
+  on a leg that starts or ends at that pose, while the arm is within the pose's near-board zone (the run of samples
+  under 1 cm from that end, plus 0.25 s), or in the hold at the pose.
+- `(REST, r_palm_col/table_top)` and `(REST, r_hand_back_col/table_top)`, **conditional**:
+  `{max_joint_deviation_deg: 1.0}`. Each is allowed only while the arm's largest joint deviation from REST is ≤ 1°,
+  on the way out and on the way back. Outside that, the contact fails. (Leaving REST, the palm and hand-back graze
+  the board for about 0.2 s at ≤ 0.15° from REST.)
+
+Each contact in the record carries `deviation_deg`, the arm's largest joint deviation from the leg's end poses over
+the contact. The loader refuses a contact marked `declared` that no declaration covers, or that is outside its
+declaration's bound.
 
 **"Pass", proposed defaults:**
 - every waypoint is inside the gate's limits;
-- every leg's board, rig and left-arm distance is ≥ 0, and ≥ 1 cm except at `near_board` waypoints;
-- physics arrival is ≤ 3° on the guard joints, following ≤ 6°, and no contact other than the declared ones.
+- every leg's board, rig and left-arm distance is ≥ 0, and ≥ 1 cm except at `near_board` waypoints. The board is not
+  judged inside an unconditionally declared pose's zone;
+- physics arrival is ≤ 3° on the guard joints, following ≤ 6°, and no contact other than the declared ones, in the
+  legs and in the settle;
+- the target piece is not disturbed when centred (below).
 
 **The occupancy map.** A cell is `may_be_occupied` only if a lab piece on that cell, at its worst position in the cell
-(toward the route), stays ≥ 2 cm from the arm kinematically and moves < 1 mm in physics. Every other cell is
-`must_be_empty`.
+(toward the route), stays ≥ 2 cm from the arm kinematically and moves < 1 mm in physics (its largest displacement in
+the flight). Every other cell is `must_be_empty`. Every `may_be_occupied` cell is then flown at once, and must touch
+and move nothing.
+
+**The target square.** The cell under the route's `close_pose` (r2c2 for `B2_GRIP_TUNE`) is not in the occupancy map:
+the procedure puts the target piece there. Instead, each lab piece is flown at its intended placement: centred on the
+cell, then offset in 1 mm steps toward the approach (the side the hand comes in from), along the outbound legs to the
+close pose and its hold, before the pads close. `target_placement_tolerance_mm` is the largest offset at which every
+step moved the piece < 1 mm. If a centred piece is already disturbed, its tolerance is `null` and the verdict fails
+with that reason.
+
+**Distances.** The board is analytic (Step 1's `board_check`). Rig, left arm, self and pieces are exact for box and
+capsule pairs: `mj_geomDistance` reads two boxes as 0 whenever they are closer than its distmax, so Step 1's guard
+could read a box pair too close, or too far. The flights start each leg from the measured position (section 4.2).
 
 **The robot plays a route only with a record that:**
 - matches the route's current hash;

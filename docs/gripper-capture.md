@@ -116,3 +116,20 @@ Docker; the sim was only read). Its numbers are in every run record's `step0.sim
   hand's own palm when shut, 80 % is visible from 0° to −68°. `board_view` does not show the hand.
 
 The real arm rests where it rests; check the hand in the live view.
+
+## Part B: placing the target piece on B2 (operator instruction)
+
+Part B is not built yet (#66, A3). When it is, these rules come from its route's sim clearance record,
+`src/reachy_ai/motion/arm_route_records/B2_GRIP_TUNE@<hash12>.json` (design `docs/design/arm-motion.md` sections 2.5 and
+3.2). Read them from the record of the route's **current** hash before every run.
+
+- **Place the piece with the arm compliant at REST,** never under a powered arm.
+- **Centre it on B2 (r2c2).** The record's `target_placement_tolerance_mm` gives, per lab piece (`cube`, `cylinder`),
+  how far the piece may sit off the centre **toward column 1** (the side the hand comes in from) before the approach
+  to B2_PLACE disturbs it. Stay within it. Do not place it further toward column 1.
+- **A `null` tolerance means: do not run Part B with that piece.** The centred piece is already disturbed on the
+  approach, and the record's verdict is `fail`. **That is the case today for both pieces:** in the sim the palm lands
+  on a centred cube (moved 2.5 mm) and cylinder (4.2 mm) on the B2_PLACE descent, so `B2_GRIP_TUNE` has no passing
+  record yet.
+- **Keep the record's `must_be_empty` cells empty,** and confirm each one before the run: today r1c2, r1c3, r2c3 and
+  r3c2. The `may_be_occupied` cells (r1c1, r2c1, r3c1, r3c3) may hold pieces.
