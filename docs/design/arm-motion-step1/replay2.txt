@@ -1,0 +1,75 @@
+# (a) lowest point of each right-arm collision geom over the board top (cm), analytic; empty board
+  PICK                       grip   -29: upper_arm +10.4  forearm  +2.8  thumb  +3.5  hand_back  +2.4  palm  +2.2  finger  +2.8
+  PICK                       grip   -10: upper_arm +10.4  forearm  +2.8  thumb  +3.5  hand_back  +2.4  palm  +2.2  finger  +2.9
+  B2_PLACE                   grip   -29: upper_arm  +9.9  forearm  +0.2  thumb  +2.0  hand_back  +0.7  palm  +0.8  finger  +2.0
+  B2_PLACE                   grip   -10: upper_arm  +9.9  forearm  +0.2  thumb  +2.0  hand_back  +0.7  palm  +0.8  finger  +2.0
+  B2_PLACE@Cali128           grip   -29: upper_arm  +9.9  forearm  +4.0  thumb  +2.8  hand_back  +2.6  palm  +1.9  finger  +1.7
+  B2_PLACE@Cali128           grip   -10: upper_arm  +9.9  forearm  +4.0  thumb  +2.8  hand_back  +2.6  palm  +1.9  finger  +1.8
+  B2_PICK                    grip   -29: upper_arm +10.3  forearm  +6.9  thumb  +5.3  hand_back  +6.5  palm  +5.6  finger  +6.8
+  B2_PICK                    grip   -10: upper_arm +10.3  forearm  +6.9  thumb  +5.3  hand_back  +6.5  palm  +5.6  finger  +6.3
+  SUPPLY_SAFE                grip   -29: upper_arm +10.4  forearm  +0.2  thumb  +2.3  hand_back  +0.7  palm  +0.9  finger  +2.2
+  SUPPLY_SAFE                grip   -10: upper_arm +10.4  forearm  +0.2  thumb  +2.3  hand_back  +0.7  palm  +0.9  finger  +2.2
+  SUPPLY_LOWER_7CM_JOINTS    grip   -29: upper_arm +14.4  forearm  +2.1  thumb  +4.7  hand_back  +2.3  palm  +2.7  finger  +4.1
+  SUPPLY_LOWER_7CM_JOINTS    grip   -10: upper_arm +14.4  forearm  +2.1  thumb  +4.7  hand_back  +2.3  palm  +2.7  finger  +4.3
+  B2_APPROACH                grip   -29: upper_arm +10.0  forearm  +4.4  thumb  +7.2  hand_back  +5.0  palm  +5.5  finger  +7.5
+  B2_APPROACH                grip   -10: upper_arm +10.0  forearm  +4.4  thumb  +7.2  hand_back  +5.0  palm  +5.5  finger  +7.6
+  B3_LOWER_3CM_JOINTS        grip   -29: upper_arm +12.8  forearm  +6.8  thumb  +3.4  hand_back  +5.8  palm  +4.3  finger  +3.8
+  B3_LOWER_3CM_JOINTS        grip   -10: upper_arm +12.8  forearm  +6.8  thumb  +3.4  hand_back  +5.8  palm  +4.3  finger  +3.5
+  REST                       grip   -29: upper_arm +10.9  forearm  -0.0  thumb  -1.7  hand_back  -0.1  palm  -0.7  finger  +4.9
+  REST                       grip   -10: upper_arm +10.9  forearm  -0.0  thumb  -1.7  hand_back  -0.1  palm  -0.7  finger  +3.6
+
+# (b) entry and exit legs with pieces on the board (kinematic, joint-space lines; distance to each piece, cm)
+## layout: tall on column 3 {'soda_can': 'cell_r1c3', 'blue_cylinder': 'cell_r2c3', 'red_cube': 'cell_r3c3'}
+  REST -> TRANSPORT (direct)                       grip  +20: soda_can  -1.9 [REST->TRANSPORT s=0.42 r_forearm_col]  blue_cylinder  +2.8 [REST->TRANSPORT s=0.53 r_forearm_col]  red_cube  +6.7
+  REST -> HOME -> TRANSPORT                        grip  +20: soda_can  +0.7 [HOME_POSITION->TRANSPORT s=1.00 r_forearm_col]  blue_cylinder  +7.1  red_cube  +9.0
+  REST -> REST_OUT -> TRANSPORT                    grip  +20: soda_can  +0.7 [REST_OUT->TRANSPORT s=0.95 r_forearm_col]  blue_cylinder  +6.5  red_cube  +9.0
+  REST -> REST_OUT -> PRESENT_SHUT -> TRANSPORT    grip  +20: soda_can  +0.2 [PRESENT_SHUT->TRANSPORT s=0.90 r_forearm_col]  blue_cylinder  +7.5  red_cube  +9.0
+  TRANSPORT -> REST (direct)                       grip  +20: soda_can  -1.9 [TRANSPORT->REST s=0.57 r_forearm_col]  blue_cylinder  +2.8 [TRANSPORT->REST s=0.47 r_forearm_col]  red_cube  +6.7
+  TRANSPORT -> REST_OUT -> REST                    grip  +20: soda_can  +0.7 [TRANSPORT->REST_OUT s=0.05 r_forearm_col]  blue_cylinder  +6.5  red_cube  +9.0
+  TRANSPORT -> PRESENT_SHUT -> REST_OUT -> REST    grip  +20: soda_can  +0.2 [TRANSPORT->PRESENT_SHUT s=0.10 r_forearm_col]  blue_cylinder  +7.5  red_cube  +9.0
+  TRANSPORT -> B2_SAFE -> B2_PLACE (open -29)      grip  -29: soda_can  -5.5 [B2_SAFE->B2_PLACE s=1.00 r_forearm_col]  blue_cylinder  +1.3 [B2_SAFE->B2_PLACE s=1.00 r_hand_back_col]  red_cube  +9.0
+  REST -> REST_OUT -> PICK_SAFE -> PICK            grip  -29: soda_can  +0.2 [PICK_SAFE->PICK s=1.00 r_forearm_col]  blue_cylinder  +4.5  red_cube  +6.7
+## layout: lab pieces on column 3 {'pool_cyl_1': 'cell_r1c3', 'pool_box_1': 'cell_r2c3', 'pool_cyl_2': 'cell_r3c3'}
+  REST -> TRANSPORT (direct)                       grip  +20: pool_cyl_1  +2.2 [REST->TRANSPORT s=0.20 r_forearm_col]  pool_box_1  +6.8  pool_cyl_2  +6.3
+  REST -> HOME -> TRANSPORT                        grip  +20: pool_cyl_1  +3.3  pool_box_1  +9.0  pool_cyl_2 +10.7
+  REST -> REST_OUT -> TRANSPORT                    grip  +20: pool_cyl_1  +3.3  pool_box_1  +9.0  pool_cyl_2  +9.3
+  REST -> REST_OUT -> PRESENT_SHUT -> TRANSPORT    grip  +20: pool_cyl_1  +3.3  pool_box_1  +9.0  pool_cyl_2 +16.7
+  TRANSPORT -> REST (direct)                       grip  +20: pool_cyl_1  +2.2 [TRANSPORT->REST s=0.80 r_forearm_col]  pool_box_1  +6.8  pool_cyl_2  +6.3
+  TRANSPORT -> REST_OUT -> REST                    grip  +20: pool_cyl_1  +3.3  pool_box_1  +9.0  pool_cyl_2  +9.3
+  TRANSPORT -> PRESENT_SHUT -> REST_OUT -> REST    grip  +20: pool_cyl_1  +3.3  pool_box_1  +9.0  pool_cyl_2 +16.7
+  TRANSPORT -> B2_SAFE -> B2_PLACE (open -29)      grip  -29: pool_cyl_1  -3.5 [B2_SAFE->B2_PLACE s=1.00 r_forearm_col]  pool_box_1  +1.8 [B2_SAFE->B2_PLACE s=1.00 r_hand_back_col]  pool_cyl_2 +12.6
+  REST -> REST_OUT -> PICK_SAFE -> PICK            grip  -29: pool_cyl_1  +1.7 [PICK_SAFE->PICK s=1.00 r_forearm_col]  pool_box_1  +4.9  pool_cyl_2  +8.6
+## layout: lab cube on r2c2 {'pool_box_1': 'cell_r2c2'}
+  REST -> TRANSPORT (direct)                       grip  +20: pool_box_1  +9.0
+  REST -> HOME -> TRANSPORT                        grip  +20: pool_box_1  +9.0
+  REST -> REST_OUT -> TRANSPORT                    grip  +20: pool_box_1  +9.0
+  REST -> REST_OUT -> PRESENT_SHUT -> TRANSPORT    grip  +20: pool_box_1  +9.0
+  TRANSPORT -> REST (direct)                       grip  +20: pool_box_1  +9.0
+  TRANSPORT -> REST_OUT -> REST                    grip  +20: pool_box_1  +9.0
+  TRANSPORT -> PRESENT_SHUT -> REST_OUT -> REST    grip  +20: pool_box_1  +9.0
+  TRANSPORT -> B2_SAFE -> B2_PLACE (open -29)      grip  -29: pool_box_1  -3.1 [B2_SAFE->B2_PLACE s=1.00 r_thumb_col]
+  REST -> REST_OUT -> PICK_SAFE -> PICK            grip  -29: pool_box_1  +9.0
+
+# (b') physics: the same legs flown with the pieces free (moved = displacement of each piece, mm; contacts other than the board)
+  tall on column 3         REST -> REST_OUT -> TRANSPORT      moved {'soda_can': 0.0, 'blue_cylinder': 0.0, 'red_cube': 0.0}  contacts -
+  tall on column 3         TRANSPORT -> REST_OUT -> REST      moved {'soda_can': 0.0, 'blue_cylinder': 0.0, 'red_cube': 0.0}  contacts -
+  tall on column 3         REST -> TRANSPORT (direct)         moved {'soda_can': 4.2, 'blue_cylinder': 0.0, 'red_cube': 0.0}  contacts [('r_forearm_col', 'soda_can')]
+  tall on column 3         TRANSPORT -> REST (direct)         moved {'soda_can': 1133.8, 'blue_cylinder': 1.9, 'red_cube': 0.0}  contacts [('r_forearm_col', 'soda_can')]
+  tall on column 3         REST -> HOME -> TRANSPORT          moved {'soda_can': 0.0, 'blue_cylinder': 0.0, 'red_cube': 0.0}  contacts -
+  lab pieces on column 3   REST -> REST_OUT -> TRANSPORT      moved {'pool_cyl_1': 0.0, 'pool_box_1': 0.0, 'pool_cyl_2': 0.0}  contacts -
+  lab pieces on column 3   TRANSPORT -> REST_OUT -> REST      moved {'pool_cyl_1': 0.0, 'pool_box_1': 0.0, 'pool_cyl_2': 0.0}  contacts -
+  lab pieces on column 3   REST -> TRANSPORT (direct)         moved {'pool_cyl_1': 0.0, 'pool_box_1': 0.0, 'pool_cyl_2': 0.0}  contacts -
+  lab pieces on column 3   TRANSPORT -> REST (direct)         moved {'pool_cyl_1': 0.0, 'pool_box_1': 0.0, 'pool_cyl_2': 0.0}  contacts -
+  lab pieces on column 3   REST -> HOME -> TRANSPORT          moved {'pool_cyl_1': 0.0, 'pool_box_1': 0.0, 'pool_cyl_2': 0.0}  contacts -
+
+# (c) a 50.8 mm lab cube (pool_box_1) on r2c2; MovePieceLogic B2_SAFE -> B2_PLACE with the gripper at -29
+  B2_SAFE   grip  -29: distance to the cube (mm) {'upper_arm': 268.5, 'forearm': 131.5, 'thumb': 90.0, 'hand_back': 90.0, 'palm': 90.0, 'finger': 90.0}; pad-centre gap 69 mm; pads' midpoint - cube centre (mm) [30.0, 16.0, 185.0]
+  B2_SAFE   grip  -45: distance to the cube (mm) {'upper_arm': 268.5, 'forearm': 131.5, 'thumb': 90.0, 'hand_back': 90.0, 'palm': 90.0, 'finger': 90.0}; pad-centre gap 81 mm; pads' midpoint - cube centre (mm) [33.0, 10.0, 185.0]
+  B2_SAFE   grip  -68: distance to the cube (mm) {'upper_arm': 268.5, 'forearm': 131.5, 'thumb': 90.0, 'hand_back': 90.0, 'palm': 90.0, 'finger': 90.0}; pad-centre gap 96 mm; pads' midpoint - cube centre (mm) [35.0, -1.0, 184.0]
+  B2_PLACE  grip  -29: distance to the cube (mm) {'upper_arm': 284.0, 'forearm': 52.0, 'thumb': -31.3, 'hand_back': 28.8, 'palm': -7.2, 'finger': 9.6}; pad-centre gap 69 mm; pads' midpoint - cube centre (mm) [20.0, -13.0, 8.0]
+  B2_PLACE  grip  -45: distance to the cube (mm) {'upper_arm': 284.0, 'forearm': 52.0, 'thumb': -31.3, 'hand_back': 28.8, 'palm': -7.2, 'finger': 20.3}; pad-centre gap 81 mm; pads' midpoint - cube centre (mm) [23.0, -20.0, 8.0]
+  B2_PLACE  grip  -68: distance to the cube (mm) {'upper_arm': 284.0, 'forearm': 52.0, 'thumb': -31.3, 'hand_back': 28.8, 'palm': -7.2, 'finger': 35.2}; pad-centre gap 96 mm; pads' midpoint - cube centre (mm) [23.0, -31.0, 8.0]
+  B2_SAFE -> B2_PLACE grip  -29: worst distance to the cube -31.3 mm at B2_SAFE->B2_PLACE s=1.00 r_thumb_col
+  B2_SAFE -> B2_PLACE grip  -45: worst distance to the cube -31.3 mm at B2_SAFE->B2_PLACE s=1.00 r_thumb_col
+  physics TRANSPORT -> B2_SAFE -> B2_PLACE, open -29: cube moved {'pool_box_1': 2.4} mm; contacts [('pool_box_1', 'r_palm_col')]
+  physics TRANSPORT -> B2_SAFE -> B2_PLACE, open -45: cube moved {'pool_box_1': 2.4} mm; contacts [('pool_box_1', 'r_palm_col')]

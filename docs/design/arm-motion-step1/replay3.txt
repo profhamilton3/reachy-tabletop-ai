@@ -1,0 +1,49 @@
+# a 50.8 mm lab cube at each taught grasp point
+## MovePieceLogic PICK (right margin): grasp point torso (+0.279, -0.269) = r2c3 +53,-116 mm; pad midpoint 47 mm over the board (cube centre at 25); pad-centre gap 69 mm at -29; jaw yaw -79 deg
+   descent PICK_SAFE -> PICK, open -29, kinematic: worst distance to the cube -6.9 mm at PICK_SAFE->PICK s=1.00 r_finger_col
+   physics PICK_SAFE -> PICK (open) -> close -10 -> lift to PICK_SAFE:
+      PICK(grip -29): cube dz -0.7 mm, dxy 10.2 mm, gripper -29.0, touching ['r_thumb_col', 'table_top']
+      PICK(grip -10): cube dz +0.4 mm, dxy 11.4 mm, gripper -11.5, touching ['r_finger_col', 'r_thumb_col', 'table_top']
+      PICK_SAFE(grip -10): cube dz +0.0 mm, dxy 10.6 mm, gripper -10.0, touching ['table_top']
+   physics PICK_SAFE -> PICK (open) -> close -7 -> lift to PICK_SAFE:
+      PICK(grip -29): cube dz -0.7 mm, dxy 10.2 mm, gripper -29.0, touching ['r_thumb_col', 'table_top']
+      PICK(grip -7): cube dz +0.7 mm, dxy 11.7 mm, gripper -8.7, touching ['r_finger_col', 'r_thumb_col', 'table_top']
+      PICK_SAFE(grip -7): cube dz -0.0 mm, dxy 10.7 mm, gripper -7.0, touching ['table_top']
+   LIFT_TO_PRESENT against a cube standing here: worst +9.0 cm at REST->REST_OUT s=0.00 r_thumb_col
+   LOWER_TO_REST against a cube standing here: worst +9.0 cm at PRESENT->PRESENT_SHUT s=0.00 r_thumb_col
+## MovePieceLogic B2_PLACE (r2c2): grasp point torso (+0.246, -0.013) = r2c2 +20,-13 mm; pad midpoint 35 mm over the board (cube centre at 25); pad-centre gap 69 mm at -29; jaw yaw -30 deg
+   descent B2_SAFE -> B2_PLACE, open -29, kinematic: worst distance to the cube -12.3 mm at B2_SAFE->B2_PLACE s=0.83 r_palm_col
+   physics B2_SAFE -> B2_PLACE (open) -> close -10 -> lift to B2_SAFE:
+      B2_PLACE(grip -29): cube dz -2.1 mm, dxy 1.0 mm, gripper -29.0, touching ['r_palm_col', 'table_top']
+      B2_PLACE(grip -10): cube dz -2.1 mm, dxy 1.0 mm, gripper -10.0, touching ['r_palm_col', 'table_top']
+      B2_SAFE(grip -10): cube dz +0.0 mm, dxy 0.0 mm, gripper -10.0, touching ['table_top']
+   physics B2_SAFE -> B2_PLACE (open) -> close -7 -> lift to B2_SAFE:
+      B2_PLACE(grip -29): cube dz -2.1 mm, dxy 1.0 mm, gripper -29.0, touching ['r_palm_col', 'table_top']
+      B2_PLACE(grip -7): cube dz -2.1 mm, dxy 1.1 mm, gripper -7.0, touching ['r_palm_col', 'table_top']
+      B2_SAFE(grip -7): cube dz +0.0 mm, dxy 0.1 mm, gripper -7.0, touching ['table_top']
+   LIFT_TO_PRESENT against a cube standing here: worst +9.0 cm at REST->REST_OUT s=0.00 r_thumb_col
+   LOWER_TO_REST against a cube standing here: worst +9.0 cm at PRESENT->PRESENT_SHUT s=0.00 r_thumb_col
+## CalibrateBoard B2_PICK (r2c2): grasp point torso (+0.257, -0.011) = r2c2 +31,-11 mm; pad midpoint 80 mm over the board (cube centre at 25); pad-centre gap 69 mm at -29; jaw yaw -19 deg
+   descent B2_SAFE_ALIGNED -> B2_PICK, open -29, kinematic: worst distance to the cube +0.0 mm at B2_SAFE_ALIGNED->B2_PICK s=0.92 r_thumb_col
+   physics B2_SAFE_ALIGNED -> B2_PICK (open) -> close -10 -> lift to B2_SAFE_ALIGNED:
+      B2_PICK(grip -29): cube dz -0.0 mm, dxy 0.0 mm, gripper -29.0, touching ['r_thumb_col', 'table_top']
+      B2_PICK(grip -10): cube dz -0.0 mm, dxy 0.0 mm, gripper -10.0, touching ['r_thumb_col', 'table_top']
+      B2_SAFE_ALIGNED(grip -10): cube dz +0.0 mm, dxy 0.0 mm, gripper -10.0, touching ['table_top']
+   physics B2_SAFE_ALIGNED -> B2_PICK (open) -> close -7 -> lift to B2_SAFE_ALIGNED:
+      B2_PICK(grip -29): cube dz -0.0 mm, dxy 0.0 mm, gripper -29.0, touching ['r_thumb_col', 'table_top']
+      B2_PICK(grip -7): cube dz -0.0 mm, dxy 0.0 mm, gripper -7.0, touching ['r_thumb_col', 'table_top']
+      B2_SAFE_ALIGNED(grip -7): cube dz -0.0 mm, dxy 0.0 mm, gripper -7.0, touching ['table_top']
+   LIFT_TO_PRESENT against a cube standing here: worst +9.0 cm at REST->REST_OUT s=0.00 r_thumb_col
+   LOWER_TO_REST against a cube standing here: worst +9.0 cm at PRESENT->PRESENT_SHUT s=0.00 r_thumb_col
+## CalibrateBoard SUPPLY_PICK (right margin): grasp point torso (+0.216, -0.297) = r2c3 -9,-144 mm; pad midpoint 60 mm over the board (cube centre at 25); pad-centre gap 69 mm at -29; jaw yaw -85 deg
+   descent SUPPLY_LOWER_4CM_JOINTS -> SUPPLY_LOWER_7CM_JOINTS, open -29, kinematic: worst distance to the cube -7.0 mm at SUPPLY_LOWER_4CM_JOINTS->SUPPLY_LOWER_7CM_JOINTS s=1.00 r_finger_col
+   physics SUPPLY_LOWER_4CM_JOINTS -> SUPPLY_LOWER_7CM_JOINTS (open) -> close -10 -> lift to SUPPLY_LOWER_4CM_JOINTS:
+      SUPPLY_LOWER_7CM_JOINTS(grip -29): cube dz -0.5 mm, dxy 2.6 mm, gripper -29.0, touching ['r_finger_col', 'r_palm_col', 'table_top']
+      SUPPLY_LOWER_7CM_JOINTS(grip -10): cube dz -0.6 mm, dxy 8.6 mm, gripper -10.3, touching ['r_finger_col', 'r_thumb_col', 'table_top']
+      SUPPLY_LOWER_4CM_JOINTS(grip -10): cube dz -0.0 mm, dxy 8.2 mm, gripper -10.0, touching ['table_top']
+   physics SUPPLY_LOWER_4CM_JOINTS -> SUPPLY_LOWER_7CM_JOINTS (open) -> close -7 -> lift to SUPPLY_LOWER_4CM_JOINTS:
+      SUPPLY_LOWER_7CM_JOINTS(grip -29): cube dz -0.5 mm, dxy 2.6 mm, gripper -29.0, touching ['r_finger_col', 'r_palm_col', 'table_top']
+      SUPPLY_LOWER_7CM_JOINTS(grip -7): cube dz -0.6 mm, dxy 10.4 mm, gripper -7.3, touching ['r_finger_col', 'r_thumb_col', 'table_top']
+      SUPPLY_LOWER_4CM_JOINTS(grip -7): cube dz +0.0 mm, dxy 10.2 mm, gripper -7.0, touching ['table_top']
+   LIFT_TO_PRESENT against a cube standing here: worst +5.7 cm at REST->REST_OUT s=0.00 r_palm_col
+   LOWER_TO_REST against a cube standing here: worst +5.7 cm at REST_OUT->REST s=1.00 r_palm_col

@@ -1,0 +1,47 @@
+# B2_GRIP_TUNE, kinematic, empty board: worst signed distance per group (cm), lowest tip height over the board (cm)
+  REST      -> REST_OUT   4.0 s  board -0.0  rig +9.0+  self -1.1  left_arm +9.0+; tip low +1.3; contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+  REST_OUT  -> TRANSPORT  8.4 s  board +9.0+  rig +9.0+  self +3.4  left_arm +9.0+; tip low +19.2; contacts -
+  TRANSPORT -> B2_SAFE    6.0 s  board +9.0+  rig +9.0+  self +0.1  left_arm +9.0+; tip low +21.2; contacts -
+  B2_SAFE   -> B2_PLACE   5.0 s  board +0.0  rig +9.0+  self +0.1  left_arm +9.0+; tip low +3.5; contacts -
+  B2_PLACE  -> B2_SAFE    5.0 s  board +0.0  rig +9.0+  self +0.1  left_arm +9.0+; tip low +3.5; contacts -
+  B2_SAFE   -> TRANSPORT  6.0 s  board +9.0+  rig +9.0+  self +0.1  left_arm +9.0+; tip low +21.2; contacts -
+  TRANSPORT -> REST_OUT   8.4 s  board +9.0+  rig +9.0+  self +3.4  left_arm +9.0+; tip low +19.2; contacts -
+  REST_OUT  -> REST       4.0 s  board -0.0  rig +9.0+  self -1.1  left_arm +9.0+; tip low +1.3; contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+
+# B2_GRIP_TUNE, physics: worst following (gross four), arrival error (gross four + wrist pitch), contacts; pieces moved (mm)
+## empty board: moved -
+   -> REST_OUT  following  1.7  arrival  0.7  contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+   -> TRANSPORT following  1.1  arrival  0.5  contacts -
+   -> B2_SAFE   following  0.6  arrival  0.6  contacts -
+   -> B2_PLACE  following  0.6  arrival  0.5  contacts [('r_forearm_col', 'table_top')]
+   -> B2_SAFE   following  1.4  arrival  0.6  contacts [('r_forearm_col', 'table_top')]
+   -> TRANSPORT following  0.6  arrival  0.5  contacts -
+   -> REST_OUT  following  1.5  arrival  0.7  contacts -
+   -> REST      following  0.9  arrival  0.3  contacts [('r_forearm_col', 'table_top')]
+## lab pieces on r2c3, r3c3, r2c1, r3c1 (r1c3 empty): moved {'pool_box_1': 0.0, 'pool_cyl_1': 0.0, 'pool_box_2': 0.0, 'pool_cyl_2': 0.0}
+   -> REST_OUT  following  1.7  arrival  0.7  contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+   -> TRANSPORT following  1.1  arrival  0.5  contacts -
+   -> B2_SAFE   following  0.6  arrival  0.6  contacts -
+   -> B2_PLACE  following  0.6  arrival  0.5  contacts [('r_forearm_col', 'table_top')]
+   -> B2_SAFE   following  1.4  arrival  0.6  contacts [('r_forearm_col', 'table_top')]
+   -> TRANSPORT following  0.6  arrival  0.5  contacts -
+   -> REST_OUT  following  1.5  arrival  0.7  contacts -
+   -> REST      following  0.9  arrival  0.3  contacts [('r_forearm_col', 'table_top')]
+## lab cylinder on r1c3: moved {'pool_cyl_1': 0.4}
+   -> REST_OUT  following  1.7  arrival  0.7  contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+   -> TRANSPORT following  1.1  arrival  0.5  contacts -
+   -> B2_SAFE   following  0.6  arrival  0.6  contacts -
+   -> B2_PLACE  following  2.5  arrival  2.5  contacts [('pool_cyl_1', 'r_forearm_col')]
+   -> B2_SAFE   following  2.5  arrival  0.6  contacts [('pool_cyl_1', 'r_forearm_col')]
+   -> TRANSPORT following  0.6  arrival  0.5  contacts -
+   -> REST_OUT  following  1.5  arrival  0.7  contacts -
+   -> REST      following  0.9  arrival  0.3  contacts [('r_forearm_col', 'table_top')]
+## tall pieces on column 3: moved {'soda_can': 1863.5, 'blue_cylinder': 0.4, 'red_cube': 0.0}
+   -> REST_OUT  following  1.7  arrival  0.7  contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+   -> TRANSPORT following  1.1  arrival  0.5  contacts -
+   -> B2_SAFE   following  0.6  arrival  0.6  contacts -
+   -> B2_PLACE  following  4.3  arrival  0.4  contacts [('r_forearm_col', 'soda_can')]
+   -> B2_SAFE   following  1.4  arrival  0.6  contacts [('r_forearm_col', 'soda_can')]
+   -> TRANSPORT following  0.6  arrival  0.5  contacts -
+   -> REST_OUT  following  1.5  arrival  0.7  contacts -
+   -> REST      following  0.9  arrival  0.3  contacts [('r_forearm_col', 'table_top')]
