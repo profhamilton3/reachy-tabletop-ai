@@ -1,0 +1,282 @@
+# model check: URDF FK of B2_SAFE_JOINTS vs BOARD_POSES[B2] + 0.15 m (#185 finding 1)
+  MJCF r_tip [0.2425, 0.0061, -0.2324] want [0.2425, 0.0061, -0.2324] -> 0.00 mm, 0.00 deg
+  torso origin in the scene [0.206, 0.0, 1.15]; board top z 0.74
+  October cells, torso frame: r1c1 (0.073, +0.152), r1c2 (0.073, +0.000), r1c3 (0.073, -0.152), r2c1 (0.226, +0.152), r2c2 (0.226, +0.000), r2c3 (0.226, -0.152), r3c1 (0.378, +0.152), r3c2 (0.378, +0.000), r3c3 (0.378, -0.152)
+
+# POSES  (distances in cm: worst signed distance from the right arm; + clear, - inside; '+' after 8.9 = at least 9)
+pose                         limits tip torso (m)            tip over board  nearest Oct cell (dx,dy mm)    nearest taught cell        clearances; contacts
+PICK_SAFE                    ok     (+0.284,-0.257,-0.287)    +12.3 cm  r2c3 (  +58, -105)            r2c3 (  +51, -116)          board +7.4  rig +9.0+  self +5.5  left_arm +9.0+; -
+PICK                         ok     (+0.275,-0.252,-0.361)     +4.9 cm  r2c3 (  +49, -100)            r2c3 (  +43, -110)          board +2.2  rig +9.0+  self +5.1  left_arm +9.0+; -
+TRANSPORT                    ok     (+0.269,-0.023,-0.175)    +23.5 cm  r2c2 (  +43,  -23)            r2c2 (  +26,  -29)          board +9.0+  rig +9.0+  self +3.4  left_arm +9.0+; -
+B2_SAFE                      ok     (+0.240,+0.023,-0.198)    +21.2 cm  r2c2 (  +14,  +23)            r2c2 (   -3,  +17)          board +9.0+  rig +9.0+  self +0.1  left_arm +9.0+; -
+B2_PLACE                     ok     (+0.231,-0.005,-0.375)     +3.5 cm  r2c2 (   +5,   -5)            r2c2 (  -12,  -11)          board +0.0  rig +9.0+  self +5.5  left_arm +9.0+; -
+right_angled_position_right  ok     (+0.393,-0.002,+0.073)    +48.3 cm  r3c2 (  +14,   -2)            r3c2 (  +43,  -20)          board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; -
+RESET_POSITION_RIGHT@Cali38  ok     (+0.362,-0.289,+0.011)    +42.1 cm  r3c3 (  -16, -136)            r3c3 (   +6, -160)          board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; -
+HOME_POSITION                ok     (+0.297,-0.284,-0.217)    +19.3 cm  r2c3 (  +71, -132)            r2c3 (  +65, -143)          board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; -
+B2_APPROACH                  OUT    (+0.218,+0.002,-0.320)     +9.0 cm  r2c2 (   -8,   +2)            r2c2 (  -25,   -4)          board +4.4  rig +9.0+  self +4.9  left_arm +9.0+; -
+                              !! r_wrist_roll +54.1 outside [-45.0, 45.0]
+B2_SAFE_JOINTS               ok*    (+0.243,+0.006,-0.232)    +17.8 cm  r2c2 (  +17,   +6)            r2c2 (   -0,   -0)          board +9.0+  rig +9.0+  self -2.7  left_arm +9.0+; -
+B2_SAFE_ALIGNED              OUT    (+0.240,-0.006,-0.263)    +14.7 cm  r2c2 (  +14,   -6)            r2c2 (   -2,  -12)          board +9.0+  rig +9.0+  self -1.8  left_arm +9.0+; -
+                              !! r_wrist_roll +54.3 outside [-45.0, 45.0]
+B2_PICK                      ok     (+0.240,-0.006,-0.333)     +7.7 cm  r2c2 (  +14,   -6)            r2c2 (   -2,  -12)          board +5.3  rig +9.0+  self +1.6  left_arm +9.0+; -
+B2_LIFT_1CM                  ok     (+0.240,-0.006,-0.323)     +8.7 cm  r2c2 (  +14,   -6)            r2c2 (   -2,  -12)          board +6.3  rig +9.0+  self +1.1  left_arm +9.0+; -
+B2_LIFT_4CM                  OUT    (+0.240,-0.006,-0.293)    +11.7 cm  r2c2 (  +14,   -6)            r2c2 (   -2,  -12)          board +9.0+  rig +9.0+  self -0.1  left_arm +9.0+; -
+                              !! r_wrist_roll +47.2 outside [-45.0, 45.0]
+B3_SAFE_JOINTS               OUT    (+0.233,-0.142,-0.293)    +11.7 cm  r2c3 (   +7,  +11)            r2c3 (   -0,   -0)          board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; -
+                              !! r_wrist_roll +45.2 outside [-45.0, 45.0]
+B3_LOWER_3CM_JOINTS          OUT    (+0.226,-0.138,-0.354)     +5.6 cm  r2c3 (   +0,  +15)            r2c3 (   -6,   +4)          board +3.4  rig +9.0+  self +9.0  left_arm +9.0+; -
+                              !! r_wrist_roll +45.5 outside [-45.0, 45.0]
+SUPPLY_SAFE                  ok     (+0.263,-0.259,-0.373)     +3.7 cm  r2c3 (  +37, -107)            r2c3 (  +30, -118)          board +0.2  rig +9.0+  self +3.3  left_arm +9.0+; -
+SUPPLY_HIGH                  ok     (+0.263,-0.259,-0.323)     +8.7 cm  r2c3 (  +37, -107)            r2c3 (  +30, -118)          board +5.2  rig +9.0+  self +7.3  left_arm +9.0+; -
+SUPPLY_SAFE@Cali94           ok*    (+0.214,-0.280,-0.278)    +13.2 cm  r2c3 (  -12, -127)            r2c3 (  -18, -138)          board +9.0+  rig +9.0+  self +3.1  left_arm +9.0+; -
+SUPPLY_LOWER_3CM_JOINTS      ok     (+0.214,-0.280,-0.308)    +10.2 cm  r2c3 (  -12, -127)            r2c3 (  -18, -138)          board +6.1  rig +9.0+  self +9.0  left_arm +9.0+; -
+SUPPLY_LOWER_4CM_JOINTS      ok     (+0.214,-0.280,-0.318)     +9.2 cm  r2c3 (  -12, -127)            r2c3 (  -18, -138)          board +5.1  rig +9.0+  self +9.0  left_arm +9.0+; -
+SUPPLY_LOWER_7CM_JOINTS      ok     (+0.214,-0.280,-0.348)     +6.2 cm  r2c3 (  -12, -127)            r2c3 (  -18, -138)          board +2.1  rig +9.0+  self +9.0  left_arm +9.0+; -
+B2_TRANSPORT                 OUT*   (+0.243,+0.006,-0.304)    +10.6 cm  r2c2 (  +17,   +6)            r2c2 (   -0,   -0)          board +7.3  rig +9.0+  self -2.1  left_arm +9.0+; -
+                              !! r_shoulder_roll +32.9 outside [-179.9, 20.3]
+TRANSPORT_HIGH               ok     (+0.252,-0.252,-0.279)    +13.1 cm  r2c3 (  +26, -100)            r2c3 (  +20, -111)          board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; -
+MIDPOINT_WITH_CUBE           ok*    (+0.242,-0.118,-0.310)    +10.0 cm  r2c3 (  +17,  +34)            r2c3 (  +10,  +23)          board +7.8  rig +9.0+  self +0.0  left_arm +9.0+; -
+B2_HIGH_WITH_CUBE            OUT*   (+0.243,+0.006,-0.321)     +8.9 cm  r2c2 (  +17,   +6)            r2c2 (   -0,   -0)          board +6.9  rig +9.0+  self -2.2  left_arm +9.0+; -
+                              !! r_shoulder_roll +31.6 outside [-179.9, 20.3]
+B2_SAFE@Cali118              OUT    (+0.243,+0.028,-0.211)    +19.9 cm  r2c2 (  +17,  +28)            r2c2 (   +0,  +21)          board +9.0+  rig +9.0+  self +4.4  left_arm +9.0+; -
+                              !! r_wrist_roll +49.5 outside [-45.0, 45.0]
+DOWN_2CM                     OUT    (+0.235,+0.027,-0.253)    +15.7 cm  r2c2 (   +9,  +27)            r2c2 (   -8,  +21)          board +9.0+  rig +9.0+  self +0.6  left_arm +9.0+; -
+                              !! r_wrist_roll +60.8 outside [-45.0, 45.0]
+DOWN_NEXT_2CM                OUT    (+0.241,+0.019,-0.290)    +12.0 cm  r2c2 (  +15,  +19)            r2c2 (   -2,  +13)          board +9.0+  rig +9.0+  self +0.9  left_arm +9.0+; -
+                              !! r_wrist_roll +55.5 outside [-45.0, 45.0]
+B2_PLACE@Cali128             OUT    (+0.225,+0.010,-0.366)     +4.4 cm  r2c2 (   -1,  +10)            r2c2 (  -18,   +4)          board +1.9  rig +9.0+  self +2.8  left_arm +9.0+; -
+                              !! r_wrist_roll +54.0 outside [-45.0, 45.0]
+UP_2CM                       OUT    (+0.218,+0.008,-0.341)     +6.9 cm  r2c2 (   -7,   +8)            r2c2 (  -24,   +2)          board +3.8  rig +9.0+  self +1.4  left_arm +9.0+; -
+                              !! r_wrist_roll +55.2 outside [-45.0, 45.0]
+UP_6CM                       OUT    (+0.214,+0.005,-0.299)    +11.1 cm  r2c2 (  -12,   +5)            r2c2 (  -29,   -1)          board +7.8  rig +9.0+  self -0.4  left_arm +9.0+; -
+                              !! r_wrist_roll +57.8 outside [-45.0, 45.0]
+B2_EXIT                      OUT    (+0.213,-0.001,-0.287)    +12.3 cm  r2c2 (  -13,   -1)            r2c2 (  -29,   -8)          board +8.8  rig +9.0+  self -0.7  left_arm +9.0+; -
+                              !! r_wrist_roll +58.0 outside [-45.0, 45.0]
+SUPPLY_PICK_LOWER            ok     (+0.212,-0.272,-0.349)     +6.1 cm  r2c3 (  -14, -120)            r2c3 (  -21, -131)          board +2.5  rig +9.0+  self +9.0  left_arm +9.0+; -
+SUPPLY_UP_3CM                ok     (+0.208,-0.272,-0.332)     +7.8 cm  r2c3 (  -18, -120)            r2c3 (  -25, -131)          board +4.5  rig +9.0+  self +9.0  left_arm +9.0+; -
+SUPPLY_UP_6CM                ok     (+0.204,-0.264,-0.291)    +11.9 cm  r2c3 (  -22, -112)            r2c3 (  -29, -123)          board +8.8  rig +9.0+  self +9.0  left_arm +9.0+; -
+REST                         ok*    (+0.141,-0.396,-0.397)     +1.3 cm  r1c3 (  +68, -243)            r1c3 (  +64, -240)          board -0.0  rig +9.0+  self -1.1  left_arm +9.0+; [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+REST_OUT                     ok     (+0.211,-0.582,-0.147)    +26.3 cm  r2c3 (  -15, -429)            r2c3 (  -21, -440)          board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; -
+PRESENT_SHUT                 ok     (+0.412,-0.346,+0.235)    +64.5 cm  r3c3 (  +34, -194)            r3c3 (  +56, -217)          board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; -
+PRESENT                      ok     (+0.412,-0.346,+0.235)    +64.5 cm  r3c3 (  +34, -194)            r3c3 (  +56, -217)          board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; -
+
+# ERA: nearest cell centre (xy, mm) under the October model, Aug 20 camera board (#185: centre 0.467, 0.015) and Siva's late-August board (0.47, 0.10)
+  PICK_SAFE                    tip over board  +12.3 cm   October ('r2c3', 120)   Aug-20 ('r1c3', 124)   late-Aug ('r1c3', 208)
+  PICK                         tip over board   +4.9 cm   October ('r2c3', 111)   Aug-20 ('r1c3', 121)   late-Aug ('r1c3', 204)
+  TRANSPORT                    tip over board  +23.5 cm   October ('r2c2', 49)   Aug-20 ('r1c2', 59)   late-Aug ('r1c3', 57)
+  B2_SAFE                      tip over board  +21.2 cm   October ('r2c2', 27)   Aug-20 ('r1c2', 75)   late-Aug ('r1c3', 108)
+  B2_PLACE                     tip over board   +3.5 cm   October ('r2c2', 7)   Aug-20 ('r1c2', 86)   late-Aug ('r1c3', 99)
+  right_angled_position_right  tip over board  +48.3 cm   October ('r3c2', 15)   Aug-20 ('r2c2', 76)   late-Aug ('r1c3', 90)
+  RESET_POSITION_RIGHT@Cali38  tip over board  +42.1 cm   October ('r3c3', 137)   Aug-20 ('r1c3', 158)   late-Aug ('r1c3', 240)
+  HOME_POSITION                tip over board  +19.3 cm   October ('r2c3', 150)   Aug-20 ('r1c3', 148)   late-Aug ('r1c3', 233)
+  B2_APPROACH                  tip over board   +9.0 cm   October ('r2c2', 8)   Aug-20 ('r1c2', 97)   late-Aug ('r1c3', 114)
+  B2_SAFE_JOINTS               tip over board  +17.8 cm   October ('r2c2', 18)   Aug-20 ('r1c2', 72)   late-Aug ('r1c3', 95)
+  B2_SAFE_ALIGNED              tip over board  +14.7 cm   October ('r2c2', 16)   Aug-20 ('r1c2', 77)   late-Aug ('r1c3', 90)
+  B2_PICK                      tip over board   +7.7 cm   October ('r2c2', 16)   Aug-20 ('r1c2', 77)   late-Aug ('r1c3', 90)
+  B2_LIFT_1CM                  tip over board   +8.7 cm   October ('r2c2', 16)   Aug-20 ('r1c2', 77)   late-Aug ('r1c3', 90)
+  B2_LIFT_4CM                  tip over board  +11.7 cm   October ('r2c2', 16)   Aug-20 ('r1c2', 77)   late-Aug ('r1c3', 90)
+  B3_SAFE_JOINTS               tip over board  +11.7 cm   October ('r2c3', 13)   Aug-20 ('r1c3', 82)   late-Aug ('r1c3', 123)
+  B3_LOWER_3CM_JOINTS          tip over board   +5.6 cm   October ('r2c3', 15)   Aug-20 ('r1c3', 88)   late-Aug ('r1c3', 125)
+  SUPPLY_SAFE                  tip over board   +3.7 cm   October ('r2c3', 113)   Aug-20 ('r1c3', 132)   late-Aug ('r1c3', 214)
+  SUPPLY_HIGH                  tip over board   +8.7 cm   October ('r2c3', 113)   Aug-20 ('r1c3', 132)   late-Aug ('r1c3', 214)
+  SUPPLY_SAFE@Cali94           tip over board  +13.2 cm   October ('r2c3', 128)   Aug-20 ('r1c3', 174)   late-Aug ('r1c3', 250)
+  SUPPLY_LOWER_3CM_JOINTS      tip over board  +10.2 cm   October ('r2c3', 128)   Aug-20 ('r1c3', 174)   late-Aug ('r1c3', 250)
+  SUPPLY_LOWER_4CM_JOINTS      tip over board   +9.2 cm   October ('r2c3', 128)   Aug-20 ('r1c3', 174)   late-Aug ('r1c3', 250)
+  SUPPLY_LOWER_7CM_JOINTS      tip over board   +6.2 cm   October ('r2c3', 128)   Aug-20 ('r1c3', 174)   late-Aug ('r1c3', 250)
+  B2_TRANSPORT                 tip over board  +10.6 cm   October ('r2c2', 18)   Aug-20 ('r1c2', 72)   late-Aug ('r1c3', 95)
+  TRANSPORT_HIGH               tip over board  +13.1 cm   October ('r2c3', 103)   Aug-20 ('r1c3', 130)   late-Aug ('r1c3', 210)
+  MIDPOINT_WITH_CUBE           tip over board  +10.0 cm   October ('r2c3', 38)   Aug-20 ('r1c3', 75)   late-Aug ('r1c3', 100)
+  B2_HIGH_WITH_CUBE            tip over board   +8.9 cm   October ('r2c2', 18)   Aug-20 ('r1c2', 72)   late-Aug ('r1c3', 95)
+  B2_SAFE@Cali118              tip over board  +19.9 cm   October ('r2c2', 32)   Aug-20 ('r1c2', 73)   late-Aug ('r1c2', 104)
+  DOWN_2CM                     tip over board  +15.7 cm   October ('r2c2', 28)   Aug-20 ('r1c2', 80)   late-Aug ('r1c2', 110)
+  DOWN_NEXT_2CM                tip over board  +12.0 cm   October ('r2c2', 25)   Aug-20 ('r1c2', 74)   late-Aug ('r1c3', 105)
+  B2_PLACE@Cali128             tip over board   +4.4 cm   October ('r2c2', 10)   Aug-20 ('r1c2', 90)   late-Aug ('r1c3', 112)
+  UP_2CM                       tip over board   +6.9 cm   October ('r2c2', 11)   Aug-20 ('r1c2', 96)   late-Aug ('r1c3', 116)
+  UP_6CM                       tip over board  +11.1 cm   October ('r2c2', 13)   Aug-20 ('r1c2', 101)   late-Aug ('r1c3', 119)
+  B2_EXIT                      tip over board  +12.3 cm   October ('r2c2', 13)   Aug-20 ('r1c2', 102)   late-Aug ('r1c3', 116)
+  SUPPLY_PICK_LOWER            tip over board   +6.1 cm   October ('r2c3', 120)   Aug-20 ('r1c3', 169)   late-Aug ('r1c3', 244)
+  SUPPLY_UP_3CM                tip over board   +7.8 cm   October ('r2c3', 121)   Aug-20 ('r1c3', 172)   late-Aug ('r1c3', 246)
+  SUPPLY_UP_6CM                tip over board  +11.9 cm   October ('r2c3', 114)   Aug-20 ('r1c3', 168)   late-Aug ('r1c3', 241)
+  REST                         tip over board   +1.3 cm   October ('r1c3', 252)   Aug-20 ('r1c3', 311)   late-Aug ('r1c3', 386)
+  REST_OUT                     tip over board  +26.3 cm   October ('r2c3', 430)   Aug-20 ('r1c3', 456)   late-Aug ('r1c3', 540)
+  PRESENT_SHUT                 tip over board  +64.5 cm   October ('r3c3', 197)   Aug-20 ('r2c3', 216)   late-Aug ('r2c3', 299)
+  PRESENT                      tip over board  +64.5 cm   October ('r3c3', 197)   Aug-20 ('r2c3', 216)   late-Aug ('r2c3', 299)
+  * = r_shoulder_roll above the URDF's +10 deg (inside the sim's +20.3, ADR-0010 section 4)
+
+# TAUGHT BOARD POSES (CalibrateBoard cell 6), solved in the model: IK on r_tip, position and orientation
+square       height  IK residual      limits  r_shoulder_roll  tip over board nearest Oct cell (dx,dy mm)    clearances; contacts
+A1=r3c1   + 0 cm    0.0 mm  0.0 deg  ok       +17.5    +3.3 cm  r3c1 (  -36,  -34)            board +0.6  rig +9.0+  self +1.5  left_arm +9.0+; -
+A1=r3c1   + 8 cm    0.0 mm  0.0 deg  ok       +14.6   +11.3 cm  r3c1 (  -36,  -34)            board +8.6  rig +9.0+  self -0.4  left_arm +9.0+; -
+A2=r3c2   + 0 cm    0.0 mm  0.0 deg  ok       +13.3    +3.4 cm  r3c2 (  -29,  +17)            board +0.4  rig +9.0+  self -0.6  left_arm +9.0+; -
+A2=r3c2   + 8 cm    0.0 mm  0.0 deg  ok       +15.5   +11.4 cm  r3c2 (  -29,  +17)            board +8.4  rig +9.0+  self -1.9  left_arm +9.0+; -
+A3=r3c3   + 0 cm    0.0 mm  0.0 deg  ok       +16.8    +3.3 cm  r3c3 (  -22,  +23)            board +0.4  rig +9.0+  self -1.8  left_arm +9.0+; -
+A3=r3c3   + 8 cm    0.0 mm  0.0 deg  ok        +5.7   +11.3 cm  r3c3 (  -22,  +23)            board +8.5  rig +9.0+  self +2.8  left_arm +9.0+; -
+B1=r2c1   + 0 cm    0.0 mm  0.0 deg  ok       +17.5    +3.8 cm  r2c1 (   +5,   -7)            board +0.0  rig +9.0+  self -2.1  left_arm +9.0+; -
+B1=r2c1   + 8 cm    0.0 mm  0.0 deg  ok       +17.6   +11.8 cm  r2c1 (   +5,   -7)            board +8.4  rig +9.0+  self -2.3  left_arm +9.0+; -
+B2=r2c2   + 0 cm    0.0 mm  0.0 deg  ok        -3.0    +2.8 cm  r2c2 (  +17,   +6)            board +0.0  rig +9.0+  self +4.2  left_arm +9.0+; -
+B2=r2c2   + 8 cm    0.0 mm  0.0 deg  ok       +15.8   +10.8 cm  r2c2 (  +17,   +6)            board +8.3  rig +9.0+  self -2.7  left_arm +9.0+; -
+B3=r2c3   + 0 cm    0.0 mm  0.0 deg  ok        +4.8    +4.0 cm  r2c3 (   +7,  +11)            board +0.0  rig +9.0+  self +3.5  left_arm +9.0+; -
+B3=r2c3   + 8 cm    0.0 mm  0.0 deg  ok        -5.8   +12.0 cm  r2c3 (   +7,  +11)            board +8.0  rig +9.0+  self +3.8  left_arm +9.0+; -
+C1=r1c1   + 0 cm    0.0 mm  0.0 deg  ok       +14.9    +3.2 cm  r1c1 (  +30,   -4)            board +0.5  rig +8.5  self -1.2  left_arm +5.5; -
+C1=r1c1   + 8 cm    0.0 mm  0.0 deg  ok       +14.9   +11.2 cm  r1c1 (  +30,   -4)            board +8.4  rig +9.0+  self -2.8  left_arm +5.0; -
+C2=r1c2   + 0 cm    0.0 mm  0.0 deg  ok       -12.8    +2.8 cm  r1c2 (  +27,   -7)            board +0.3  rig +9.0+  self +6.4  left_arm +9.0+; -
+C2=r1c2   + 8 cm    0.0 mm  0.0 deg  ok       -22.6   +10.8 cm  r1c2 (  +27,   -7)            board +8.3  rig +9.0+  self +0.7  left_arm +9.0+; -
+C3=r1c3   + 0 cm    0.1 mm  0.1 deg  ok       -18.3    +3.2 cm  r1c3 (   +4,   -3)            board +0.3  rig +9.0+  self +9.0  left_arm +9.0+; -
+C3=r1c3   + 8 cm    0.0 mm  0.0 deg  ok        +4.8   +11.2 cm  r1c3 (   +4,   -3)            board +8.3  rig +9.0+  self +3.9  left_arm +9.0+; -
+
+# SEGMENTS: joint-space straight line between taught poses (the SDK goto path), kinematic, 41 samples
+  worst signed distance (cm) per obstacle group, at fraction s of the segment; lowest tip height over the board
+## MPL pick-and-place
+  PICK_SAFE                  -> PICK                          5s  board +2.2 (r_palm_col, s=1.00)  rig +9.0+  self +5.1  left_arm +9.0+; tip low +4.9 cm; contacts -
+  PICK                       -> PICK_SAFE                     5s  board +0.0 (r_hand_back_col, s=0.07)  rig +9.0+  self +5.1  left_arm +9.0+; tip low +4.9 cm; contacts -
+  PICK_SAFE                  -> TRANSPORT                     6s  board +7.4  rig +9.0+  self +3.4  left_arm +9.0+; tip low +12.3 cm; contacts -
+  TRANSPORT                  -> B2_SAFE                       6s  board +9.0+  rig +9.0+  self +0.1 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +21.2 cm; contacts -
+  B2_SAFE                    -> B2_PLACE                      5s  board +0.0 (r_palm_col, s=0.93)  rig +9.0+  self +0.1 (r_forearm_col, s=0.00)  left_arm +9.0+; tip low +3.5 cm; contacts -
+  B2_PLACE                   -> B2_SAFE                       5s  board +0.0 (r_palm_col, s=0.00)  rig +9.0+  self +0.1 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +3.5 cm; contacts -
+  B2_SAFE                    -> TRANSPORT                     6s  board +9.0+  rig +9.0+  self +0.1 (r_forearm_col, s=0.00)  left_arm +9.0+; tip low +21.2 cm; contacts -
+## REST -> PICK_SAFE (direct)
+  REST                       -> PICK_SAFE                     6s  board -0.0 (r_forearm_col, s=0.00)  rig +9.0+  self -1.1 (r_forearm_col, s=0.00)  left_arm +9.0+; tip low +1.3 cm; contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+## REST -> HOME (direct)
+  REST                       -> HOME_POSITION                 8s  board -0.0 (r_forearm_col, s=0.00)  rig +9.0+  self -1.1 (r_forearm_col, s=0.00)  left_arm +9.0+; tip low +1.3 cm; contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+## HOME -> PICK_SAFE
+  HOME_POSITION              -> PICK_SAFE                     6s  board +7.4  rig +9.0+  self +5.5  left_arm +9.0+; tip low +12.3 cm; contacts -
+## TRANSPORT -> HOME
+  TRANSPORT                  -> HOME_POSITION                 6s  board +9.0+  rig +9.0+  self +3.4  left_arm +9.0+; tip low +18.8 cm; contacts -
+## HOME -> REST (direct)
+  HOME_POSITION              -> REST                          8s  board -0.0 (r_forearm_col, s=1.00)  rig +9.0+  self -1.1 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +1.3 cm; contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+## TRANSPORT -> REST (direct)
+  TRANSPORT                  -> REST                          8s  board -0.0 (r_forearm_col, s=1.00)  rig +9.0+  self -1.1 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +1.3 cm; contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+## REST -> REST_OUT -> PICK_SAFE
+  REST                       -> REST_OUT                      3s  board -0.0 (r_forearm_col, s=0.00)  rig +9.0+  self -1.1 (r_forearm_col, s=0.00)  left_arm +9.0+; tip low +1.3 cm; contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+  REST_OUT                   -> PICK_SAFE                     6s  board +7.4  rig +9.0+  self +5.5  left_arm +9.0+; tip low +11.9 cm; contacts -
+## PRESENT -> PICK_SAFE
+  PRESENT                    -> PICK_SAFE                     6s  board +7.4  rig +9.0+  self +5.5  left_arm +9.0+; tip low +12.3 cm; contacts -
+## TRANSPORT -> PRESENT
+  TRANSPORT                  -> PRESENT                       6s  board +9.0+  rig +9.0+  self +3.4  left_arm +9.0+; tip low +23.5 cm; contacts -
+## CB HOME -> B2_APPROACH
+  HOME_POSITION              -> B2_APPROACH                   8s  board +4.4  rig +9.0+  self +4.9  left_arm +9.0+; tip low +9.0 cm; contacts -
+## CB HOME -> B2_SAFE_JOINTS
+  HOME_POSITION              -> B2_SAFE_JOINTS                8s  board +9.0+  rig +9.0+  self -3.1 (r_forearm_col, s=0.88)  left_arm +9.0+; tip low +14.0 cm; contacts -
+## CB B2 pick -> B3 place -> HOME
+  B2_SAFE_ALIGNED            -> B2_PICK                       5s  board +5.3  rig +9.0+  self -1.8 (r_forearm_col, s=0.00)  left_arm +9.0+; tip low +7.7 cm; contacts -
+  B2_PICK                    -> B2_LIFT_1CM                   3s  board +5.3  rig +9.0+  self +1.1 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +7.7 cm; contacts -
+  B2_LIFT_1CM                -> B2_LIFT_4CM                   4s  board +6.3  rig +9.0+  self -0.1 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +8.7 cm; contacts -
+  B2_LIFT_4CM                -> B2_SAFE_WITH_CUBE             5s  board +9.0+  rig +9.0+  self -1.8 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +11.7 cm; contacts -
+  B2_SAFE_WITH_CUBE          -> B3_SAFE_JOINTS                6s  board +9.0+  rig +9.0+  self -1.8 (r_forearm_col, s=0.00)  left_arm +9.0+; tip low +11.6 cm; contacts -
+  B3_SAFE_JOINTS             -> B3_LOWER_3CM_JOINTS           5s  board +3.4  rig +9.0+  self +9.0  left_arm +9.0+; tip low +5.6 cm; contacts -
+  B3_LOWER_3CM_JOINTS        -> B3_RETREAT                    5s  board +3.4  rig +9.0+  self +9.0  left_arm +9.0+; tip low +5.6 cm; contacts -
+  B3_RETREAT                 -> HOME_POSITION@Cali82          7s  board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; tip low +11.7 cm; contacts -
+## CB supply pick -> B2 high
+  SUPPLY_HIGH                -> SUPPLY_SAFE@Cali94            6s  board +5.2  rig +9.0+  self +3.1  left_arm +9.0+; tip low +8.7 cm; contacts -
+  SUPPLY_SAFE@Cali94         -> SUPPLY_LOWER_3CM_JOINTS       7s  board +6.1  rig +9.0+  self +3.1  left_arm +9.0+; tip low +10.2 cm; contacts -
+  SUPPLY_LOWER_3CM_JOINTS    -> SUPPLY_LOWER_4CM_JOINTS       4s  board +5.1  rig +9.0+  self +9.0  left_arm +9.0+; tip low +9.2 cm; contacts -
+  SUPPLY_LOWER_4CM_JOINTS    -> SUPPLY_PICK                   5s  board +0.0 (r_hand_back_col, s=0.90)  rig +9.0+  self +9.0  left_arm +9.0+; tip low +6.2 cm; contacts -
+  SUPPLY_PICK                -> SUPPLY_LIFT_4CM               4s  board +0.0 (r_hand_back_col, s=0.03)  rig +9.0+  self +9.0  left_arm +9.0+; tip low +6.2 cm; contacts -
+  SUPPLY_LIFT_4CM            -> SUPPLY_SAFE@Cali94            5s  board +5.1  rig +9.0+  self +3.1  left_arm +9.0+; tip low +9.2 cm; contacts -
+  SUPPLY_SAFE@Cali94         -> B2_TRANSPORT                  8s  board +5.0  rig +9.0+  self -3.6 (r_forearm_col, s=0.85)  left_arm +9.0+; tip low +8.0 cm; contacts -
+  B2_TRANSPORT               -> TRANSPORT_HIGH                6s  board +5.2  rig +9.0+  self -3.6 (r_forearm_col, s=0.07)  left_arm +9.0+; tip low +7.9 cm; contacts -
+  TRANSPORT_HIGH             -> MIDPOINT_WITH_CUBE            6s  board +7.7  rig +9.0+  self +0.0 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +9.9 cm; contacts -
+  MIDPOINT_WITH_CUBE         -> B2_HIGH_WITH_CUBE             6s  board +6.4  rig +9.0+  self -3.4 (r_forearm_col, s=0.78)  left_arm +9.0+; tip low +8.5 cm; contacts -
+## CB TRANSPORT -> B2 place -> exit -> HOME -> supply
+  TRANSPORT                  -> B2_SAFE@Cali118               6s  board +9.0+  rig +9.0+  self +3.4  left_arm +9.0+; tip low +19.9 cm; contacts -
+  B2_SAFE@Cali118            -> DOWN_2CM                      4s  board +9.0+  rig +9.0+  self +0.6 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +15.7 cm; contacts -
+  DOWN_2CM                   -> DOWN_NEXT_2CM                 4s  board +9.0+  rig +9.0+  self +0.6 (r_forearm_col, s=0.00)  left_arm +9.0+; tip low +12.0 cm; contacts -
+  DOWN_NEXT_2CM              -> B2_PLACE@Cali128              9s  board +0.0 (r_finger_col, s=0.88)  rig +9.0+  self +0.9 (r_forearm_col, s=0.00)  left_arm +9.0+; tip low +4.4 cm; contacts -
+  B2_PLACE@Cali128           -> UP_2CM                        9s  board +0.0 (r_finger_col, s=0.00)  rig +9.0+  self +1.4 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +4.4 cm; contacts -
+  UP_2CM                     -> UP_6CM                        5s  board +3.8  rig +9.0+  self -0.4 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +6.9 cm; contacts -
+  UP_6CM                     -> B2_EXIT                       5s  board +7.8  rig +9.0+  self -0.7 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +11.1 cm; contacts -
+  B2_EXIT                    -> TRANSPORT_OPEN                7s  board +8.8  rig +9.0+  self -0.7 (r_forearm_col, s=0.00)  left_arm +9.0+; tip low +12.3 cm; contacts -
+  TRANSPORT_OPEN             -> HOME_POSITION@Cali140         6s  board +9.0+  rig +9.0+  self +3.4  left_arm +9.0+; tip low +18.8 cm; contacts -
+  HOME_POSITION@Cali140      -> SUPPLY_SAFE@Cali141           6s  board +9.0+  rig +9.0+  self +3.1  left_arm +9.0+; tip low +13.2 cm; contacts -
+  SUPPLY_SAFE@Cali141        -> SUPPLY_INTERMEDIATE           5s  board +5.1  rig +9.0+  self +3.1  left_arm +9.0+; tip low +9.2 cm; contacts -
+  SUPPLY_INTERMEDIATE        -> SUPPLY_PICK_LOWER             4s  board +2.5 (r_hand_back_col, s=1.00)  rig +9.0+  self +9.0  left_arm +9.0+; tip low +6.1 cm; contacts -
+  SUPPLY_PICK_LOWER          -> SUPPLY_PICK_OLD_WITH_CUBE     4s  board +0.0 (r_hand_back_col, s=0.05)  rig +9.0+  self +9.0  left_arm +9.0+; tip low +6.1 cm; contacts -
+  SUPPLY_PICK_OLD_WITH_CUBE  -> SUPPLY_UP_3CM                 5s  board +0.0 (r_hand_back_col, s=0.05)  rig +9.0+  self +9.0  left_arm +9.0+; tip low +6.2 cm; contacts -
+  SUPPLY_UP_3CM              -> SUPPLY_UP_6CM                 6s  board +4.5  rig +9.0+  self +9.0  left_arm +9.0+; tip low +7.8 cm; contacts -
+## LIFT_TO_PRESENT
+  REST                       -> REST_OUT                      3s  board -0.0 (r_forearm_col, s=0.00)  rig +9.0+  self -1.1 (r_forearm_col, s=0.00)  left_arm +9.0+; tip low +1.3 cm; contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+  REST_OUT                   -> PRESENT_SHUT                  3s  board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; tip low +26.3 cm; contacts -
+  PRESENT_SHUT               -> PRESENT                     1.5s  board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; tip low +64.5 cm; contacts -
+## LOWER_TO_REST
+  PRESENT                    -> PRESENT_SHUT                1.5s  board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; tip low +64.5 cm; contacts -
+  PRESENT_SHUT               -> REST_OUT                      3s  board +9.0+  rig +9.0+  self +9.0  left_arm +9.0+; tip low +26.3 cm; contacts -
+  REST_OUT                   -> REST                          3s  board -0.0 (r_forearm_col, s=1.00)  rig +9.0+  self -1.1 (r_forearm_col, s=1.00)  left_arm +9.0+; tip low +1.3 cm; contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+
+# PHYSICS FLIGHTS: motors on, minimum-jerk goals streamed, the notebook's durations, 2 s hold per waypoint
+  following = worst |present - streamed goal| on the four gross joints during the leg (deg)
+  arrival   = present - target after the hold, per joint (deg): sh_pitch sh_roll arm_yaw elbow fore_yaw wr_pitch wr_roll
+## MPL pick-and-place  (from PICK_SAFE)
+  -> PICK                          5s  following   0.6  arrival [ +0.1  +0.1  +0.0  +0.5  -0.0  +0.2  -0.0]  contacts -
+  -> PICK_SAFE                     5s  following   0.8  arrival [ +0.1  +0.1  +0.0  +0.6  -0.0  +0.2  -0.0]  contacts -
+  -> TRANSPORT                     6s  following   1.0  arrival [ +0.3  -0.1  +0.0  +0.5  -0.0  +0.2  +0.0]  contacts -
+  -> B2_SAFE                       6s  following   0.6  arrival [ +0.2  -0.2  -0.1  +0.6  -0.0  +0.2  -0.0]  contacts -
+  -> B2_PLACE                      5s  following   0.6  arrival [ +0.1  -0.1  +0.0  +0.5  -0.0  +0.2  -0.0]  contacts [('r_forearm_col', 'table_top')]
+  -> B2_SAFE                       5s  following   1.4  arrival [ +0.2  -0.2  -0.1  +0.6  -0.0  +0.2  -0.0]  contacts [('r_forearm_col', 'table_top')]
+  -> TRANSPORT                     6s  following   0.6  arrival [ +0.3  -0.1  +0.0  +0.5  -0.0  +0.2  +0.0]  contacts -
+## REST -> PICK_SAFE (direct)  (from REST)
+  -> PICK_SAFE                     6s  following   0.9  arrival [ +0.1  +0.1  +0.0  +0.6  -0.0  +0.2  -0.0]  contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+## REST -> HOME (direct)  (from REST)
+  -> HOME_POSITION                 8s  following   1.0  arrival [ +0.2  +0.4  +0.3  +0.5  -0.0  +0.1  +0.0]  contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+## HOME -> PICK_SAFE  (from HOME_POSITION)
+  -> PICK_SAFE                     6s  following   0.6  arrival [ +0.1  +0.1  +0.0  +0.6  -0.0  +0.2  -0.0]  contacts -
+## TRANSPORT -> HOME  (from TRANSPORT)
+  -> HOME_POSITION                 6s  following   1.0  arrival [ +0.2  +0.4  +0.3  +0.5  -0.0  +0.2  +0.0]  contacts -
+## HOME -> REST (direct)  (from HOME_POSITION)
+  -> REST                          8s  following   0.8  arrival [ -0.2  -0.2  +0.1  +0.1  +0.0  +0.0  +0.1]  contacts [('r_forearm_col', 'table_top')]
+## TRANSPORT -> REST (direct)  (from TRANSPORT)
+  -> REST                          8s  following   1.3  arrival [ -0.3  -0.0  +0.3  +0.1  +0.0  +0.0  +0.1]  contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+## REST -> REST_OUT -> PICK_SAFE  (from REST)
+  -> REST_OUT                      3s  following   2.1  arrival [ +0.2  +0.7  +0.2  +0.5  +0.0  -0.0  +0.0]  contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+  -> PICK_SAFE                     6s  following   0.8  arrival [ +0.1  +0.1  +0.0  +0.6  -0.0  +0.2  -0.0]  contacts -
+## PRESENT -> PICK_SAFE  (from PRESENT)
+  -> PICK_SAFE                     6s  following   1.1  arrival [ +0.1  +0.1  +0.0  +0.6  -0.0  +0.2  -0.0]  contacts -
+## TRANSPORT -> PRESENT  (from TRANSPORT)
+  -> PRESENT                       6s  following   2.5  arrival [ +1.0  +0.2  +0.1  +0.3  -0.0  +0.1  -0.0]  contacts -
+## CB HOME -> B2_APPROACH  (from HOME_POSITION)
+  -> B2_APPROACH                   8s  following   0.6  arrival [ +0.2  -0.1  +0.0  +0.6  +0.0  +0.2  -9.2]  contacts -
+## CB HOME -> B2_SAFE_JOINTS  (from HOME_POSITION)
+  -> B2_SAFE_JOINTS                8s  following   0.8  arrival [ -0.0  -0.4  -0.3  +0.5  -0.0  +0.2  +0.0]  contacts -
+## CB B2 pick -> B3 place -> HOME  (from B2_SAFE_ALIGNED)
+  -> B2_PICK                       5s  following   0.6  arrival [ +0.1  -0.2  -0.1  +0.6  +0.0  +0.2  +0.0]  contacts -
+  -> B2_LIFT_1CM                   3s  following   0.7  arrival [ +0.1  -0.2  -0.1  +0.6  +0.0  +0.2  +0.0]  contacts -
+  -> B2_LIFT_4CM                   4s  following   0.8  arrival [ +0.1  -0.2  -0.1  +0.6  +0.0  +0.2  -2.2]  contacts -
+  -> B2_SAFE_WITH_CUBE             5s  following   0.7  arrival [ +0.1  -0.2  -0.2  +0.6  +0.0  +0.2  -9.3]  contacts -
+  -> B3_SAFE_JOINTS                6s  following   0.9  arrival [ +0.1  +0.3  +0.2  +0.5  +0.0  +0.2  -0.2]  contacts -
+  -> B3_LOWER_3CM_JOINTS           5s  following   0.5  arrival [ +0.1  +0.3  +0.2  +0.5  +0.0  +0.1  -0.5]  contacts -
+  -> B3_RETREAT                    5s  following   0.8  arrival [ +0.1  +0.3  +0.2  +0.5  +0.0  +0.2  -0.2]  contacts -
+  -> HOME_POSITION@Cali82          7s  following   0.8  arrival [ +0.2  +0.4  +0.3  +0.5  -0.0  +0.2  +0.0]  contacts -
+## CB supply pick -> B2 high  (from SUPPLY_HIGH)
+  -> SUPPLY_SAFE@Cali94            6s  following   0.8  arrival [ -0.1  -0.0  +0.0  +0.6  -0.0  +0.2  -0.0]  contacts -
+  -> SUPPLY_LOWER_3CM_JOINTS       7s  following   0.9  arrival [ -0.1  +0.3  +0.3  +0.5  -0.0  +0.1  -0.0]  contacts -
+  -> SUPPLY_LOWER_4CM_JOINTS       4s  following   0.5  arrival [ -0.1  +0.3  +0.3  +0.5  -0.0  +0.1  -0.0]  contacts -
+  -> SUPPLY_PICK                   5s  following   0.5  arrival [ -0.1  +0.3  +0.2  +0.5  -0.0  +0.1  -0.0]  contacts -
+  -> SUPPLY_LIFT_4CM               4s  following   0.7  arrival [ -0.1  +0.3  +0.3  +0.5  -0.0  +0.1  -0.0]  contacts -
+  -> SUPPLY_SAFE@Cali94            5s  following   1.0  arrival [ -0.1  -0.0  +0.0  +0.6  -0.0  +0.2  -0.0]  contacts -
+  -> B2_TRANSPORT                  8s  following  12.9  arrival [ -0.1 -12.9  -0.3  +0.5  -0.0  +0.1  +0.0]  contacts -
+  -> TRANSPORT_HIGH                6s  following  12.9  arrival [ -0.0  +0.3  +0.2  +0.5  -0.0  +0.1  +0.0]  contacts -
+  -> MIDPOINT_WITH_CUBE            6s  following   0.6  arrival [ -0.1  -0.2  -0.2  +0.5  -0.0  +0.1  +0.0]  contacts -
+  -> B2_HIGH_WITH_CUBE             6s  following  11.7  arrival [ -0.1 -11.7  -0.3  +0.5  -0.0  +0.1  +0.0]  contacts -
+## CB TRANSPORT -> B2 place -> exit -> HOME -> supply  (from TRANSPORT)
+  -> B2_SAFE@Cali118               6s  following   0.6  arrival [ +0.3  -0.1  +0.1  +0.6  +0.0  +0.2  -4.5]  contacts -
+  -> DOWN_2CM                      4s  following   0.6  arrival [ +0.2  -0.2  -0.1  +0.6  +0.0  +0.2 -15.8]  contacts -
+  -> DOWN_NEXT_2CM                 4s  following   0.6  arrival [ +0.2  -0.2  -0.1  +0.6  +0.0  +0.2 -10.5]  contacts -
+  -> B2_PLACE@Cali128              9s  following   0.6  arrival [ +0.2  -0.2  -0.1  +0.6  +0.0  +0.2  -9.0]  contacts -
+  -> UP_2CM                        9s  following   0.7  arrival [ +0.1  -0.2  -0.1  +0.6  +0.0  +0.2 -10.2]  contacts -
+  -> UP_6CM                        5s  following   0.8  arrival [ +0.1  -0.2  -0.1  +0.6  +0.0  +0.2 -12.9]  contacts -
+  -> B2_EXIT                       5s  following   0.7  arrival [ +0.1  -0.2  -0.1  +0.6  -0.0  +0.1 -13.0]  contacts -
+  -> TRANSPORT_OPEN                7s  following   0.7  arrival [ +0.3  -0.1  +0.0  +0.5  -0.0  +0.2  +0.0]  contacts -
+  -> HOME_POSITION@Cali140         6s  following   1.0  arrival [ +0.2  +0.4  +0.3  +0.5  -0.0  +0.2  +0.0]  contacts -
+  -> SUPPLY_SAFE@Cali141           6s  following   0.6  arrival [ -0.1  -0.0  +0.0  +0.6  -0.0  +0.2  -0.0]  contacts -
+  -> SUPPLY_INTERMEDIATE           5s  following   1.1  arrival [ -0.1  +0.3  +0.3  +0.5  -0.0  +0.1  -0.0]  contacts -
+  -> SUPPLY_PICK_LOWER             4s  following   0.5  arrival [ -0.1  +0.3  +0.2  +0.5  -0.0  +0.1  -0.0]  contacts -
+  -> SUPPLY_PICK_OLD_WITH_CUBE     4s  following   0.5  arrival [ -0.1  +0.3  +0.2  +0.5  -0.0  +0.1  -0.0]  contacts -
+  -> SUPPLY_UP_3CM                 5s  following   0.6  arrival [ -0.1  +0.3  +0.2  +0.5  -0.0  +0.1  -0.0]  contacts -
+  -> SUPPLY_UP_6CM                 6s  following   0.7  arrival [ -0.2  +0.3  +0.2  +0.5  -0.0  +0.1  -0.0]  contacts -
+## LIFT_TO_PRESENT  (from REST)
+  -> REST_OUT                      3s  following   2.1  arrival [ +0.2  +0.7  +0.2  +0.5  +0.0  -0.0  +0.0]  contacts [('r_forearm_col', 'table_top'), ('r_hand_back_col', 'table_top'), ('r_palm_col', 'table_top')]
+  -> PRESENT_SHUT                  3s  following   3.8  arrival [ +1.0  +0.2  +0.1  +0.3  -0.0  +0.1  -0.0]  contacts -
+  -> PRESENT                     1.5s  following   1.0  arrival [ +1.0  +0.2  +0.1  +0.3  -0.0  +0.1  -0.0]  contacts -
+## LOWER_TO_REST  (from PRESENT)
+  -> PRESENT_SHUT                1.5s  following   1.1  arrival [ +1.0  +0.2  +0.1  +0.3  -0.0  +0.1  -0.0]  contacts -
+  -> REST_OUT                      3s  following   2.5  arrival [ +0.2  +0.7  +0.2  +0.5  +0.0  -0.0  +0.0]  contacts -
+  -> REST                          3s  following   1.3  arrival [ -0.1  -0.3  -0.1  +0.1  +0.0  +0.0  +0.1]  contacts [('r_forearm_col', 'table_top')]

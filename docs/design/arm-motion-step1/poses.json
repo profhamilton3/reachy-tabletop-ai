@@ -1,0 +1,1059 @@
+{
+ "provenance": {
+  "tests/MovePieceLogic.ipynb": "a4ae14b3b88a2af2cb15b258c784d8a1d0d2aadcb021af1691c6caa7731526c3",
+  "tests/CalibrateBoard.ipynb": "dbd6ae66023b8c0328d1b602a138472c6632925401d395aa3d2785c3ac47bceb",
+  "scripts/PiecePositionsCalculation.ipynb": "82d24e62b52e6ac02221ca765c99a98ffa9beefc6087f8e184cfa36d1246e629"
+ },
+ "joint_poses": [
+  {
+   "name": "PICK_SAFE",
+   "notebook": "tests/MovePieceLogic.ipynb",
+   "cell": 1,
+   "joints": {
+    "r_shoulder_pitch": 14.2,
+    "r_shoulder_roll": 1.36,
+    "r_arm_yaw": -16.35,
+    "r_elbow_pitch": -95.98,
+    "r_forearm_yaw": -3.16,
+    "r_wrist_pitch": -17.58,
+    "r_wrist_roll": 28.48
+   }
+  },
+  {
+   "name": "PICK",
+   "notebook": "tests/MovePieceLogic.ipynb",
+   "cell": 1,
+   "joints": {
+    "r_shoulder_pitch": 14.28,
+    "r_shoulder_roll": 2.15,
+    "r_arm_yaw": -15.21,
+    "r_elbow_pitch": -85.43,
+    "r_forearm_yaw": -6.68,
+    "r_wrist_pitch": -13.62,
+    "r_wrist_roll": 26.1
+   }
+  },
+  {
+   "name": "TRANSPORT",
+   "notebook": "tests/MovePieceLogic.ipynb",
+   "cell": 2,
+   "joints": {
+    "r_shoulder_pitch": 3.56,
+    "r_shoulder_roll": -2.59,
+    "r_arm_yaw": 25.22,
+    "r_elbow_pitch": -119.44,
+    "r_forearm_yaw": 0.62,
+    "r_wrist_pitch": 25.58,
+    "r_wrist_roll": 35.07
+   }
+  },
+  {
+   "name": "B2_SAFE",
+   "notebook": "tests/MovePieceLogic.ipynb",
+   "cell": 3,
+   "joints": {
+    "r_shoulder_pitch": 8.22,
+    "r_shoulder_roll": -0.39,
+    "r_arm_yaw": 33.57,
+    "r_elbow_pitch": -113.64,
+    "r_forearm_yaw": 1.85,
+    "r_wrist_pitch": 13.36,
+    "r_wrist_roll": 30.15
+   }
+  },
+  {
+   "name": "B2_PLACE",
+   "notebook": "tests/MovePieceLogic.ipynb",
+   "cell": 3,
+   "joints": {
+    "r_shoulder_pitch": 7.78,
+    "r_shoulder_roll": -6.37,
+    "r_arm_yaw": 35.24,
+    "r_elbow_pitch": -75.94,
+    "r_forearm_yaw": -1.76,
+    "r_wrist_pitch": -25.22,
+    "r_wrist_roll": 22.5
+   }
+  },
+  {
+   "name": "PICK_SAFE",
+   "notebook": "tests/MovePieceLogic.ipynb",
+   "cell": 5,
+   "joints": {
+    "r_shoulder_pitch": 14.2,
+    "r_shoulder_roll": 1.36,
+    "r_arm_yaw": -16.35,
+    "r_elbow_pitch": -95.98,
+    "r_forearm_yaw": -3.16,
+    "r_wrist_pitch": -17.58,
+    "r_wrist_roll": 28.48
+   }
+  },
+  {
+   "name": "PICK",
+   "notebook": "tests/MovePieceLogic.ipynb",
+   "cell": 5,
+   "joints": {
+    "r_shoulder_pitch": 14.28,
+    "r_shoulder_roll": 2.15,
+    "r_arm_yaw": -15.21,
+    "r_elbow_pitch": -85.43,
+    "r_forearm_yaw": -6.68,
+    "r_wrist_pitch": -13.62,
+    "r_wrist_roll": 26.1
+   }
+  },
+  {
+   "name": "TRANSPORT",
+   "notebook": "tests/MovePieceLogic.ipynb",
+   "cell": 5,
+   "joints": {
+    "r_shoulder_pitch": 3.56,
+    "r_shoulder_roll": -2.59,
+    "r_arm_yaw": 25.22,
+    "r_forearm_yaw": 0.62,
+    "r_elbow_pitch": -119.44,
+    "r_wrist_pitch": 25.58,
+    "r_wrist_roll": 35.07
+   }
+  },
+  {
+   "name": "B2_SAFE",
+   "notebook": "tests/MovePieceLogic.ipynb",
+   "cell": 5,
+   "joints": {
+    "r_shoulder_pitch": 8.22,
+    "r_shoulder_roll": -0.39,
+    "r_arm_yaw": 33.57,
+    "r_elbow_pitch": -113.64,
+    "r_forearm_yaw": 1.85,
+    "r_wrist_pitch": 13.36,
+    "r_wrist_roll": 30.15
+   }
+  },
+  {
+   "name": "B2_PLACE",
+   "notebook": "tests/MovePieceLogic.ipynb",
+   "cell": 5,
+   "joints": {
+    "r_shoulder_pitch": 7.78,
+    "r_shoulder_roll": -6.37,
+    "r_arm_yaw": 35.24,
+    "r_elbow_pitch": -75.94,
+    "r_forearm_yaw": -1.76,
+    "r_wrist_pitch": -25.22,
+    "r_wrist_roll": 22.5
+   }
+  },
+  {
+   "name": "right_angled_position_right",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 17,
+   "joints": {
+    "r_shoulder_pitch": -55.0,
+    "r_shoulder_roll": 0.0,
+    "r_arm_yaw": 45.0,
+    "r_elbow_pitch": -90.0,
+    "r_forearm_yaw": 0.0,
+    "r_wrist_pitch": 0.0,
+    "r_wrist_roll": -45.0
+   }
+  },
+  {
+   "name": "RESET_POSITION_RIGHT",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 30,
+   "joints": {
+    "r_shoulder_pitch": -55.0,
+    "r_shoulder_roll": 0.0,
+    "r_arm_yaw": 45.0,
+    "r_elbow_pitch": -90.0,
+    "r_forearm_yaw": 0.0,
+    "r_wrist_pitch": 0.0,
+    "r_wrist_roll": -45.0
+   }
+  },
+  {
+   "name": "RESET_POSITION_RIGHT@Cali38",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 38,
+   "joints": {
+    "r_shoulder_pitch": -25.09,
+    "r_shoulder_roll": -21.31,
+    "r_arm_yaw": -13.36,
+    "r_elbow_pitch": -116.81,
+    "r_forearm_yaw": -3.34,
+    "r_wrist_pitch": 28.92,
+    "r_wrist_roll": 32.26
+   }
+  },
+  {
+   "name": "HOME_POSITION",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 42,
+   "joints": {
+    "r_shoulder_pitch": 11.56,
+    "r_shoulder_roll": -20.17,
+    "r_arm_yaw": -12.74,
+    "r_elbow_pitch": -115.84,
+    "r_forearm_yaw": -3.52,
+    "r_wrist_pitch": 29.62,
+    "r_wrist_roll": 32.61
+   }
+  },
+  {
+   "name": "B2_APPROACH",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 46,
+   "joints": {
+    "r_shoulder_pitch": 6.9,
+    "r_shoulder_roll": -7.69,
+    "r_arm_yaw": 32.61,
+    "r_elbow_pitch": -85.87,
+    "r_forearm_yaw": -8.96,
+    "r_wrist_pitch": -20.21,
+    "r_wrist_roll": 54.14
+   }
+  },
+  {
+   "name": "HOME_POSITION",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 47,
+   "joints": {
+    "r_shoulder_pitch": 11.56,
+    "r_shoulder_roll": -20.17,
+    "r_arm_yaw": -12.74,
+    "r_elbow_pitch": -115.84,
+    "r_forearm_yaw": -3.52,
+    "r_wrist_pitch": 29.62,
+    "r_wrist_roll": 32.61
+   }
+  },
+  {
+   "name": "B2_APPROACH",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 47,
+   "joints": {
+    "r_shoulder_pitch": 6.9,
+    "r_shoulder_roll": -7.69,
+    "r_arm_yaw": 32.61,
+    "r_elbow_pitch": -85.87,
+    "r_forearm_yaw": -8.96,
+    "r_wrist_pitch": -20.21,
+    "r_wrist_roll": 54.14
+   }
+  },
+  {
+   "name": "B2_SAFE_JOINTS",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 54,
+   "joints": {
+    "r_shoulder_pitch": 23.4794,
+    "r_shoulder_roll": 20.2843,
+    "r_arm_yaw": 19.9217,
+    "r_elbow_pitch": -111.0259,
+    "r_forearm_yaw": 32.5216,
+    "r_wrist_pitch": 4.5934,
+    "r_wrist_roll": 34.5556
+   }
+  },
+  {
+   "name": "B2_SAFE_ALIGNED",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 60,
+   "joints": {
+    "r_shoulder_pitch": 16.48,
+    "r_shoulder_roll": 9.45,
+    "r_arm_yaw": 18.28,
+    "r_elbow_pitch": -108.19,
+    "r_forearm_yaw": 32.61,
+    "r_wrist_pitch": 5.36,
+    "r_wrist_roll": 54.32
+   }
+  },
+  {
+   "name": "B2_PICK",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 71,
+   "joints": {
+    "r_shoulder_pitch": 13.2558,
+    "r_shoulder_roll": 1.8729,
+    "r_arm_yaw": 21.6144,
+    "r_elbow_pitch": -92.7163,
+    "r_forearm_yaw": 25.1388,
+    "r_wrist_pitch": -5.4446,
+    "r_wrist_roll": 42.6387
+   }
+  },
+  {
+   "name": "B2_LIFT_1CM",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 73,
+   "joints": {
+    "r_shoulder_pitch": 13.7216,
+    "r_shoulder_roll": 2.2885,
+    "r_arm_yaw": 21.4492,
+    "r_elbow_pitch": -95.1662,
+    "r_forearm_yaw": 25.5934,
+    "r_wrist_pitch": -3.5788,
+    "r_wrist_roll": 43.7703,
+    "r_gripper": -10.0
+   }
+  },
+  {
+   "name": "B2_LIFT_4CM",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 74,
+   "joints": {
+    "r_shoulder_pitch": 14.7238,
+    "r_shoulder_roll": 3.7861,
+    "r_arm_yaw": 21.1371,
+    "r_elbow_pitch": -102.0907,
+    "r_forearm_yaw": 27.2323,
+    "r_wrist_pitch": 1.9974,
+    "r_wrist_roll": 47.2361,
+    "r_gripper": -10.0
+   }
+  },
+  {
+   "name": "B2_SAFE_WITH_CUBE",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 75,
+   "joints": {
+    "r_shoulder_pitch": 16.48,
+    "r_shoulder_roll": 9.45,
+    "r_arm_yaw": 18.28,
+    "r_elbow_pitch": -108.19,
+    "r_forearm_yaw": 32.61,
+    "r_wrist_pitch": 5.36,
+    "r_wrist_roll": 54.32,
+    "r_gripper": -10.0
+   }
+  },
+  {
+   "name": "B3_SAFE_JOINTS",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 77,
+   "joints": {
+    "r_shoulder_pitch": 16.1833,
+    "r_shoulder_roll": -27.6047,
+    "r_arm_yaw": 16.3124,
+    "r_elbow_pitch": -109.0954,
+    "r_forearm_yaw": -0.8689,
+    "r_wrist_pitch": 3.0145,
+    "r_wrist_roll": 45.1639,
+    "r_gripper": -10.0
+   }
+  },
+  {
+   "name": "B3_LOWER_3CM_JOINTS",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 79,
+   "joints": {
+    "r_shoulder_pitch": 15.6202,
+    "r_shoulder_roll": -23.676,
+    "r_arm_yaw": 18.5317,
+    "r_elbow_pitch": -97.4016,
+    "r_forearm_yaw": 1.7347,
+    "r_wrist_pitch": -0.6789,
+    "r_wrist_roll": 45.5142,
+    "r_gripper": -10.0
+   }
+  },
+  {
+   "name": "B3_RETREAT",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 81,
+   "joints": {
+    "r_shoulder_pitch": 16.1833,
+    "r_shoulder_roll": -27.6047,
+    "r_arm_yaw": 16.3124,
+    "r_elbow_pitch": -109.0954,
+    "r_forearm_yaw": -0.8689,
+    "r_wrist_pitch": 3.0145,
+    "r_wrist_roll": 45.1639,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "HOME_POSITION@Cali82",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 82,
+   "joints": {
+    "r_shoulder_pitch": 11.56,
+    "r_shoulder_roll": -20.17,
+    "r_arm_yaw": -12.74,
+    "r_elbow_pitch": -115.84,
+    "r_forearm_yaw": -3.52,
+    "r_wrist_pitch": 29.62,
+    "r_wrist_roll": 32.61,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "SUPPLY_SAFE",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 84,
+   "joints": {
+    "r_shoulder_pitch": 13.23,
+    "r_shoulder_roll": 5.85,
+    "r_arm_yaw": -12.04,
+    "r_elbow_pitch": -78.93,
+    "r_forearm_yaw": 2.29,
+    "r_wrist_pitch": -27.86,
+    "r_wrist_roll": -11.43
+   }
+  },
+  {
+   "name": "SUPPLY_HIGH",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 86,
+   "joints": {
+    "r_shoulder_pitch": 17.7093,
+    "r_shoulder_roll": -2.3171,
+    "r_arm_yaw": -2.7593,
+    "r_elbow_pitch": -93.4187,
+    "r_forearm_yaw": -3.4636,
+    "r_wrist_pitch": -16.9034,
+    "r_wrist_roll": -20.7591,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "SUPPLY_HIGH",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 92,
+   "joints": {
+    "r_shoulder_pitch": 17.7093,
+    "r_shoulder_roll": -2.3171,
+    "r_arm_yaw": -2.7593,
+    "r_elbow_pitch": -93.4187,
+    "r_forearm_yaw": -3.4636,
+    "r_wrist_pitch": -16.9034,
+    "r_wrist_roll": -20.7591,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "SUPPLY_SAFE@Cali94",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 94,
+   "joints": {
+    "r_shoulder_pitch": 25.45,
+    "r_shoulder_roll": 10.24,
+    "r_arm_yaw": -25.49,
+    "r_elbow_pitch": -108.63,
+    "r_forearm_yaw": -11.34,
+    "r_wrist_pitch": -10.28,
+    "r_wrist_roll": 31.46
+   }
+  },
+  {
+   "name": "SUPPLY_LOWER_3CM_JOINTS",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 97,
+   "joints": {
+    "r_shoulder_pitch": 30.5329,
+    "r_shoulder_roll": -26.2207,
+    "r_arm_yaw": 5.5991,
+    "r_elbow_pitch": -99.3388,
+    "r_forearm_yaw": -28.0345,
+    "r_wrist_pitch": -30.913,
+    "r_wrist_roll": -4.422,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "SUPPLY_LOWER_4CM_JOINTS",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 99,
+   "joints": {
+    "r_shoulder_pitch": 29.6605,
+    "r_shoulder_roll": -25.3291,
+    "r_arm_yaw": 6.0422,
+    "r_elbow_pitch": -96.7262,
+    "r_forearm_yaw": -27.7672,
+    "r_wrist_pitch": -32.422,
+    "r_wrist_roll": -3.4015,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "SUPPLY_LOWER_7CM_JOINTS",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 101,
+   "joints": {
+    "r_shoulder_pitch": 26.7973,
+    "r_shoulder_roll": -22.5847,
+    "r_arm_yaw": 7.0522,
+    "r_elbow_pitch": -88.4653,
+    "r_forearm_yaw": -27.1879,
+    "r_wrist_pitch": -37.0485,
+    "r_wrist_roll": -0.1528,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "SUPPLY_PICK",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 102,
+   "joints": {
+    "r_shoulder_pitch": 26.7973,
+    "r_shoulder_roll": -22.5847,
+    "r_arm_yaw": 7.0522,
+    "r_elbow_pitch": -88.4653,
+    "r_forearm_yaw": -27.1879,
+    "r_wrist_pitch": -37.0485,
+    "r_wrist_roll": -0.1528
+   }
+  },
+  {
+   "name": "SUPPLY_LIFT_4CM",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 104,
+   "joints": {
+    "r_shoulder_pitch": 29.6605,
+    "r_shoulder_roll": -25.3291,
+    "r_arm_yaw": 6.0422,
+    "r_elbow_pitch": -96.7262,
+    "r_forearm_yaw": -27.7672,
+    "r_wrist_pitch": -32.422,
+    "r_wrist_roll": -3.4015,
+    "r_gripper": -10.0
+   }
+  },
+  {
+   "name": "B2_TRANSPORT",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 106,
+   "joints": {
+    "r_shoulder_pitch": 25.6048,
+    "r_shoulder_roll": 32.8522,
+    "r_arm_yaw": 11.1852,
+    "r_elbow_pitch": -86.5555,
+    "r_forearm_yaw": 27.613,
+    "r_wrist_pitch": -24.9753,
+    "r_wrist_roll": -6.2609,
+    "r_gripper": -10.0
+   }
+  },
+  {
+   "name": "TRANSPORT_HIGH",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 109,
+   "joints": {
+    "r_shoulder_pitch": 24.8673,
+    "r_shoulder_roll": -19.9925,
+    "r_arm_yaw": 1.7391,
+    "r_elbow_pitch": -107.7985,
+    "r_forearm_yaw": -15.4704,
+    "r_wrist_pitch": -6.9674,
+    "r_wrist_roll": -2.3696,
+    "r_gripper": -10.0
+   }
+  },
+  {
+   "name": "MIDPOINT_WITH_CUBE",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 111,
+   "joints": {
+    "r_shoulder_pitch": 25.6941,
+    "r_shoulder_roll": 10.3973,
+    "r_arm_yaw": 7.7689,
+    "r_elbow_pitch": -103.4159,
+    "r_forearm_yaw": 12.6476,
+    "r_wrist_pitch": -4.1294,
+    "r_wrist_roll": 0.5341,
+    "r_gripper": -10.0
+   }
+  },
+  {
+   "name": "B2_HIGH_WITH_CUBE",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 113,
+   "joints": {
+    "r_shoulder_pitch": 25.6276,
+    "r_shoulder_roll": 31.6426,
+    "r_arm_yaw": 11.7342,
+    "r_elbow_pitch": -88.3229,
+    "r_forearm_yaw": 35.4077,
+    "r_wrist_pitch": -11.4885,
+    "r_wrist_roll": -6.1475,
+    "r_gripper": -10.0
+   }
+  },
+  {
+   "name": "TRANSPORT",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 115,
+   "joints": {
+    "r_shoulder_pitch": 3.56,
+    "r_shoulder_roll": -2.59,
+    "r_arm_yaw": 25.22,
+    "r_elbow_pitch": -119.44,
+    "r_forearm_yaw": 0.62,
+    "r_wrist_pitch": 25.58,
+    "r_wrist_roll": 35.07
+   }
+  },
+  {
+   "name": "B2_SAFE@Cali118",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 118,
+   "joints": {
+    "r_shoulder_pitch": -1.54,
+    "r_shoulder_roll": -7.07,
+    "r_arm_yaw": 35.95,
+    "r_elbow_pitch": -105.29,
+    "r_forearm_yaw": -6.24,
+    "r_wrist_pitch": 3.78,
+    "r_wrist_roll": 49.48
+   }
+  },
+  {
+   "name": "DOWN_2CM",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 123,
+   "joints": {
+    "r_shoulder_pitch": 7.459,
+    "r_shoulder_roll": 2.2761,
+    "r_arm_yaw": 26.4214,
+    "r_elbow_pitch": -100.261,
+    "r_forearm_yaw": 4.8197,
+    "r_wrist_pitch": 1.6885,
+    "r_wrist_roll": 60.8152,
+    "r_gripper": -10.0
+   }
+  },
+  {
+   "name": "DOWN_NEXT_2CM",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 125,
+   "joints": {
+    "r_shoulder_pitch": 8.7845,
+    "r_shoulder_roll": 2.2545,
+    "r_arm_yaw": 24.7719,
+    "r_elbow_pitch": -94.9155,
+    "r_forearm_yaw": 6.5862,
+    "r_wrist_pitch": -0.3918,
+    "r_wrist_roll": 55.4757,
+    "r_gripper": -10.0
+   }
+  },
+  {
+   "name": "B2_PLACE@Cali128",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 128,
+   "joints": {
+    "r_shoulder_pitch": 9.8,
+    "r_shoulder_roll": 0.66,
+    "r_arm_yaw": 24.43,
+    "r_elbow_pitch": -83.85,
+    "r_forearm_yaw": 7.91,
+    "r_wrist_pitch": -0.09,
+    "r_wrist_roll": 53.96
+   }
+  },
+  {
+   "name": "UP_2CM",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 133,
+   "joints": {
+    "r_shoulder_pitch": 12.6616,
+    "r_shoulder_roll": 1.3801,
+    "r_arm_yaw": 23.6687,
+    "r_elbow_pitch": -92.6565,
+    "r_forearm_yaw": 9.6217,
+    "r_wrist_pitch": 9.6732,
+    "r_wrist_roll": 55.1853,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "UP_6CM",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 135,
+   "joints": {
+    "r_shoulder_pitch": 14.9106,
+    "r_shoulder_roll": 3.0012,
+    "r_arm_yaw": 23.2765,
+    "r_elbow_pitch": -104.5593,
+    "r_forearm_yaw": 13.2187,
+    "r_wrist_pitch": 22.9666,
+    "r_wrist_roll": 57.8439,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "B2_EXIT",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 137,
+   "joints": {
+    "r_shoulder_pitch": 15.5934,
+    "r_shoulder_roll": 4.1865,
+    "r_arm_yaw": 22.9,
+    "r_elbow_pitch": -109.516,
+    "r_forearm_yaw": 17.5768,
+    "r_wrist_pitch": 31.9286,
+    "r_wrist_roll": 57.9873,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "TRANSPORT_OPEN",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 139,
+   "joints": {
+    "r_shoulder_pitch": 3.56,
+    "r_shoulder_roll": -2.59,
+    "r_arm_yaw": 25.22,
+    "r_elbow_pitch": -119.44,
+    "r_forearm_yaw": 0.62,
+    "r_wrist_pitch": 25.58,
+    "r_wrist_roll": 35.07,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "HOME_POSITION@Cali140",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 140,
+   "joints": {
+    "r_shoulder_pitch": 11.56,
+    "r_shoulder_roll": -20.17,
+    "r_arm_yaw": -12.74,
+    "r_elbow_pitch": -115.84,
+    "r_forearm_yaw": -3.52,
+    "r_wrist_pitch": 29.62,
+    "r_wrist_roll": 32.61,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "SUPPLY_SAFE@Cali141",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 141,
+   "joints": {
+    "r_shoulder_pitch": 25.45,
+    "r_shoulder_roll": 10.24,
+    "r_arm_yaw": -25.49,
+    "r_elbow_pitch": -108.63,
+    "r_forearm_yaw": -11.34,
+    "r_wrist_pitch": -10.28,
+    "r_wrist_roll": 31.46,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "SUPPLY_INTERMEDIATE",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 143,
+   "joints": {
+    "r_shoulder_pitch": 29.6605,
+    "r_shoulder_roll": -25.3291,
+    "r_arm_yaw": 6.0422,
+    "r_elbow_pitch": -96.7262,
+    "r_forearm_yaw": -27.7672,
+    "r_wrist_pitch": -32.422,
+    "r_wrist_roll": -3.4015,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "SUPPLY_PICK_LOWER",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 145,
+   "joints": {
+    "r_shoulder_pitch": 27.7617,
+    "r_shoulder_roll": -21.1006,
+    "r_arm_yaw": 6.5955,
+    "r_elbow_pitch": -90.4887,
+    "r_forearm_yaw": -27.4067,
+    "r_wrist_pitch": -33.2882,
+    "r_wrist_roll": -0.5625,
+    "r_gripper": -29.0
+   }
+  },
+  {
+   "name": "SUPPLY_PICK_OLD_WITH_CUBE",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 149,
+   "joints": {
+    "r_shoulder_pitch": 26.7973,
+    "r_shoulder_roll": -22.5847,
+    "r_arm_yaw": 7.0522,
+    "r_elbow_pitch": -88.4653,
+    "r_forearm_yaw": -27.1879,
+    "r_wrist_pitch": -37.0485,
+    "r_wrist_roll": -0.1528,
+    "r_gripper": -7.0
+   }
+  },
+  {
+   "name": "SUPPLY_UP_3CM",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 152,
+   "joints": {
+    "r_shoulder_pitch": 30.3621,
+    "r_shoulder_roll": -22.7873,
+    "r_arm_yaw": 6.1181,
+    "r_elbow_pitch": -96.1392,
+    "r_forearm_yaw": -28.1199,
+    "r_wrist_pitch": -30.1518,
+    "r_wrist_roll": -3.1878,
+    "r_gripper": -7.0
+   }
+  },
+  {
+   "name": "SUPPLY_UP_6CM",
+   "notebook": "tests/CalibrateBoard.ipynb",
+   "cell": 155,
+   "joints": {
+    "r_shoulder_pitch": 34.8012,
+    "r_shoulder_roll": -24.7006,
+    "r_arm_yaw": 4.1634,
+    "r_elbow_pitch": -108.9874,
+    "r_forearm_yaw": -29.7127,
+    "r_wrist_pitch": -19.9402,
+    "r_wrist_roll": -8.2861,
+    "r_gripper": -7.0
+   }
+  }
+ ],
+ "board_poses": {
+  "A1": [
+   [
+    -0.01808295,
+    -0.81483479,
+    -0.57941114,
+    0.34214051
+   ],
+   [
+    0.05606442,
+    0.57776777,
+    -0.81427341,
+    0.11797679
+   ],
+   [
+    0.99826339,
+    -0.04720881,
+    0.03523549,
+    -0.37703476
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "A2": [
+   [
+    -0.00578759,
+    -0.31373665,
+    -0.9494924,
+    0.34933746
+   ],
+   [
+    0.01651412,
+    0.94934883,
+    -0.31378987,
+    0.01736093
+   ],
+   [
+    0.99984688,
+    -0.01749612,
+    -0.00031335,
+    -0.37566538
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "A3": [
+   [
+    0.01196106,
+    -0.11503405,
+    -0.99328953,
+    0.35621112
+   ],
+   [
+    0.04124568,
+    0.99257192,
+    -0.11445427,
+    -0.12895906
+   ],
+   [
+    0.99907744,
+    -0.0395999,
+    0.01661687,
+    -0.37692032
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "B1": [
+   [
+    -0.00487647,
+    -0.7055355,
+    -0.7086578,
+    0.23123656
+   ],
+   [
+    -0.05203516,
+    0.70788517,
+    -0.70440821,
+    0.14558051
+   ],
+   [
+    0.99863335,
+    0.0334401,
+    -0.04016464,
+    -0.37192733
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "B2": [
+   [
+    -0.00017153,
+    -0.69616953,
+    -0.7178774,
+    0.24251293
+   ],
+   [
+    0.11818002,
+    0.71283254,
+    -0.69130547,
+    0.00612421
+   ],
+   [
+    0.99299217,
+    -0.08495735,
+    0.08215105,
+    -0.38243731
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "B3": [
+   [
+    -0.09060166,
+    -0.05718291,
+    -0.99424416,
+    0.23253929
+   ],
+   [
+    -0.09890699,
+    0.99393099,
+    -0.04815188,
+    -0.14153537
+   ],
+   [
+    0.99096354,
+    0.09397506,
+    -0.09570759,
+    -0.36954387
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "C1": [
+   [
+    -0.01729617,
+    -0.9714949,
+    -0.23642865,
+    0.103162
+   ],
+   [
+    0.03139282,
+    0.23581978,
+    -0.97128962,
+    0.14830975
+   ],
+   [
+    0.99935746,
+    -0.02422175,
+    0.02641918,
+    -0.37783482
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "C2": [
+   [
+    -0.06127873,
+    -0.98928949,
+    -0.13248105,
+    0.10070317
+   ],
+   [
+    0.08789909,
+    0.12686606,
+    -0.98801759,
+    -0.00684353
+   ],
+   [
+    0.99424276,
+    -0.07218942,
+    0.07918345,
+    -0.38245479
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "C3": [
+   [
+    0.00572237,
+    -0.25876516,
+    -0.96592331,
+    0.07757317
+   ],
+   [
+    0.03171251,
+    0.96550023,
+    -0.25846395,
+    -0.15544926
+   ],
+   [
+    0.99948065,
+    -0.02915282,
+    0.01373105,
+    -0.37839183
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ]
+ }
+}
