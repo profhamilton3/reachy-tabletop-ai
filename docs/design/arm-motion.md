@@ -649,6 +649,15 @@ and the T3 read runs.
 | R2 | robot | Part B with the pieces | the bundle to #27 and sim #179 |
 | T1–T5 | both | T3: teach the per-cell and supply poses; their records and occupancy maps; the board-read gate; the sim demo; the owner's T3 decision; then the robot | each record passes; 0 moves past a `must_be_empty` cell in the sim |
 
+**A1 and A2, as built** (`safety.arm_gate_check`, the arm primitives in `motion/primitives.py`, `procedures.arm_teach_procedure`; no viewer thread, flag or procedure moves the arm yet, that is A3). Where the build had to choose:
+- **Item 1's purposes** come from `config.ARM_ALLOWED_PURPOSES`, empty until the commit that carries the Part B decision (D1). So every route is refused today for that reason too, whatever its record says. The gate reads it from config, not from an argument, so no caller can widen it.
+- **Item 7 applies to every leg of a route** that has any leg under 9 cm of the board in its record, not only to that leg: the occupancy map is a property of the route.
+- **Item 8 needs the REST tip from the record, and the record does not carry it.** The gate takes `fk_tip_m` and `rest_tip_m` and refuses without both. The sim's `tools/route_clearance` has to write each waypoint's tip (it already computes it) before any route can pass: a follow-up on the sim side, not in this PR.
+- **Defaults refuse:** every argument that says "safe" defaults to the unsafe value. `MOTION_DISABLED` is the only failure that leaves a leg a logged dry run.
+- **Item 3's temperature rule also refuses the retreat** after a `temperature` hold; section 4.3's "only the retreat is then allowed" needs a retreat-specific path (A3).
+- **`play_leg` does not power the arm** (that is `arm_power_at_rest`, at REST only) and refuses a leg whose joints are compliant. It holds the gripper at its read-back once, and reports `gripper_step_needed` so the caller runs Part A's gripper step first.
+- **Teach arm pose** is defined but not listed in `PROCEDURES`: the viewer has no endpoint for it until A3, and a listed procedure the page cannot run is worse than none.
+
 **Open decisions (recommended defaults):**
 
 | | Decision | Recommended default |

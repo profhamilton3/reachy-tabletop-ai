@@ -259,3 +259,118 @@ def test_smoke_test_all_default_mode_writes_nothing(rec, monkeypatch, capsys):
     assert exc.value.code == 0
     assert "6/6 checks passed" in out
     assert "FAIL" not in out
+
+
+# --- Teach arm pose (#66 A2): read-only, no write of any kind -----------------------------------------------------
+
+REST_POSE = {"r_shoulder_pitch": 10.5, "r_shoulder_roll": 15.0, "r_arm_yaw": -55.0, "r_elbow_pitch": -81.0,
+             "r_forearm_yaw": 84.5, "r_wrist_pitch": -4.5, "r_wrist_roll": -17.5}
+
+
+def limp_robot(pose=REST_POSE, stiff=()):
+    """The fake SDK with the arm limp (compliant) at `pose`: set up directly, which is not a write by the code under
+    test. Any assignment through the fake's normal path is recorded and raises."""
+    robot = sys.modules["reachy_sdk"].ReachySDK(host="fake")
+    for name, joint in robot.r_arm.joints.items():
+        object.__setattr__(joint, "compliant", name not in stiff)
+        object.__setattr__(joint, "present_position", pose.get(name, -29.0))
+    return robot
+
+
+def teach_run():
+    from reachy_ai.perception import procedures
+
+    return procedures.CaptureRun(procedures.arm_teach_procedure())
+
+
+def test_teach_arm_pose_writes_nothing_and_its_pose_block_validates_with_the_a0_loader(rec):
+    import json
+
+    from reachy_ai.motion import arm_routes, primitives
+
+    robot, run = limp_robot(), teach_run()
+    reader = lambda: primitives.arm_read(robot)  # noqa: E731
+    first = run.apply_teach("teach_rest", reader, by="Siva")
+    for name, value in {"r_shoulder_roll": -25.0, "r_shoulder_pitch": 0.0}.items():   # the hand moves the arm
+        object.__setattr__(robot.r_arm.joints[name], "present_position", value)
+    run.apply_teach("teach_rest_out", reader, by="Siva")
+    run.apply_teach("teach_custom", reader, label="SPARE_POSE", by="Siva")
+    assert rec.writes == []                                       # the fake raises and records on any write
+    assert first["label"] == "REST" and first["joints_deg"] == REST_POSE and first["gripper_deg"] == -29.0
+    assert first["fk_tip_m"] == [0.0, 0.0, 0.0] and first["taught_utc"].endswith("Z")
+
+    files = run.bundle_files({})
+    block = json.loads(files["teach/poses.json"])
+    assert sorted(block) == ["REST", "REST_OUT", "SPARE_POSE"]
+    assert block["REST_OUT"]["joints_deg"]["r_shoulder_roll"] == -25.0
+    assert block["REST"]["provenance"]["kind"] == "taught" and block["REST"]["provenance"]["by"] == "Siva"
+    doc = arm_routes.load_routes_doc()
+    doc["poses"].update(block)                                    # "ready to paste": the A0 loader accepts it
+    arm_routes.validate_routes_doc(doc)
+    readings = json.loads(files["teach/readings.json"])
+    assert [r["label"] for r in readings] == ["REST", "REST_OUT", "SPARE_POSE"]
+    assert all(r["taught_utc"] for r in readings)
+    summary = json.loads(files["capture.json"])
+    assert summary["kind"] == "teach" and summary["format_version"] == 1
+    assert "no goal, power or compliance" in summary["note"]
+    assert run.state()["can_download"] and run.build_zip({})       # a bundle with only readings downloads
+    assert rec.writes == []
+
+
+def test_teach_latest_reading_of_a_name_is_the_one_in_the_block(rec):
+    from reachy_ai.motion import primitives
+
+    robot, run = limp_robot(), teach_run()
+    run.apply_teach("teach_custom", lambda: primitives.arm_read(robot), label="SPARE_POSE")
+    object.__setattr__(robot.r_arm.joints["r_arm_yaw"], "present_position", -40.0)
+    run.apply_teach("teach_custom", lambda: primitives.arm_read(robot), label="SPARE_POSE")
+    assert run.teach_pose_block()["SPARE_POSE"]["joints_deg"]["r_arm_yaw"] == -40.0 and run.teach_count() == 2
+
+
+def test_teach_refuses_a_stiff_arm_with_a_reason_and_changes_nothing(rec):
+    import pytest as _pytest
+
+    from reachy_ai.motion import primitives
+    from reachy_ai.perception.procedures import TeachRefused
+
+    robot, run = limp_robot(stiff=("r_elbow_pitch", "r_wrist_roll")), teach_run()
+    with _pytest.raises(TeachRefused, match="r_elbow_pitch, r_wrist_roll not compliant"):
+        run.apply_teach("teach_rest", lambda: primitives.arm_read(robot))
+    assert rec.writes == [] and run.teach_count() == 0
+    assert run.teach_results["teach_rest"][0]["outcome"] == "refused"
+    assert robot.r_arm.joints["r_elbow_pitch"].compliant is False      # still as the operator left it
+
+
+def test_teach_refuses_an_unreadable_joint_and_a_bad_label(rec):
+    import pytest as _pytest
+
+    from reachy_ai.motion import primitives
+    from reachy_ai.perception.procedures import TeachRefused
+
+    robot, run = limp_robot(), teach_run()
+    reading = primitives.arm_read(robot)
+    reading["joints"]["r_arm_yaw"]["position_deg"] = None
+    with _pytest.raises(TeachRefused, match="no position for r_arm_yaw"):
+        run.apply_teach("teach_rest", lambda: reading)
+    with _pytest.raises(TeachRefused, match="capital letters"):
+        run.apply_teach("teach_custom", lambda: primitives.arm_read(robot), label="my pose")
+    with _pytest.raises(TeachRefused, match="could not be read"):
+        run.apply_teach("teach_rest", lambda: (_ for _ in ()).throw(ConnectionError("x")))
+    assert rec.writes == [] and run.teach_count() == 0
+    with _pytest.raises(ValueError, match="not a Teach arm pose step"):
+        from reachy_ai.perception import procedures
+        gripper = procedures.get_procedure("gripper_range")
+        procedures.CaptureRun(gripper).apply_teach(gripper.steps[0].id, lambda: None)
+
+
+def test_the_teach_code_has_no_write_calls_in_its_source():
+    import inspect
+
+    from reachy_ai.perception import procedures
+
+    source = inspect.getsource(procedures.CaptureRun.apply_teach) + inspect.getsource(
+        procedures.CaptureRun.teach_pose_block) + inspect.getsource(procedures.arm_teach_procedure)
+    for call in (".look_at(", "turn_on(", "turn_off(", "turn_off_smoothly(", "goto(", ".goal_position =",
+                 ".compliant =", "torque_limit =", "speed_limit =", "gripper_step", "play_leg"):
+        assert call not in source, call
+    assert procedures.arm_teach_procedure().id not in procedures.PROCEDURES   # not listed until the viewer can run it

@@ -125,3 +125,26 @@ GRIPPER_SWEEP_SHUT_DEG: tuple[float, ...] = (-60.0, -50.0, -40.0, -30.0, -20.0, 
 # both ids here.
 ARM_RIG_LAYOUT_ID: str = "fwd-center-lab"
 ARM_MOUNT_ID: str = "october-2026"
+
+# --- Arm motion (#66, A1/A2; docs/design/arm-motion.md sections 4 and 5). Proposed defaults, OD-A1..A3. ---
+# Nothing here lets the arm move by itself: `safety.arm_gate_check` still needs a passing sim record, a confirm,
+# REACHY_ENABLE_MOTION and the rest of section 5, and the viewer has no arm thread yet (A3).
+ARM_ALLOWED_PURPOSES: tuple[str, ...] = ()   # route purposes the owner decisions cover; "gripper_calibration" is added
+#                                              here by the commit that carries the Part B decision (D1), not before
+ARM_MAX_AVG_SPEED_DEG_S: float = 10.0     # a leg's largest joint change / its duration (OD-A1)
+ARM_FIRST_RUN_SPEED_DEG_S: float = 5.0    # the first robot run of each route
+ARM_MAX_GOAL_STEP_DEG: float = 0.5        # no streamed goal moves a joint further than this from the previous one
+ARM_START_TOL_DEG: float = 3.0            # the present read-back must be this close to a leg's start pose
+ARM_REST_TOL_DEG: float = 3.0             # power-on and release are allowed only this close to the route's REST
+ARM_FOLLOW_TOL_DEG: float = 6.0           # |present - goal| on a gross joint ...
+ARM_FOLLOW_WINDOW_S: float = 0.25         # ... for this long aborts the leg ('following')
+ARM_READBACK_CRITICAL_TOL_DEG: float = 3.0   # gross joints and wrist pitch must arrive within this
+ARM_READBACK_WEAK_TOL_DEG: float = 8.0       # forearm yaw and wrist roll: reported against this, not gated
+ARM_SETTLE_S: float = 1.0                 # after the last goal, wait this long for the read-back to arrive
+ARM_TIMEOUT_FACTOR: float = 2.0           # a leg times out after factor x its duration ...
+ARM_TIMEOUT_EXTRA_S: float = 3.0          # ... plus this
+ARM_MAX_TEMP_C: float = 55.0              # any arm joint over this before or during a leg (as the gripper)
+ARM_MAX_LOAD: float = 40.0                # |present_load| in the SDK's units, any arm joint
+ARM_FK_TOL_M: float = 0.03                # the REST read-back's FK tip against the record's REST tip (item 8)
+ARM_BOARD_CLEARANCE_CM: float = 9.0       # a leg this close to the board (the record's cap) triggers item 7
+ARM_HEAD_FOLLOW_DIFF_DEG: float = 10.0   # SDK head IK vs the record's neck angles: logged above this
