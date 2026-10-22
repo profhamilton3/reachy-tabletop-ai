@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 MOTION_DISABLED = "REACHY_ENABLE_MOTION is not true"
 
 
+class MotionRefused(PermissionError):
+    """A live arm or gripper command was refused because no gate covers it yet; nothing was sent."""
+
+
 @dataclass
 class Pose3D:
     x: float

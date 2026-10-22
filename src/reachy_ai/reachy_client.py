@@ -1,12 +1,14 @@
 """
 Wraps reachy_sdk (v1) for Reachy 1.2.
 Dry-run by default — set REACHY_ENABLE_MOTION=true to allow motion.
+The only live motion here is look_at (head primitive + gate). Arm and gripper commands refuse until #66.
 """
 import logging
 from typing import Any
 
 from reachy_ai.config import HEAD_DEFAULT_DURATION_S, REACHY_ENABLE_MOTION, REACHY_IP
 from reachy_ai.motion import primitives
+from reachy_ai.motion.safety import MotionRefused
 
 logger = logging.getLogger(__name__)
 
@@ -44,20 +46,19 @@ class ReachyClient:
         if self.dry_run:
             logger.info("DRY-RUN set_joint_goal: %s -> %.1f deg over %.1fs", joint_name, goal_deg, duration)
             return
-        joint = getattr(self._reachy.r_arm, joint_name)
-        joint.goal_position = goal_deg
+        raise MotionRefused("arm goals are not available until the arm gate (#66); nothing was sent")
 
     def open_gripper(self) -> None:
         if self.dry_run:
             logger.info("DRY-RUN open_gripper")
             return
-        self._reachy.r_arm.gripper.open()
+        raise MotionRefused("gripper motion outside capture procedures waits for #66; nothing was sent")
 
     def close_gripper(self) -> None:
         if self.dry_run:
             logger.info("DRY-RUN close_gripper")
             return
-        self._reachy.r_arm.gripper.close()
+        raise MotionRefused("gripper motion outside capture procedures waits for #66; nothing was sent")
 
     def look_at(self, x: float, y: float, z: float, duration: float = HEAD_DEFAULT_DURATION_S,
                 operator_approved: bool = False) -> dict:
@@ -72,10 +73,12 @@ class ReachyClient:
         if self.dry_run:
             logger.info("DRY-RUN turn_on_arm")
             return
-        self._reachy.turn_on("r_arm")
+        raise MotionRefused("power changes to the arm wait for #66; turning the arm off can drop it; "
+                            "nothing was sent")
 
     def turn_off_arm(self) -> None:
         if self.dry_run:
             logger.info("DRY-RUN turn_off_arm")
             return
-        self._reachy.turn_off("r_arm")
+        raise MotionRefused("power changes to the arm wait for #66; turning the arm off can drop it; "
+                            "nothing was sent")
