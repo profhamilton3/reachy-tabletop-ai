@@ -195,6 +195,28 @@ route comes from Step 1. Every open choice is in section 11, with a recommended 
   cubes at this pose, so this is the sim's grasp gap (section 2.6, OD-A13); until it is resolved or the owner
   decides otherwise, `B2_GRIP_TUNE` has no passing record.
 
+**B2 is a placing pose; PICK is the grasp.** Siva's notebook (`tests/MovePieceLogic.ipynb`) opens the gripper to −29°,
+moves PICK_SAFE → PICK, and closes to −10° **at PICK**. He carries the piece to B2_SAFE → B2_PLACE and opens to −29°
+there: at B2_PLACE the piece arrives already held. So `B2_GRIP_TUNE` has the target piece placed at a pose where the
+real sequence never closes on a loose piece, and its failure is partly a question about the route.
+- **`PICK_GRIP_TUNE`** = REST → REST_OUT → PICK_SAFE → PICK → PICK_SAFE → REST_OUT → REST, closing at PICK.
+  - The gripper opens to −29° on the REST_OUT → PICK_SAFE leg, as in the notebook. The legs are 4.0, 8.77 and 5.0 s
+    (10°/s rule), PICK is `near_board`. The direct REST_OUT → PICK_SAFE leg is clean: board ≥ 7.4 cm, rig and left
+    arm ≥ 9 cm, following ≤ 0.9°, arrival ≤ 0.7°. B2_GRIP_TUNE is unchanged.
+  - **The target is not a grid cell.** PICK's tip is at world (0.481, −0.252) m, 4.9 cm over the board, 36 mm outside
+    r2c3's outer edge. The clearance tool's `--target-spot` flies the target piece there, and the record has
+    `target_cell: null` and `target_placement.spot_xy_m`. All nine cells are in the occupancy map.
+  - **Occupancy: `must_be_empty` r1c3 and r2c3**; `may_be_occupied` r1c1, r1c2, r2c1, r2c2, r3c1, r3c2, r3c3. The
+    forearm reaches into r1c3 on the PICK descent (a cylinder moved 21 mm, a cube 2.0 mm) and touches a cube on r2c3
+    (1.5 mm). The seven may-be-occupied cells flown at once: nothing moved.
+  - **Head at PICK:** neck pitch 57.0°, yaw −25.8°, roll 0, at no limit, the tip in view of both cameras (at PICK_SAFE
+    52.4°, −29.0°).
+  - **Verdict `fail`, only on the target spot:** a centred cube moves 2.0 mm and a centred cylinder 5.0 mm, from the
+    palm on the PICK_SAFE → PICK descent, so the placement tolerance is none.
+- **Both routes fail the target check for the same reason: the sim's hand geometry** (reachy-1-2-sim #210, which needs
+  Siva's measurements), not the routes. Siva grasped real pieces at both poses. Both stay `fail` until #210; neither
+  has a passing record.
+
 ### 2.6 The sim does not reproduce the taught grasps
 
 The test: a 50.8 mm lab cube placed at each pose's grasp point (the midpoint of the two pads at −29°, turned to the

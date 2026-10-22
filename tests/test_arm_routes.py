@@ -434,6 +434,32 @@ def test_record_schema_is_strict_and_self_consistent(doc, tmp_path):
         _refused(rec, text, tmp_path)
 
 
+def test_record_target_spot_key_present_absent_and_malformed(doc, tmp_path):
+    """target_placement.spot_xy_m is optional: a record with a target cell lacks it (the committed B2 record), a spot
+    record (target_cell null) carries [x, y] in metres, and a malformed or misplaced one is refused."""
+    absent = record(doc, verdict="fail")
+    assert "spot_xy_m" not in absent["target_placement"]
+    arm_records.validate_record(copy.deepcopy(absent))
+
+    def spot(value):
+        rec = copy.deepcopy(absent)
+        rec["target_cell"] = None
+        rec["target_placement"]["spot_xy_m"] = value
+        return rec
+
+    arm_records.validate_record(spot([0.4811, -0.252]))                      # present, well formed
+    cases = [(spot([0.4811]), "must be \\[x, y\\] in metres"),
+             (spot([0.4811, -0.252, 0.0]), "spot_xy_m: must be \\[x, y\\]"),
+             (spot([0.4811, "y"]), "spot_xy_m\\[\\]: must be a finite number"),
+             (spot([0.4811, float("nan")]), "spot_xy_m\\[\\]: must be a finite number$"),
+             (spot("0.48,-0.25"), "spot_xy_m: must be a list")]
+    both = copy.deepcopy(absent)
+    both["target_placement"]["spot_xy_m"] = [0.4811, -0.252]                 # with a target cell as well
+    cases.append((both, "a record with a target square has no target spot"))
+    for rec, text in cases:
+        _refused(rec, text, tmp_path)
+
+
 def test_record_status_and_playability(doc):
     def taught(d):
         for name in ("REST", "REST_OUT"):
