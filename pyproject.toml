@@ -48,7 +48,7 @@ dev = [
 reachy-stereo = "reachy_ai.stereo:main"
 
 [tool.setuptools.package-data]
-reachy_ai = ["web/*.html"]
+reachy_ai = ["web/*.html", "motion/arm_routes.json", "motion/arm_route_records/*.json"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,40 @@
+{
+  "hashes": {
+    "GOLDEN_OUT": "1a4edb5abf3e2db90cd4e0aa105b272ed9d646db76ba41f0a03d9c9b496d2e66",
+    "GOLDEN_SHORT": "01d4d00abccef15d852bd8fc8a298a39fd647f1438e8b84143b164cee2d23061"
+  },
+  "limits": {
+    "r_arm_yaw": [
+      -89.95,
+      89.95
+    ],
+    "r_elbow_pitch": [
+      -125.01,
+      0.0
+    ],
+    "r_forearm_yaw": [
+      -99.98,
+      99.98
+    ],
+    "r_gripper": [
+      -68.75,
+      20.05
+    ],
+    "r_shoulder_pitch": [
+      -150.0,
+      89.95
+    ],
+    "r_shoulder_roll": [
+      -179.9,
+      20.3
+    ],
+    "r_wrist_pitch": [
+      -44.97,
+      44.97
+    ],
+    "r_wrist_roll": [
+      -44.97,
+      44.97
+    ]
+  }
+}

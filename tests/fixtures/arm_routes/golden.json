@@ -1,0 +1,94 @@
+{
+  "poses": {
+    "A": {
+      "joints_deg": {
+        "r_arm_yaw": 0.0,
+        "r_elbow_pitch": -90.0,
+        "r_forearm_yaw": 0.0,
+        "r_shoulder_pitch": 0.0,
+        "r_shoulder_roll": 0.0,
+        "r_wrist_pitch": 0.0,
+        "r_wrist_roll": 0.0
+      },
+      "provenance": {
+        "adr": "ADR-0010",
+        "evidence": "golden",
+        "kind": "sim",
+        "source": "golden"
+      }
+    },
+    "B": {
+      "joints_deg": {
+        "r_arm_yaw": 20.0,
+        "r_elbow_pitch": -100.0,
+        "r_forearm_yaw": 1.0,
+        "r_shoulder_pitch": 10.126,
+        "r_shoulder_roll": -5.5,
+        "r_wrist_pitch": -10.0,
+        "r_wrist_roll": 15.0
+      },
+      "provenance": {
+        "by": "fixture",
+        "cell": 0,
+        "kind": "taught",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "source": "golden"
+      }
+    },
+    "C": {
+      "joints_deg": {
+        "r_arm_yaw": -20.0,
+        "r_elbow_pitch": -80.0,
+        "r_forearm_yaw": -3.0,
+        "r_shoulder_pitch": 5.0,
+        "r_shoulder_roll": 2.0,
+        "r_wrist_pitch": 12.5,
+        "r_wrist_roll": -30.0
+      },
+      "provenance": {
+        "by": "fixture",
+        "cell": 0,
+        "kind": "taught",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "source": "golden"
+      }
+    }
+  },
+  "routes": {
+    "GOLDEN_OUT": {
+      "close_pose": "C",
+      "end": "A",
+      "legs": [
+        {
+          "gripper_deg": 20.0,
+          "min_duration_s": 4.0,
+          "to": "B"
+        },
+        {
+          "gripper_deg": -29.0,
+          "min_duration_s": 6.5,
+          "near_board": true,
+          "to": "C"
+        }
+      ],
+      "purpose": "gripper_calibration",
+      "return": "reverse",
+      "start": "A"
+    },
+    "GOLDEN_SHORT": {
+      "close_pose": "B",
+      "end": "A",
+      "legs": [
+        {
+          "gripper_deg": 20,
+          "min_duration_s": 3,
+          "to": "B"
+        }
+      ],
+      "purpose": "gripper_calibration",
+      "return": "reverse",
+      "start": "A"
+    }
+  },
+  "schema": "arm_routes.v1"
+}

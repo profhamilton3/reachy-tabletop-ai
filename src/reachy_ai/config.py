@@ -117,3 +117,11 @@ GRIPPER_SAMPLE_HZ: float = 20.0
 GRIPPER_SAMPLE_CAP: int = 400             # samples kept per move (8 s at 20 Hz = 160)
 GRIPPER_SWEEP_OPEN_DEG: tuple[float, ...] = (10.0, 0.0, -10.0, -20.0, -30.0, -40.0, -50.0, -60.0, -68.0)
 GRIPPER_SWEEP_SHUT_DEG: tuple[float, ...] = (-60.0, -50.0, -40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0)
+
+# --- Arm records: which rig a clearance record was flown for (#66, A0; docs/design/arm-motion.md section 3.2) ---
+# A record names the physical lab and its October twins by ARM_RIG_LAYOUT_ID, and the arm mount by ARM_MOUNT_ID.
+# It also names the sim scene it was flown in (rig.scene_name, scene_sha256, scene_revision): the sim scene is
+# evidence for the record, not part of the rig identity. The robot plays a route only with a record that matches
+# both ids here.
+ARM_RIG_LAYOUT_ID: str = "fwd-center-lab"
+ARM_MOUNT_ID: str = "october-2026"
