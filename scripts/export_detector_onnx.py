@@ -119,7 +119,7 @@ def main():
         return
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--from-tflite", action="store_true",
-                        help="fallback: convert tests/best.tflite with tf2onnx (only if the .pt export fails agreement)")
+                        help="fallback: convert tests/best.tflite with tf2onnx (only if .pt fails agreement)")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="detector-onnx-") as name:
         scratch = Path(name)
