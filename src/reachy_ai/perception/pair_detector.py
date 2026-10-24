@@ -1,5 +1,6 @@
 """On-demand CPU inference using the existing exported tabletop YOLO model.
 
+Engines, in order: ai_edge_litert, tflite_runtime, then OpenCV DNN on data/models/best.onnx (#75).
 The repository's best.tflite model has RGB float NCHW input and normalized
 xywh + class-score output. This follows testbestInt8_Tflite.ipynb, converting
 SDK BGR pixels to RGB exactly once. No training or camera access occurs here.
@@ -8,6 +9,7 @@ SDK BGR pixels to RGB exactly once. No training or camera access occurs here.
 import hashlib
 import importlib.util
 import json
+import os
 import threading
 import time
 import zipfile
@@ -17,6 +19,11 @@ import cv2
 import numpy as np
 
 DEFAULT_MODEL = Path(__file__).resolve().parents[3] / "tests" / "best.tflite"
+ONNX_MODEL = Path(__file__).resolve().parents[3] / "data" / "models" / "best.onnx"
+ENGINE_ENV = "REACHY_DETECTOR_ENGINE"
+LABELS = ["cube", "cylinder", "empty"]
+INPUT_SIZE = 320
+ONNX_ENGINE = "opencv_dnn_onnx"
 
 
 class DetectorUnavailable(RuntimeError):
@@ -32,6 +39,29 @@ def runtime_name():
         if importlib.util.find_spec(name) is not None:
             return name
     return None
+
+
+def engine_name(override=None):
+    """Engine in preference order: ai_edge_litert, tflite_runtime, then OpenCV DNN with the ONNX copy.
+
+    REACHY_DETECTOR_ENGINE=tflite|onnx forces one (for testing); a forced engine never falls back.
+    """
+    forced = (override or os.environ.get(ENGINE_ENV) or "").strip().lower()
+    if forced == "onnx":
+        return ONNX_ENGINE
+    if forced == "tflite":
+        return runtime_name()
+    if forced:
+        raise DetectorUnavailable(f"{ENGINE_ENV} must be 'tflite' or 'onnx'")
+    return runtime_name() or ONNX_ENGINE
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def decode_predictions(output, labels, width, height, confidence=0.30, nms_iou=0.45):
@@ -87,59 +117,115 @@ def draw_detections(pixels, detections):
 
 
 class PairDetector:
-    def __init__(self, model_path=DEFAULT_MODEL):
+    def __init__(self, model_path=DEFAULT_MODEL, onnx_path=ONNX_MODEL):
         self.path = Path(model_path).expanduser().resolve()
+        self.onnx_path = Path(onnx_path).expanduser().resolve()
+        if self.path.suffix == ".onnx":
+            self.path, self.onnx_path = DEFAULT_MODEL, self.path
+            self.engine_override = "onnx"
+        else:
+            self.engine_override = None
         self.lock = threading.Lock()
         self.interpreter = None
+        self.net = None
         self.model = None
         self.last_error = None
 
+    def engine(self):
+        return engine_name(self.engine_override)
+
+    def _model_file(self, engine):
+        return self.onnx_path if engine == ONNX_ENGINE else self.path
+
     def status(self):
-        available = self.path.is_file() and runtime_name() is not None
+        try:
+            engine = self.engine()
+        except DetectorUnavailable as exc:
+            return {"available": False, "model_name": self.path.name, "engine": None, "reason": str(exc),
+                    "eye": "right", "execution": "on demand, workstation CPU"}
         reason = self.last_error
-        if not self.path.is_file():
-            reason = "Detector model missing. Set --detector-model to the existing best.tflite file."
-        elif runtime_name() is None:
-            reason = "Install the analysis extra on the workstation: pip install -e '.[analysis]'"
-        return {"available": available and reason is None, "model_name": self.path.name,
+        if engine is None:
+            reason = "No TFLite runtime is installed. Install the analysis extra: pip install -e '.[analysis]'"
+            model_file = self.path
+        else:
+            model_file = self._model_file(engine)
+            if not model_file.is_file():
+                reason = ("Detector model missing. Run git pull to get data/models/best.onnx." if engine == ONNX_ENGINE
+                          else "Detector model missing. Set --detector-model to the existing best.tflite file.")
+        return {"available": reason is None, "model_name": model_file.name, "engine": engine,
                 "reason": reason, "eye": "right", "execution": "on demand, workstation CPU"}
 
+    def _load_tflite(self, engine):
+        if engine == "ai_edge_litert":
+            from ai_edge_litert.interpreter import Interpreter
+        else:
+            from tflite_runtime.interpreter import Interpreter
+        with zipfile.ZipFile(self.path) as archive:
+            metadata = json.loads(archive.read("metadata.json"))
+        names = metadata["names"]
+        self.labels = [names[str(i)] for i in range(len(names))] if isinstance(names, dict) else list(names)
+        if metadata.get("task") != "detect" or self.labels != LABELS:
+            raise ValueError("Expected the existing cube/cylinder/empty detector export")
+        interpreter = Interpreter(model_path=str(self.path), num_threads=2)
+        interpreter.allocate_tensors()
+        inputs, outputs = interpreter.get_input_details(), interpreter.get_output_details()
+        if len(inputs) != 1 or len(outputs) != 1:
+            raise ValueError("Expected one input and one output tensor")
+        self.input, self.output = inputs[0], outputs[0]
+        if list(self.input["shape"]) != [1, 3, INPUT_SIZE, INPUT_SIZE] or self.input["dtype"] != np.float32:
+            raise ValueError("Expected RGB float32 input [1, 3, 320, 320]")
+        if list(self.output["shape"]) != [1, 7, 2100] or self.output["dtype"] != np.float32:
+            raise ValueError("Expected float32 output [1, 7, 2100]")
+        self.model = {"name": self.path.name, "sha256": file_sha256(self.path),
+                      "labels": self.labels, "export_version": metadata.get("version"),
+                      "export_date": metadata.get("date"), "runtime": engine, "engine": engine}
+        self.interpreter = interpreter
+
+    def _load_onnx(self):
+        provenance_path = self.onnx_path.with_name(self.onnx_path.name + ".provenance.json")
+        provenance = json.loads(provenance_path.read_text())
+        self.labels = list(provenance["classes"])
+        if self.labels != LABELS:
+            raise ValueError("Expected the existing cube/cylinder/empty detector export")
+        digest = file_sha256(self.onnx_path)
+        if digest != provenance["onnx_sha256"]:
+            raise ValueError("ONNX file does not match its provenance record")
+        self.box_units = provenance["output_box_units"]
+        if self.box_units not in ("normalized", "input_pixels"):
+            raise ValueError("Unknown ONNX box units in provenance")
+        self.net = cv2.dnn.readNetFromONNX(str(self.onnx_path))
+        self.model = {"name": self.onnx_path.name, "sha256": digest, "labels": self.labels,
+                      "export_version": provenance["versions"].get("ultralytics"), "export_date": None,
+                      "runtime": ONNX_ENGINE, "engine": ONNX_ENGINE,
+                      "tflite_reproduced_sha256": provenance["reproduces"]["sha256"]}
+
     def _load(self):
-        if self.interpreter is not None:
+        if self.interpreter is not None or self.net is not None:
             return
         state = self.status()
         if not state["available"]:
             raise DetectorUnavailable(state["reason"])
         try:
-            if runtime_name() == "ai_edge_litert":
-                from ai_edge_litert.interpreter import Interpreter
+            if state["engine"] == ONNX_ENGINE:
+                self._load_onnx()
             else:
-                from tflite_runtime.interpreter import Interpreter
-            with zipfile.ZipFile(self.path) as archive:
-                metadata = json.loads(archive.read("metadata.json"))
-            names = metadata["names"]
-            self.labels = [names[str(i)] for i in range(len(names))] if isinstance(names, dict) else list(names)
-            if metadata.get("task") != "detect" or self.labels != ["cube", "cylinder", "empty"]:
-                raise ValueError("Expected the existing cube/cylinder/empty detector export")
-            interpreter = Interpreter(model_path=str(self.path), num_threads=2)
-            interpreter.allocate_tensors()
-            inputs, outputs = interpreter.get_input_details(), interpreter.get_output_details()
-            if len(inputs) != 1 or len(outputs) != 1:
-                raise ValueError("Expected one input and one output tensor")
-            self.input, self.output = inputs[0], outputs[0]
-            if list(self.input["shape"]) != [1, 3, 320, 320] or self.input["dtype"] != np.float32:
-                raise ValueError("Expected RGB float32 input [1, 3, 320, 320]")
-            if list(self.output["shape"]) != [1, 7, 2100] or self.output["dtype"] != np.float32:
-                raise ValueError("Expected float32 output [1, 7, 2100]")
-            self.model = {"name": self.path.name, "sha256": hashlib.sha256(self.path.read_bytes()).hexdigest(),
-                          "labels": self.labels, "export_version": metadata.get("version"),
-                          "export_date": metadata.get("date"), "runtime": runtime_name()}
-            self.interpreter = interpreter
+                self._load_tflite(state["engine"])
         except DetectorUnavailable:
             raise
         except Exception as exc:
             self.last_error = f"Unable to load the supported detector ({type(exc).__name__}). Check model/runtime."
             raise DetectorUnavailable(self.last_error) from exc
+
+    def _infer(self, tensor):
+        if self.net is not None:
+            self.net.setInput(tensor)
+            output = np.array(self.net.forward(), dtype=np.float32)
+            if self.box_units == "input_pixels":  # Ultralytics ONNX emits input-pixel boxes; TFLite is normalized
+                output[:, :4] /= INPUT_SIZE
+            return output
+        self.interpreter.set_tensor(self.input["index"], tensor)
+        self.interpreter.invoke()
+        return self.interpreter.get_tensor(self.output["index"])
 
     def analyze(self, pixels):
         if not self.lock.acquire(blocking=False):
@@ -148,14 +234,13 @@ class PairDetector:
             self._load()
             started = time.monotonic()
             rgb = cv2.cvtColor(pixels, cv2.COLOR_BGR2RGB)
-            resized = cv2.resize(rgb, (320, 320)).astype(np.float32) / 255.0
+            resized = cv2.resize(rgb, (INPUT_SIZE, INPUT_SIZE)).astype(np.float32) / 255.0
             tensor = np.ascontiguousarray(resized.transpose(2, 0, 1)[None])
-            self.interpreter.set_tensor(self.input["index"], tensor)
-            self.interpreter.invoke()
-            output = self.interpreter.get_tensor(self.output["index"])
+            output = self._infer(tensor)
             height, width = pixels.shape[:2]
             detections = decode_predictions(output, self.labels, width, height)
             return {"model": dict(self.model), "detections": detections,
+                    "engine": self.model["engine"],
                     "parameters": {"confidence_threshold": 0.30, "nms_iou_threshold": 0.45,
                                    "input": "RGB float32 NCHW 320x320, resized without padding",
                                    "box_format": "source-pixel xywh"},

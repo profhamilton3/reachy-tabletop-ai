@@ -234,6 +234,18 @@ model files needs an explicit model path. The supported tensor contract is
 float32 `[1, 3, 320, 320]` input and `[1, 7, 2100]` output. Both existing exports
 use this contract even though one has quantized internal weights.
 
+### Detector engines (#75)
+
+`pair_detector.py` tries, in order: `ai_edge_litert`, `tflite_runtime`, then OpenCV `cv2.dnn` on
+`data/models/best.onnx`. The first two read `tests/best.tflite`; the third needs no new dependency, which is
+what makes Analyze and T3 work on Intel Macs (no TFLite wheel exists for them). All engines share the
+preprocessing, decoding, NMS (IoU 0.45) and class list below. The engine appears in the Analyze tooltip and
+summary, in `/api/stereo/status` (`detector.engine`), and in `analysis.json` (`engine` and `model.engine`).
+When the ONNX engine runs, `model.sha256` is the ONNX file's, so perceived-scene bounds rows keyed by detector
+hash do not carry over from the TFLite model (fail-closed by design).
+`REACHY_DETECTOR_ENGINE=tflite|onnx` forces one engine for testing, with no fallback.
+`--detector-model PATH.onnx` also selects the ONNX engine. Provenance: `data/models/README.md`.
+
 Preprocessing follows the existing detector notebook: resize without padding,
 RGB, normalize to 0–1, then NCHW. Normalized boxes are mapped to source-image
 pixels; suppression is per class at IoU 0.45, with confidence threshold 0.30.

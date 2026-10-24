@@ -252,7 +252,7 @@
     $('analyze').disabled = analyzing || measuring || !status?.detector?.available;
     $('depth-button').disabled = measuring || analyzing || !activeAnalysis || !status?.depth?.available;
     $('depth-button').title = status?.depth?.reason || 'Measure this fixed stereo pair using its saved geometry';
-    $('analyze').title = status?.detector?.reason || 'Analyze the captured right-eye image';
+    $('analyze').title = status?.detector?.reason || ('Analyze the captured right-eye image · engine: ' + (status?.detector?.engine || 'unknown'));
     const zoom = (frozen && activePair?.camera_context?.zoom) || status?.zoom;
     $('zoom-warning').hidden = !zoom?.warning;
     $('zoom-warning').textContent = zoom?.warning ? 'Zoom: ' + zoom.warning : '';
@@ -399,7 +399,7 @@
       $('toggle-overlay').hidden = false;
       $('toggle-overlay').textContent = 'Show raw image';
       $('analysis-summary').textContent = result.detections.length ?
-        `${result.detections.length} model predictions · ${result.elapsed_ms} ms · right camera only` :
+        `${result.detections.length} model predictions · ${result.elapsed_ms} ms · ${result.engine || 'unknown'} engine · right camera only` :
         'No detections above the 30% confidence threshold. The raw pair remains available.';
       for (const detection of result.detections) {
         const item = document.createElement('li');
