@@ -1,0 +1,30 @@
+{
+  "classes": [
+    "cube",
+    "cylinder",
+    "empty"
+  ],
+  "export_settings": {
+    "converter": "tf2onnx --tflite",
+    "opset": 12
+  },
+  "input": "RGB float32 NCHW [1, 3, 320, 320], values 0..1, resized without padding",
+  "note": "Fallback: used because the best.pt export did not agree with best.tflite.",
+  "onnx_bytes": 12304801,
+  "onnx_file": "best.onnx",
+  "onnx_sha256": "0867fb331be196753859f432987f032ec54fd6fa1cdb62c21cf83ec8c74a9cb1",
+  "output": "float32 [1, 7, 2100]: cx, cy, w, h (see output_box_units) + 3 class scores",
+  "output_box_units": "normalized",
+  "reproduces": {
+    "file": "tests/best.tflite",
+    "sha256": "60dad10f8e6a29dc09daf1bc11608a1658d70b5b98ffbaa615d88f54e453ff7e"
+  },
+  "route": "tf2onnx-tflite-fallback",
+  "source_zip": "my_yolo_dataset-20260925T151100Z-1-001.zip",
+  "source_zip_sha256": "d0bb3578261d335c12c7ef944333fc5acad8bc7ac810980370d239eb5c9fa55c",
+  "versions": {
+    "onnx": "1.16.2",
+    "tensorflow": "2.15.1",
+    "tf2onnx": "1.16.1"
+  }
+}

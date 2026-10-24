@@ -177,6 +177,11 @@ tail -n 80 /tmp/reachy_stereo.log
 **S2. "✖ …/.venv is not Python 3.10; move it aside and run again"**
 - An old `.venv` was made with another Python. Run `mv .venv .venv.old`, then `./StereoLauncher.sh --setup`.
 
+**S2b. "Detector unavailable" / Analyze is greyed out on an Intel Mac**
+- `ai-edge-litert` has no Intel-Mac build, and `tflite-runtime` never had Mac builds. Intel Macs: detection uses
+  OpenCV/ONNX automatically (`data/models/best.onnx`, no extra install). Analyze and T3 work. Run `git pull`
+  if `data/models/best.onnx` is missing. The viewer's Analyze tooltip and summary name the engine in use.
+
 **S3. "✖ Installing into .venv failed"** (often a `grpcio` or `grpcio-tools` build error on Apple Silicon)
 - The launcher installs `reachy-sdk==0.7.0` on its own first, with prebuilt wheels only, to avoid exactly
   this. Don't `pip install` the project by hand in another order.
