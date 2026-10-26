@@ -35,7 +35,9 @@ def fixture(name):
 OUTPUTS = {("arecord", "-l"): ("arecord_l_respeaker.txt", ""), ("aplay", "-l"): ("aplay_l.txt", ""),
            ("arecord", "--dump-hw-params"): ("", "hw_params_6.txt"), ("lsusb",): ("lsusb_respeaker.txt", ""),
            ("uname", "-sr"): ("uname.txt", ""), ("ros2", "topic", "list"): ("ros2_topic_list.txt", ""),
-           ("ros2", "topic", "info"): ("imu_info.txt", ""), ("ros2", "topic", "echo"): ("imu_echo.txt", "")}
+           ("ros2", "topic", "info"): ("imu_info.txt", ""), ("ros2", "topic", "echo"): ("imu_echo.txt", ""),
+           ("ros2", "node", "list"): ("ros2_node_list.txt", ""),
+           ("grep", "-n", "-E"): ("camera_service_grep_commented.txt", "")}
 
 
 class FakeRun:
@@ -68,7 +70,7 @@ def prober(run=None, which=lambda name: f"/opt/ros/bin/{name}", **kwargs):
 
 def test_the_allow_list_is_fixed_and_matches_the_procedure():
     assert helper.PROBES == INVENTORY_PROBES == ("audio_devices", "audio_hw_params", "usb", "system",
-                                                 "ros2_topics", "imu")
+                                                 "ros2_topics", "imu", "camera_focus")
 
 
 def test_each_probe_runs_only_its_fixed_argument_lists():
@@ -80,7 +82,8 @@ def test_each_probe_runs_only_its_fixed_argument_lists():
         ["arecord", "-l"], ["aplay", "-l"],
         ["arecord", "--dump-hw-params", "-D", "hw:2,0", "-d", "1", "/dev/null"],
         ["lsusb"], ["uname", "-sr"], ["ros2", "topic", "list"],
-        ["ros2", "topic", "info", "/reachy/imu"], ["ros2", "topic", "echo", "--once", "/reachy/imu"]]
+        ["ros2", "topic", "info", "/reachy/imu"], ["ros2", "topic", "echo", "--once", "/reachy/imu"],
+        ["ros2", "node", "list"]]  # camera_focus, with no --camera-service-file: no grep
 
 
 @pytest.mark.parametrize("name", ["nope", "status", "../status", "usb;ls", "", "audio_devices/x"])
@@ -178,7 +181,7 @@ def test_probe_commands_are_argument_lists_with_shell_false(monkeypatch):
     p = helper.Prober(record_device="hw:2,0", imu_topic="/imu", which=lambda n: "/usr/bin/" + n, names=NAMES)
     for name in helper.PROBES:
         p.probe(name)
-    assert len(seen) == 8
+    assert len(seen) == 9  # the camera_focus probe runs only `ros2 node list` without --camera-service-file
     for argv, kwargs in seen:
         assert isinstance(argv, list) and all(isinstance(a, str) for a in argv)
         assert kwargs["shell"] is False and kwargs["timeout"] in (helper.PROBE_TIMEOUT_S, helper.ECHO_TIMEOUT_S)

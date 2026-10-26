@@ -12,6 +12,9 @@ NUC probes, and takes the operator's answers; the NUC output is redacted by the 
 Owner decision 2026-10-20: "Neck motion is required
 for vision data capture. Capture procedures may articulate the head through the neck for viewing and
 perception. Arm motion stays forbidden in capture procedures." No arm command exists here.
+The Focus check (#77) adds the raw lens commands, all through `camera_zoom.LensCommander` in the viewer's SDK
+process: read, set focus, set zoom, `zoom_homing()` and Pollen's autofocus. They move no joint; each step that
+sends one needs the operator's confirm and is a logged dry run unless the viewer has --allow-zoom-commands.
 The Gripper range (#27 Part A) adds one more command after an explicit confirm: a bounded r_gripper move
 (`CaptureRun.apply_gripper`, through `motion.primitives` and the gripper safety gate). Owner decision
 2026-10-22: "Gripper-only motion is allowed in capture procedures for gripper calibration: only `r_gripper`
@@ -40,7 +43,7 @@ from typing import Any
 
 from reachy_ai import config
 from reachy_ai.audio.audio_client import AudioHelperError
-from reachy_ai.camera_zoom import SCENE_ZOOM, ZOOM_ORDER, zoom_read_warning
+from reachy_ai.camera_zoom import EYES, SCENE_ZOOM, ZOOM_ORDER, focus_text, zoom_read_warning
 from reachy_ai.config import (
     GRIPPER_LIMITS_DEG,
     GRIPPER_MAX_FORCE,
@@ -60,6 +63,7 @@ from reachy_ai.config import (
 from reachy_ai.motion import arm_routes
 from reachy_ai.motion.primitives import GRIPPER_ABORTS
 from reachy_ai.pair_bundle import build_bundle, json_bytes
+from reachy_ai.perception import focus as focus_mod
 from reachy_ai.robot_inventory import count_replacements, redact, topic_lines, workstation_names
 
 LOG = logging.getLogger(__name__)
@@ -81,13 +85,21 @@ MAX_TAKES_PER_STEP = 3
 MAX_NOTE_CHARS = 200
 RECORDING_SOUNDS = ("loopback", "baseline")
 #: Robot inventory (#62): the audio helper's probe allow-list, in the order they run.
-INVENTORY_PROBES = ("audio_devices", "audio_hw_params", "usb", "system", "ros2_topics", "imu")
+INVENTORY_PROBES = ("audio_devices", "audio_hw_params", "usb", "system", "ros2_topics", "imu", "camera_focus")
 PROBE_OUTCOMES = ("ok", "failed", "not_run")
 HELPER_UNREACHABLE = "helper unreachable"
 
 
 class ZoomNotConfirmed(PermissionError):
     """A zoom command was requested without the operator's explicit confirm."""
+
+
+class FocusNotConfirmed(PermissionError):
+    """A lens command (homing, focus sweep, autofocus, restore) was requested without the operator's confirm."""
+
+
+class FocusRefused(PermissionError):
+    """A lens command was refused by the run's own rules (e.g. homing before the starting lens state was read)."""
 
 
 class HeadNotConfirmed(PermissionError):
@@ -146,13 +158,14 @@ class Step:
     gripper: str | None = None       # "read" (Stage 0, read-only), "move" (needs confirm) or "release"
     gripper_target_deg: float | None = None  # the r_gripper goal of a "move" step
     teach: str | None = None         # "REST", "REST_OUT" or "custom": a read-only Teach arm pose step (#66 A2)
+    focus: str | None = None         # Focus check (#77): "read", "measure", "homing", "sweep", "autofocus", "finish"
 
     def describe(self) -> dict:
         return {"id": self.id, "label": self.label, "zoom": self.zoom, "distance_m": self.distance_m,
                 "head": self.head, "head_deg": head_deg(self.head), "capture": self.capture,
                 "zoom_role": self.zoom_role, "sound": self.sound, "inventory": self.inventory,
                 "gripper": self.gripper, "gripper_target_deg": self.gripper_target_deg,
-                "teach": self.teach, "instruction": self.instruction}
+                "teach": self.teach, "focus": self.focus, "instruction": self.instruction}
 
 
 @dataclass(frozen=True)
@@ -160,7 +173,7 @@ class Procedure:
     id: str
     name: str
     version: str
-    kind: str                        # "zoom" | "depth" | "head" | "sound" | "inventory" | "gripper" | "teach"
+    kind: str                        # "zoom" | "depth" | "head" | "sound" | "inventory" | "gripper" | "teach" | "focus"
     summary: str
     setup: tuple[str, ...]
     steps: tuple[Step, ...]
@@ -201,28 +214,32 @@ def end_step() -> Step:
     return head_step("neutral", capture=False, step_id="end_neutral", label="End: head to neutral")
 
 
-#: Why ZERO cannot be restored: the SDK refuses it as a command (confirmed on the sim, 2026-10-20).
-ZERO_RESTORE_NOTE = ("ZERO cannot be commanded through the SDK; restarting the robot's camera service is expected "
-                     "to re-home the lens (unconfirmed).")
+#: Why a ZERO *level* cannot be restored: the SDK refuses it as a level command (confirmed on the sim, 2026-10-20).
+#: The raw `zoom` and `focus` integers can be set (#77), so a run that read them restores those exactly instead;
+#: this note applies only to a run that could not read the raw values.
+ZERO_RESTORE_NOTE = ("ZERO cannot be commanded as a zoom level through the SDK; the raw zoom and focus integers can "
+                     "be set, or zoom_homing() run, but this run did not read them.")
 
 
 def zoom_start_step() -> Step:
     return Step(
         id="zoom_start", label="Zoom: starting level", zoom_role="start", head="board_view", capture=True,
         instruction=f"Starting zoom, untouched: press 'Read zoom' (read-back only, no zoom command is sent; the first "
-                    f"complete read is the starting level). Then Point head at board_view "
+                    f"complete read is the starting level, and its raw zoom and focus integers are the starting lens "
+                    f"state). Then Point head at board_view "
                     f"{HEAD_PRESETS['board_view']} (roll, pitch, yaw deg): tick the confirm box and press 'Move head' "
                     f"(dry-run unless the viewer was started with --allow-head-motion and REACHY_ENABLE_MOTION=true), "
                     f"wait for the read-back, then press Capture. The last step puts the lens back at the starting "
-                    f"level.")
+                    f"raw zoom and focus.")
 
 
 def zoom_restore_step() -> Step:
     return Step(
         id="zoom_restore", label="Zoom: restore starting level", zoom_role="restore", capture=False,
-        instruction="Restore the starting zoom: tick the confirm box and press 'Restore zoom' (the lens moves; "
-                    "dry-run unless the viewer was started with --allow-zoom-commands), wait for the read-back. "
-                    "If the starting level is unknown or cannot be commanded, set it by hand.")
+        instruction="Restore the starting lens state: tick the confirm box and press 'Restore zoom' (the lens moves; "
+                    "dry-run unless the viewer was started with --allow-zoom-commands), wait for the read-back. The "
+                    "raw zoom and focus read at the start are set back exactly. If they were not read, the starting "
+                    "level is restored instead; if that is unknown or cannot be commanded, set it by hand.")
 
 
 def zoom_check_step() -> Step:
@@ -234,18 +251,68 @@ def zoom_check_step() -> Step:
 
 def zoom_fov_procedure(levels=ZOOM_ORDER) -> Procedure:
     steps = tuple(Step(
-        id=f"zoom_{level.lower()}", label=f"Zoom {level}", zoom=level,
+        id=f"zoom_{level.lower()}", label=f"Zoom {level}", zoom=level, focus="sweep",
         instruction=f"Zoom {level}: tick the confirm box and press 'Set zoom {level}' (the lens moves; dry-run "
-                    f"unless the viewer was started with --allow-zoom-commands), wait for the read-back, "
-                    f"then press Capture.") for level in levels)
+                    f"unless the viewer was started with --allow-zoom-commands), wait for the read-back. Then "
+                    f"refocus on the board: tick its confirm box and press 'Refocus on the board' (a focus sweep, "
+                    f"about two minutes; a changed zoom leaves the lens out of focus). Then press Capture.")
+        for level in levels)
     return Procedure(
-        id="zoom_fov", name="Zoom field-of-view check", version="4", kind="zoom",
-        summary="Head at the board view, board at each zoom level; the analyser reports the apparent cell pitch "
-                "per level. The starting zoom is read and captured first, untouched, and put back at the end.",
+        id="zoom_fov", name="Zoom field-of-view check", version="5", kind="zoom",
+        summary="Head at the board view, board at each zoom level, refocused on the board before each capture; the "
+                "analyser reports the apparent cell pitch per level. The starting zoom and the raw zoom and focus "
+                "are read and captured first, untouched, and put back exactly at the end.",
         setup=("Arm at rest on the table; the head is moved only by the head steps below.",
                f"The widest level is expected to be {SCENE_ZOOM}; the analysis confirms it.",
-               "Run this check last in a robot session: it can leave the lens at a level the SDK cannot restore."),
+               "The raw zoom and focus read at the start are restored exactly at the end (#77); run this check "
+               "last in a robot session anyway, and run 'Focus check' afterwards if the pictures look soft."),
         steps=(zoom_start_step(), *steps, end_step(), zoom_restore_step()))
+
+
+def focus_procedure() -> Procedure:
+    confirm = "tick the confirm box and press"
+    dry = "dry-run unless the viewer was started with --allow-zoom-commands"
+    return Procedure(
+        id="focus_check", name="Focus check", version="1", kind="focus",
+        summary="Is the lens in focus, and where is it sharpest? Reads each eye's zoom level, raw zoom and focus; "
+                "measures the sharpness on the board (variance of the Laplacian and Canny edge density); optionally "
+                "homes the lens; sweeps the focus motor and keeps the sharpest value, or compares Pollen's "
+                "autofocus; then keeps the result or puts the exact starting integers back. A flat curve is "
+                "reported as 'no focus effect' (the simulator does not model focus).",
+        setup=("Arm at rest on the table, the taped board clear, still and well lit; the head is moved only by the "
+               "head step below.",
+               "Lens commands move no joint. Each one needs the confirm tick of its step and is a logged dry run "
+               "unless the viewer was started with --allow-zoom-commands. Nothing here runs per frame.",
+               "The starting zoom and focus integers are read first and can be put back exactly (step 'Finish').",
+               "Changing the focus changes the calibration id; depth is 'unverified at this lens state' until the "
+               "profile records a lens state."),
+        steps=(Step(id="focus_read", label="Read lens", focus="read", capture=False,
+                    instruction="Press 'Read lens' (read only, nothing is sent): each eye's zoom level, raw zoom and "
+                                "raw focus. The first complete read is the starting lens state."),
+               head_step("board_view", capture=False),
+               Step(id="focus_before", label="Sharpness: before", focus="measure", capture=True,
+                    instruction="Press 'Measure sharpness' (reads frames only): the board region's sharpness, three "
+                                "frames averaged after the settle delay, per eye. Then press Capture."),
+               Step(id="focus_homing", label="Home the lens (optional)", focus="homing", capture=False,
+                    instruction=f"Optional, for a lens that was never homed after power-up: {confirm} 'Home lens' "
+                                f"(zoom_homing() on both cameras, then the starting zoom level is set again; the lens "
+                                f"moves for up to a minute; {dry}). Skip it if the lens looks homed."),
+               Step(id="focus_sweep", label="Focus sweep", focus="sweep", capture=False,
+                    instruction=f"{confirm.capitalize()} 'Sweep focus' (per eye: a coarse scan in steps of 10 over "
+                                f"Pollen's zoom-dependent range, a fine scan of +-10 in steps of 2, then the sharpest "
+                                f"value is applied and verified; about two minutes; {dry}). Hold the board still. "
+                                f"A flat curve is reported as 'no focus effect' and the starting focus is kept."),
+               Step(id="focus_autofocus", label="Pollen autofocus (optional)", focus="autofocus", capture=False,
+                    instruction=f"Optional comparison: {confirm} 'Run autofocus' (start_autofocus(), left to run, "
+                                f"then stop_autofocus(), per eye; it scores the whole frame, not the board; {dry}). "
+                                f"Sharpness is measured before and after."),
+               Step(id="focus_finish", label="Finish: keep or restore", focus="finish", capture=False,
+                    instruction=f"Choose 'keep the lens as it is', 're-apply the sweep result' or 'restore the exact "
+                                f"starting zoom and focus', then {confirm} 'Finish' (dry-run unless the viewer was "
+                                f"started with --allow-zoom-commands). The bundle records both states."),
+               Step(id="focus_after", label="Sharpness: after", focus="measure", capture=True,
+                    instruction="Press 'Measure sharpness', then Capture: the pair after the choice above."),
+               end_step()))
 
 
 def depth_ruler_procedure(distances=DISTANCES_M, captures_per_step=3) -> Procedure:
@@ -350,8 +417,9 @@ def robot_inventory_procedure() -> Procedure:
                                 "(IK only). Reads only; nothing moves."),
                Step(id="inventory_nuc", label="NUC probes", inventory="nuc", capture=False,
                     instruction="Press 'Run NUC probes': audio devices, the record device's hardware parameters, "
-                                "USB devices, system versions, ROS 2 topics and the IMU topic, each with its own "
-                                "result (ok, failed or not run, with the reason)."),
+                                "USB devices, system versions, ROS 2 topics, the IMU topic and the camera focus probe "
+                                "(does the camera service home and autofocus at boot, and is a focus node "
+                                "running), each with its own result (ok, failed or not run, with the reason)."),
                Step(id="inventory_answers", label="Operator answers", inventory="answers", capture=False,
                     instruction="Answer 'Is the arm resting on the table?' (for the record only; nothing depends "
                                 "on it), add a free note if you like, and press 'Save answers'.")))
@@ -390,6 +458,9 @@ def arm_teach_procedure() -> Procedure:
                                 "underscores, e.g. B2_SAFE), and press 'Read pose'. You can repeat this step; the "
                                 "latest reading of a name is the one in the pose block.")))
 
+
+#: Focus check (#77): what the finish step may do with the lens.
+FINISH_CHOICES = ("keep", "restore", "sweep")
 
 #: Gripper range (#27 Part A): format_version 1 of docs/gripper-capture-format.md. Any change bumps it.
 GRIPPER_FORMAT_VERSION = 1
@@ -451,9 +522,9 @@ def gripper_range_procedure(speed=GRIPPER_SWEEP_SPEED_DEG_S, torque=GRIPPER_SWEE
         steps=steps)
 
 
-PROCEDURES = {p.id: p for p in (zoom_fov_procedure(), depth_ruler_procedure(), board_view_approach_procedure(),
-                                head_sweep_procedure(), sound_check_procedure(), robot_inventory_procedure(),
-                                gripper_range_procedure())}
+PROCEDURES = {p.id: p for p in (zoom_fov_procedure(), focus_procedure(), depth_ruler_procedure(),
+                                board_view_approach_procedure(), head_sweep_procedure(), sound_check_procedure(),
+                                robot_inventory_procedure(), gripper_range_procedure())}
 
 
 def get_procedure(procedure_id: str) -> Procedure:
@@ -493,6 +564,8 @@ class CaptureRun:
     gripper_stage0: dict | None = None  # the first Stage 0 read that found the position
     gripper_aborted: str | None = None  # the outcome that ended the run's moves (an abort, not an end stop)
     teach_results: dict[str, list[dict]] = field(default_factory=dict)  # every Teach arm pose attempt per step
+    focus_results: dict[str, list[dict]] = field(default_factory=dict)  # every lens (Focus check) attempt per step
+    _lens_start: dict | None = None  # eye -> {zoom_level, zoom, focus}: first complete lens read, before any command
     created_utc: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     commands_attempted: bool = False  # a zoom command (live or dry-run) has been asked for
     _start: str | None = None  # the starting zoom: the first complete read, fixed once a command was attempted
@@ -500,18 +573,29 @@ class CaptureRun:
     def pair_count(self) -> int:
         return sum(len(v) for v in self.captures.values())
 
-    def apply_zoom(self, step_id: str, setter, confirmed: bool, profile_zoom: str | None = None) -> list[dict]:
+    def apply_zoom(self, step_id: str, setter, confirmed: bool, profile_zoom: str | None = None,
+                   lens=None) -> list[dict]:
         """Command this step's zoom level through `setter` (a `ZoomSetter`, or anything with `set_both`).
 
         Refused with ZoomNotConfirmed unless `confirmed`; whether the command is really sent or only
         logged is the setter's `dry_run`. Every attempt is recorded in the run (and so the bundle).
         A "start" or "check" step only reads the zoom back (`setter.read_both`, no command, no confirm);
         `profile_zoom` is the level the calibration profile is valid at, for the "check" warning.
-        A "restore" step commands the level the "start" step read."""
+        A "restore" step commands the level the "start" step read. With `lens` (#77: anything `apply_focus` takes)
+        the "start" step also notes the raw zoom and focus (from `lens.cached()`, no command), and the "restore"
+        step sets those exact integers back when both eyes' were read; otherwise it restores the level."""
         step = self.procedure.step(step_id)
         if step.zoom_role in ("start", "check"):
-            return self._read_zoom(step, setter, profile_zoom)
+            records = self._read_zoom(step, setter, profile_zoom)
+            if step.zoom_role == "start" and lens is not None:
+                try:
+                    self._note_lens_start(lens.cached())
+                except Exception:  # noqa: BLE001 - the raw start is optional: the level restore remains
+                    LOG.warning("the starting raw zoom and focus could not be read")
+            return records
         if step.zoom_role == "restore":
+            if lens is not None and self.lens_start_complete():
+                return self._restore_lens(step, lens, confirmed)
             return self._restore_zoom(step, setter, confirmed)
         if step.zoom is None:
             raise ValueError(f"step {step_id!r} does not change the zoom")
@@ -537,6 +621,22 @@ class CaptureRun:
         self.zoom_commands.setdefault(step.id, []).extend(records)
         return records
 
+    def _note_lens_start(self, readings: dict) -> bool:
+        """Fix the starting lens state to the first complete read made before any lens command. True if set now."""
+        if self._lens_start is not None or self.commands_attempted:
+            return False
+        if all(isinstance((readings.get(e) or {}).get(k), int) for e in EYES for k in ("zoom", "focus")):
+            self._lens_start = {e: {k: readings[e].get(k) for k in ("zoom_level", "zoom", "focus")} for e in EYES}
+            return True
+        return False
+
+    def lens_start(self) -> dict | None:
+        """eye -> {zoom_level, zoom, focus} as first read, or None if there was no complete read before a command."""
+        return self._lens_start
+
+    def lens_start_complete(self) -> bool:
+        return self._lens_start is not None
+
     def capture_blocker(self, step_id: str) -> str | None:
         """Why a capture on this step must wait, or None. A step that commands a zoom is captured only after
         that command has completed (live or dry-run, not failed): a pair taken earlier shows another zoom."""
@@ -544,6 +644,15 @@ class CaptureRun:
         if step.zoom and not any(not r.get("error") for r in self.zoom_commands.get(step_id, [])):
             return (f"Zoom {step.zoom} has not been commanded for this step yet: tick the confirm box and press "
                     f"'Set zoom {step.zoom}' (wait for it to finish) before capturing.")
+        if step.focus == "measure" and not any(not r.get("error") for r in self.focus_results.get(step_id, [])):
+            return ("The sharpness has not been measured for this step yet: press 'Measure sharpness' (wait for it "
+                    "to finish) before capturing.")
+        if step.focus == "sweep" and step.zoom and not any(
+                r.get("action") == "sweep" for r in self.focus_results.get(step_id, [])):
+            # attempted, not succeeded: a failed or flat sweep is a finding in the bundle, not a reason to stop (the
+            # simulator's lens may not take a focus command at all)
+            return (f"The board has not been refocused at zoom {step.zoom} yet: tick the confirm box and press "
+                    "'Refocus on the board' (wait for it to finish) before capturing.")
         if step.gripper == "move" and not any(r.get("outcome") not in ("refused", "error")
                                               for r in self.gripper_commands.get(step_id, [])):
             return ("The gripper has not been moved for this step yet: tick the confirm box and press "
@@ -577,6 +686,202 @@ class CaptureRun:
                          f"set the zoom to {start} by hand.")
         sent.extend(records)
         return records
+
+    def _restore_lens(self, step: Step, lens, confirmed: bool) -> list[dict]:
+        """Set the starting raw zoom, then focus, back on each eye and verify by read-back. Needs the confirm."""
+        if not confirmed:
+            raise ZoomNotConfirmed("A zoom command needs the operator's explicit confirm.")
+        self.commands_attempted = True
+        sent = self.zoom_commands.setdefault(step.id, [])
+        records = [self._restore_eye(lens, eye, self._lens_start[eye]) for eye in EYES]
+        sent.extend(records)
+        return records
+
+    @staticmethod
+    def _restore_eye(lens, eye: str, target: dict) -> dict:
+        """One eye back to `target` {zoom, focus}: zoom first (a focus preset depends on it), then focus. Only the
+        value that differs is commanded."""
+        before = lens.read()[eye]
+        record = {"eye": eye, "action": "restore", "mode": "raw", "target": {k: target[k] for k in ("zoom", "focus")},
+                  "target_level": target.get("zoom_level"), "before": before, "commands": [],
+                  "dry_run": bool(lens.dry_run)}
+        for name, command in (("zoom", lens.set_zoom), ("focus", lens.set_focus)):
+            if before.get(name) == target[name] and not lens.dry_run:
+                continue
+            record["commands"].append({k: v for k, v in command(eye, target[name]).items()
+                                       if k in ("action", "target", "sent", "ok", "error")})
+        after = before if lens.dry_run else lens.read()[eye]  # a dry run changes nothing
+        record["after"] = after
+        record["ok"] = all(after.get(k) == target[k] for k in ("zoom", "focus")) and not lens.dry_run
+        if not record["ok"] and not lens.dry_run:
+            record.update(manual=True, note=f"The starting zoom {target['zoom']} and focus {target['focus']} could not "
+                                            "be confirmed by read-back: set the lens back by hand (zoom_homing() "
+                                            "re-references the motors).")
+        return record
+
+    # --- Focus check (#77) ---
+
+    def apply_focus(self, step_id: str, lens, confirmed: bool = False, choice: str | None = None) -> list[dict]:
+        """Run this step's lens operation through `lens` (the viewer's `_ServiceLens`, or a fake with the same
+        methods: `read`, `cached`, `measure`, `reset_regions`, `set_focus`, `set_zoom`, `homing`,
+        `autofocus`, `set_level`, and `dry_run`).
+
+        'read' and 'measure' send nothing and need no confirm. 'homing', 'sweep', 'autofocus' and 'finish' send lens
+        commands: without the confirm nothing is sent and FocusNotConfirmed is raised; whether they are live or a
+        logged dry run is `lens.dry_run`. A sweep is one confirm for its bounded set of commands (at most about 60 per
+        eye). Every attempt is recorded in the run (and the bundle)."""
+        step = self.procedure.step(step_id)
+        if step.focus is None:
+            raise ValueError(f"step {step_id!r} is not a Focus check step")
+        results = self.focus_results.setdefault(step_id, [])
+        if step.focus == "read":
+            records = self._focus_read(lens)
+        elif step.focus == "measure":
+            records = self._focus_measure(lens)
+        else:
+            if not confirmed:
+                results.append({"action": "refused", "op": step.focus, "outcome": "refused", "error": "not confirmed"})
+                raise FocusNotConfirmed("A lens command needs the operator's explicit confirm.")
+            records = {"homing": self._focus_homing, "sweep": self._focus_sweep, "autofocus": self._focus_autofocus,
+                       "finish": lambda lens_: self._focus_finish(lens_, choice)}[step.focus](lens)
+        results.extend(records)
+        return records
+
+    def _focus_read(self, lens) -> list[dict]:
+        readings = lens.read()
+        fixed = self._note_lens_start(readings)
+        extra = not fixed and (self._lens_start is not None or self.commands_attempted)
+        return [{"action": "read", "eye": eye, **readings[eye], **({"extra": True} if extra else {})} for eye in EYES]
+
+    def _focus_measure(self, lens) -> list[dict]:
+        lens.reset_regions()
+        return [{"action": "measure", "eye": eye, **lens.measure(eye)} for eye in EYES]
+
+    def _focus_homing(self, lens) -> list[dict]:
+        start = self._lens_start
+        if start is None:
+            raise FocusRefused("Homing needs the starting lens state: press 'Read lens' first (it must read the "
+                               "zoom level, zoom and focus of both eyes before any command).")
+        levels = {start[e]["zoom_level"] for e in EYES}
+        if len(levels) != 1 or None in levels:
+            raise FocusRefused(f"The eyes started at different or unknown zoom levels ({sorted(map(str, levels))}); "
+                               "homing then could not put the starting level back. Set them by hand.")
+        level = levels.pop()
+        self.commands_attempted = True
+        records = [{"action": "homing", "eye": eye, **{k: v for k, v in lens.homing(eye).items()
+                                                       if k in ("sent", "ok", "dry_run", "error", "before", "after")}}
+                   for eye in EYES]
+        restored = [{"action": "restore_level", "eye": r["eye"], "target": level, "ok": r.get("ok"),
+                     "dry_run": r.get("dry_run"), "after": r.get("after"),
+                     **({"error": r["error"]} if r.get("error") else {})} for r in lens.set_level(level)]
+        for r in restored:
+            if not r["ok"] and not r["dry_run"]:
+                r.update(manual=True, note=f"The starting zoom level {level} could not be commanded or confirmed "
+                                           f"after homing: set it by hand (the starting integers are in this bundle).")
+        return [*records, *restored]
+
+    def _focus_sweep(self, lens) -> list[dict]:
+        self.commands_attempted = True
+        lens.reset_regions()
+        before = lens.read()
+        records = []
+        for eye in EYES:
+            result = focus_mod.run_sweep(
+                eye, before[eye].get("focus"), before[eye].get("zoom"),
+                set_focus=lambda value, e=eye: lens.set_focus(e, value), measure=lambda e=eye: lens.measure(e),
+                dry_run=bool(lens.dry_run))
+            result["lens_before"] = before[eye]
+            records.append({"action": "sweep", **result})
+        if not lens.dry_run:
+            after = lens.read()
+            for record in records:
+                record["lens_after"] = after[record["eye"]]
+        return records
+
+    def _focus_autofocus(self, lens) -> list[dict]:
+        self.commands_attempted = True
+        lens.reset_regions()
+        before_lens = lens.read()
+        records = []
+        for eye in EYES:
+            record = {"action": "autofocus", "eye": eye, "lens_before": before_lens[eye],
+                      "sharpness_before": lens.measure(eye)}
+            command = lens.autofocus(eye)
+            record["command"] = {k: command.get(k) for k in ("sent", "ok", "dry_run", "error")}
+            record["dry_run"] = bool(command.get("dry_run"))
+            if command.get("error"):
+                record["outcome"] = "failed"
+            elif record["dry_run"]:
+                record["outcome"] = "dry_run"
+            else:
+                record["lens_after"] = lens.read()[eye]
+                record["sharpness_after"] = lens.measure(eye)
+                record["outcome"] = "ran"
+            records.append(record)
+        return records
+
+    def last_sweeps(self) -> dict:
+        """eye -> the latest sweep record of the run (any step), or absent."""
+        latest = {}
+        for step in self.procedure.steps:
+            for record in self.focus_results.get(step.id, []):
+                if record.get("action") == "sweep":
+                    latest[record["eye"]] = record
+        return latest
+
+    def _focus_finish(self, lens, choice: str | None) -> list[dict]:
+        if choice not in FINISH_CHOICES:
+            raise ValueError(f"choice must be one of {FINISH_CHOICES}, not {choice!r}")
+        self.commands_attempted = True
+        if choice == "keep":
+            now = lens.read()
+            return [{"action": "finish", "choice": "keep", "eye": eye, "lens_now": now[eye], "ok": True,
+                     "dry_run": False} for eye in EYES]
+        if choice == "restore":
+            if self._lens_start is None:
+                return [{"action": "finish", "choice": "restore", "eye": eye, "ok": False, "manual": True,
+                         "note": "The starting zoom and focus were not read, so they cannot be restored: set the "
+                                 "lens back by hand."} for eye in EYES]
+            return [{**self._restore_eye(lens, eye, self._lens_start[eye]), "action": "finish", "choice": "restore"}
+                    for eye in EYES]
+        sweeps = self.last_sweeps()
+        records = []
+        for eye in EYES:
+            sweep = sweeps.get(eye)
+            if sweep is None or sweep.get("outcome") != "applied":
+                records.append({"action": "finish", "choice": "sweep", "eye": eye, "ok": False,
+                                "note": "there is no applied sweep result for this eye: nothing was sent"})
+                continue
+            command = lens.set_focus(eye, sweep["chosen"])
+            records.append({"action": "finish", "choice": "sweep", "eye": eye, "target": sweep["chosen"],
+                            "ok": bool(command.get("ok")), "dry_run": bool(command.get("dry_run")),
+                            "after": command.get("after")})
+        return records
+
+    def focus_record(self) -> dict:
+        """The Focus check's results for the bundle: the starting lens state, the curves, the values, both ends."""
+        sweeps = [{**r, "step": s.id} for s in self.procedure.steps for r in self.focus_results.get(s.id, [])
+                  if r.get("action") == "sweep"]
+        measures = [{**r, "step": s.id} for s in self.procedure.steps for r in self.focus_results.get(s.id, [])
+                    if r.get("action") == "measure"]
+        autofocus = [{**r, "step": s.id} for s in self.procedure.steps for r in self.focus_results.get(s.id, [])
+                     if r.get("action") == "autofocus"]
+        finish = [{**r, "step": s.id} for s in self.procedure.steps for r in self.focus_results.get(s.id, [])
+                  if r.get("action") == "finish"]
+        return {"start_lens": self._lens_start, "sharpness": measures, "sweeps": sweeps, "autofocus": autofocus,
+                "finish": finish, "curve_file": "focus/curves.csv",
+                "start_text": focus_text({e: (self._lens_start or {}).get(e, {}).get("focus") for e in EYES})}
+
+    def focus_curves_csv(self) -> bytes:
+        out = io.StringIO()
+        writer = csv.writer(out, lineterminator="\n")
+        writer.writerow(("step_id", "eye", "phase", "focus", "laplacian_var", "canny_density"))
+        for step in self.procedure.steps:
+            for record in self.focus_results.get(step.id, []):
+                for point in record.get("curve") or []:
+                    writer.writerow([step.id, record["eye"], point["phase"], point["focus"],
+                                     f"{point['laplacian_var']:.4f}", f"{point['canny_density']:.6f}"])
+        return out.getvalue().encode()
 
     def apply_head(self, step_id: str, mover, confirmed: bool) -> dict:
         """Point the head at this step's preset through `mover` (anything with `move(preset) -> record`).
@@ -846,8 +1151,9 @@ class CaptureRun:
         step records: ([probes, helper_status, answers, {step: records}], replacements the helper had missed)."""
         hosts, users = workstation_names(self.redact_hosts)
         keep = {(self.helper_status or {}).get("imu_topic")}
-        for command in (self.probes.get("ros2_topics") or {}).get("commands") or []:
-            keep |= topic_lines(command.get("stdout"))
+        for name in ("ros2_topics", "camera_focus"):  # node names are absolute names too: /reachy_focus is not a host
+            for command in (self.probes.get(name) or {}).get("commands") or []:
+                keep |= topic_lines(command.get("stdout"))
         before = [self.probes, self.helper_status, self.inventory_answers, self.inventory_results]
         after = redact(before, hosts, users, keep)
         return after, count_replacements(before, after)
@@ -900,12 +1206,13 @@ class CaptureRun:
                            "gripper_commands": [slim_gripper(r) for r in self.gripper_commands.get(s.id, [])],
                            "sound_results": self.sound_results.get(s.id, []), "answer": self.answers.get(s.id),
                            "inventory_results": self.inventory_results.get(s.id, []),
-                           "teach_results": [_slim_teach(r) for r in self.teach_results.get(s.id, [])]}
+                           "teach_results": [_slim_teach(r) for r in self.teach_results.get(s.id, [])],
+                           "focus_results": [slim_focus(r) for r in self.focus_results.get(s.id, [])]}
                           for s in self.procedure.steps],
                 "head_events": self.head_events, "gripper_events": self.gripper_events,
                 "gripper_aborted": self.gripper_aborted, "pairs": self.pair_count(), "max_pairs": MAX_PAIRS_PER_RUN,
                 "can_download": bool(self.pair_count() or self.sound_count() or self.inventory_count()
-                                     or self.teach_count())}
+                                     or self.teach_count() or self.focus_results)}
 
     def calibration_id(self) -> Any:
         for taken in self.captures.values():
@@ -988,14 +1295,16 @@ class CaptureRun:
                 zoom = context.get("zoom") or {}
                 entries.append({"folder": folder, "pair_id": record["pair_id"],
                                 "zoom_level": zoom.get("captured"), "zoom_levels": zoom.get("levels"),
+                                "focus": zoom.get("focus"),
                                 "observation_skew_ms": record["meta"].get("observation_skew_ms"),
                                 "neck_deg": neck_readback(record["meta"]),
                                 "head_command": record["meta"].get("head_command")})
             row = {"index": index, "id": step.id, "label": step.label, "instruction": step.instruction,
                    "distance_m": step.distance_m, "requested_zoom": step.zoom,
                    "requested_head": step.head, "requested_head_deg": head_deg(step.head),
-                   "zoom_role": step.zoom_role,
+                   "zoom_role": step.zoom_role, "focus": step.focus,
                    "zoom_commands": self.zoom_commands.get(step.id, []),
+                   "focus_results": self.focus_results.get(step.id, []),
                    "head_commands": self.head_commands.get(step.id, []),
                    "gripper": step.gripper, "gripper_target_deg": step.gripper_target_deg,
                    "gripper_commands": [slim_gripper(r) for r in self.gripper_commands.get(step.id, [])],
@@ -1017,6 +1326,12 @@ class CaptureRun:
                    "calibration_id": self.calibration_id(), "steps": steps, "head_events": self.head_events}
         if self.procedure.kind == "zoom":
             summary["start_zoom"] = self.start_zoom()  # None: not read, unreadable or the eyes differed
+            summary["start_lens"] = self.lens_start()  # eye -> {zoom_level, zoom, focus}; None if not both read
+        if self.procedure.kind == "focus":
+            files["focus/curves.csv"] = self.focus_curves_csv()
+            files["focus/run_record.json"] = json_bytes(self.focus_record())
+            summary.update(start_lens=self.lens_start(), focus_record="focus/run_record.json",
+                           curves="focus/curves.csv")
         if self.procedure.kind == "gripper":
             files["gripper/samples.csv"] = self.gripper_samples_csv()
             files["gripper/run_record.json"] = json_bytes(self.gripper_run_record(versions))
@@ -1061,7 +1376,7 @@ class CaptureRun:
 
     def build_zip(self, versions: dict) -> bytes:
         if not (self.pair_count() or self.sound_count() or self.inventory_count() or self.gripper_commands
-                or self.teach_count()):
+                or self.teach_count() or self.focus_results):
             raise RunLimit("Nothing captured yet.")
         return build_bundle(self.bundle_files(versions), versions, self.calibration_id(), procedure=self.identity())
 
@@ -1070,6 +1385,13 @@ GRIPPER_UNITS = {"angle": "degrees (r_gripper, joint.goal_position / present_pos
                  "load": "the SDK's present_load, unscaled", "force": "the gripper force sensor's reading, unscaled",
                  "temperature": "degrees Celsius", "torque_limit": "percent", "speed_limit": "degrees per second",
                  "time": "seconds since the first sample of the run (monotonic clock)"}
+
+
+def slim_focus(record: dict) -> dict:
+    """A lens record for the page: the sweep's curve (up to ~60 points an eye) stays in the bundle."""
+    if record.get("action") != "sweep":
+        return record
+    return {**{k: v for k, v in record.items() if k != "curve"}, "points": len(record.get("curve") or [])}
 
 
 def _slim_teach(record: dict) -> dict:

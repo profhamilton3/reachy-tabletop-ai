@@ -198,7 +198,8 @@ class RigIdentity:
             if any(v is not None for v in (self.scene_name, self.scene_sha256, self.scene_revision)):
                 _fail(w, "scene_name, scene_sha256 and scene_revision are sim-only")
             _sha256(w + ".intrinsics_sha256", self.intrinsics_sha256)
-            if not self.calibration_id.endswith("@zoom=" + self.zoom_level):
+            # robot ids fold in the zoom, then (#77) the raw focus: "<p>@zoom=OUT" or "<p>@zoom=INTER,focus=L331/R321"
+            if not re.search("@zoom=" + re.escape(self.zoom_level) + r"(,focus=[^@,]+)?$", self.calibration_id):
                 _fail(w, "robot calibration_id %r does not carry the zoom_level %s" % (self.calibration_id,
                                                                                        self.zoom_level))
 

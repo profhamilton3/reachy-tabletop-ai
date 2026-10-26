@@ -231,6 +231,7 @@ shell.
 | `system` | reads `/etc/os-release`; runs `uname -sr`; reports the helper's Python version |
 | `ros2_topics` | `ros2 topic list` |
 | `imu` | `ros2 topic info <--imu-topic>` and `ros2 topic echo --once <--imu-topic>`; not run without `--imu-topic` |
+| `camera_focus` (#77) | `grep -n -E "homing\|autofocus" <--camera-service-file>` (the camera zoom service's source file; skipped without the flag) and `ros2 node list`. The analyser reports whether the service has an active homing and autofocus call and whether a focus node runs. |
 
 **Start the helper from a terminal with ROS sourced.** The helper never sources anything itself. Without
 `ros2` on its `PATH`, the ROS probes answer "ros2 not found: start the helper from a terminal with ROS sourced".

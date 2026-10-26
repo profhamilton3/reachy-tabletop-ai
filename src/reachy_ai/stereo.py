@@ -2,13 +2,16 @@
 
 The SDK owns its camera streaming threads. A single child process contains that
 connection so its blocking startup/first-frame calls can be stopped on timeout.
-No arm, focus, or robot-service command is issued here. Three commands exist, all requested
+No arm or robot-service command is issued here. Four commands exist, all requested
 only by a data-capture procedure after the operator's explicit confirm, all run in the child
 process that owns the connection, one at a time (bounded queues of 1). The zoom queue also carries the
 Robot inventory's read-only request (#62: robot_inventory.sdk_inventory, which only reads):
 
 - a camera zoom level (camera_zoom.ZoomSetter): dry-run (logged only) unless the viewer is started
   with --allow-zoom-commands;
+- the raw lens commands of the Focus check (#77: camera_zoom.LensCommander: set focus, set zoom, zoom_homing,
+  Pollen's autofocus; reads are always allowed): the same queue and the same dry-run rule as the zoom level.
+  They are requested one at a time by a procedure after the operator's confirm, never from a per-frame loop;
 - a named head pose, a Stop (hold the present position) and a smooth release
   (motion.primitives, behind safety.head_gate_check): dry-run unless REACHY_ENABLE_MOTION=true AND
   the viewer is started with --allow-head-motion. Owner decision 2026-10-20: "Neck motion is
@@ -62,7 +65,8 @@ class StereoSettings:
     stale_seconds: float = 2
     restart_seconds: float = 12
     max_pair_skew_ms: float = 250
-    zoom_commands: bool = False  # False: a requested zoom change is only logged (dry-run)
+    zoom_commands: bool = False  # False: a requested zoom or lens (focus) change is only logged (dry-run)
+    focus_settle_s: float = 1.0  # Focus check: wait this long after a lens command before frames are measured
     head_motion: bool = False    # False: a head move is only logged; True still needs REACHY_ENABLE_MOTION
     gripper_motion: bool = False  # False: a gripper move is only logged; True still needs REACHY_ENABLE_MOTION
     t3_history_dir: str = "outputs/t3_history"  # T3-Analysis appends one JSON line per confirmed board here
@@ -72,6 +76,8 @@ class StereoSettings:
             raise ValueError("Choose sim or robot and provide a robot host")
         if not 1 <= self.fps <= 30 or not 160 <= self.preview_width <= 1920:
             raise ValueError("Preview FPS must be 1–30 and width 160–1920")
+        if not 0 <= self.focus_settle_s <= 30:
+            raise ValueError("Focus settle delay must be 0-30 seconds")
         if not 0 < self.stale_seconds < self.restart_seconds or self.max_pair_skew_ms <= 0:
             raise ValueError("Require positive skew and 0 < stale interval < restart interval")
 
@@ -212,8 +218,9 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
             stop.wait(.2)
 
     def zoom_commands():
-        from reachy_ai.camera_zoom import ZoomSetter
+        from reachy_ai.camera_zoom import LensCommander, ZoomSetter
         setter = ZoomSetter(robot, dry_run=not settings.zoom_commands)
+        lens = LensCommander(robot, dry_run=not settings.zoom_commands, settle_s=settings.focus_settle_s)
         while not stop.is_set():
             try:
                 request = commands.get(timeout=0.2)
@@ -221,6 +228,9 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
                 continue
             if request.get("kind") == "inventory":
                 publish(_inventory_result(robot, settings, request))
+                continue
+            if request.get("kind") == "lens":
+                publish(_lens_result(lens, request))
                 continue
             try:
                 records = setter.set_both(request["level"])
@@ -318,6 +328,22 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
     stop.wait()
 
 
+def _lens_result(lens, request):
+    """One raw lens operation of the Focus check (#77) as a control message. Never raises."""
+    op, eye, value = request["op"], request.get("eye"), request.get("value")
+    try:
+        if op == "read":
+            records = [{"eye": e, "action": "read", **lens.read_eye(e)} for e in EYES]
+        else:
+            records = [{"set_focus": lambda: lens.set_focus(eye, value), "set_zoom": lambda: lens.set_zoom(eye, value),
+                        "homing": lambda: lens.homing(eye), "autofocus": lambda: lens.autofocus(eye)}[op]()]
+    except Exception as exc:  # noqa: BLE001 - report the type only
+        return {"kind": "lens_result", "id": request["id"], "error": type(exc).__name__,
+                "finished_ns": time.monotonic_ns()}
+    return {"kind": "lens_result", "id": request["id"], "dry_run": lens.dry_run, "op": op, "records": records,
+            "lens": lens.read() if op != "read" and not lens.dry_run else None, "finished_ns": time.monotonic_ns()}
+
+
 def _inventory_result(robot, settings, request):
     """The Robot inventory's SDK reads (#62), as a control message. Only reads; never raises."""
     from reachy_ai.robot_inventory import sdk_inventory
@@ -365,6 +391,7 @@ class StereoService:
         self.head = None
         self.commands = None
         self._zoom_waits: dict[str, dict] = {}
+        self._lens_waits: dict[str, dict] = {}
         self._inventory_waits: dict[str, dict] = {}
         self.head_requests = None
         self.head_halt = None
@@ -374,7 +401,7 @@ class StereoService:
         self.gripper_halt = None
         self._gripper_waits: dict[str, dict] = {}
         self.gripper_busy = False
-        self.command_done_ns: int | None = None  # when the last zoom or head command finished
+        self.command_done_ns: int | None = None  # when the last zoom, lens or head command finished
         self.head_target: dict | None = None     # the last live head move's record, until released
         self.last_head_command: dict | None = None  # the last head command that was not refused, any mode
 
@@ -488,6 +515,8 @@ class StereoService:
                 LOG.info("SDK readback %s: %s", message["section"], message["values"])
             elif kind == "zoom_result":
                 self._apply_zoom_result(message)
+            elif kind == "lens_result":
+                self._apply_lens_result(message)
             elif kind == "inventory_result":
                 wait = self._inventory_waits.get(message["id"])
                 if wait is not None:
@@ -540,6 +569,68 @@ class StereoService:
         if wait is not None:
             wait["message"] = message
             wait["event"].set()
+
+    def _apply_lens_result(self, message):
+        """Fold a live lens command's read-back (zoom_level, zoom, focus) into the diagnostics, so later captures
+        record, and the calibration id carries, the real lens state."""
+        self._command_finished(message)
+        if message.get("op") == "read":
+            for record in message.get("records", []):
+                values = {k: record.get(k) for k in ("zoom_level", "zoom", "focus") if k in record}
+                self.diagnostics.setdefault(record["eye"], {}).update(values)
+        elif not message.get("dry_run") and message.get("lens"):
+            for eye, values in message["lens"].items():
+                self.diagnostics.setdefault(eye, {}).update({k: v for k, v in values.items() if "error" not in k})
+        wait = self._lens_waits.get(message["id"])
+        if wait is not None:
+            wait["message"] = message
+            wait["event"].set()
+
+    def request_lens(self, op: str, eye: str | None = None, value: int | None = None,
+                     timeout_s: float = 60.0) -> list[dict]:
+        """One raw lens operation in the SDK process (#77): 'read', 'set_focus', 'set_zoom', 'homing' or
+        'autofocus'. Returns the result records. A read is always sent; the others are live or dry-run by
+        `settings.zoom_commands`, and the caller has already checked the confirm. Shares the zoom queue (one at a
+        time): CommandBusy while another zoom, lens or inventory request is pending."""
+        if op not in ("read", "set_focus", "set_zoom", "homing", "autofocus"):
+            raise ValueError(f"unknown lens operation {op!r}")
+        if self.commands is None or self.state != "live":
+            raise RuntimeError("Camera service is not connected")
+        request_id = uuid.uuid4().hex
+        wait = {"event": threading.Event(), "message": None}
+        with self.lock:
+            self._lens_waits[request_id] = wait
+        try:
+            try:
+                self.commands.put_nowait({"id": request_id, "kind": "lens", "op": op, "eye": eye, "value": value})
+            except queue.Full:
+                raise CommandBusy("A zoom or lens command is already pending") from None
+            if not wait["event"].wait(timeout_s):
+                raise TimeoutError("No lens result from the camera service")
+        finally:
+            with self.lock:
+                self._lens_waits.pop(request_id, None)
+        message = wait["message"]
+        if message.get("error"):
+            raise RuntimeError(f"Lens command failed ({message['error']})")
+        return message["records"]
+
+    def fresh_frames(self, eye: str, count: int, after_ns: int, timeout_s: float = 10.0) -> list[np.ndarray]:
+        """`count` distinct frames of `eye` observed after `after_ns` (the child's monotonic clock, as the frame
+        stamps are), newest pixels; waits for them. Raises TimeoutError if the camera does not deliver."""
+        got: dict[int, np.ndarray] = {}
+        deadline = time.monotonic() + timeout_s
+        while len(got) < count:
+            with self.lock:
+                frame = self.frames.get(eye)
+                if frame is not None and frame.observed_ns > after_ns:
+                    got[frame.sequence] = frame.pixels
+            if len(got) >= count:
+                break
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"The {eye} camera delivered {len(got)} of {count} fresh frames")
+            time.sleep(0.02)
+        return list(got.values())[:count]
 
     def request_zoom(self, level: str, timeout_s: float = 30.0) -> list[dict]:
         """Ask the SDK process to set both eyes to `level` and wait for the result records.
@@ -857,8 +948,12 @@ def main():
     parser.add_argument("--sim-lens", choices=("distorted", "pinhole"), default="distorted",
                         help="Match the simulator's --distortion setting (default: distorted)")
     parser.add_argument("--allow-zoom-commands", action="store_true",
-                        help="let a data-capture procedure send zoom commands to the cameras after the "
-                             "operator's confirm in the page (default: dry-run, logged only)")
+                        help="let a data-capture procedure send zoom and lens (focus, homing, autofocus) commands "
+                             "to the cameras after the operator's confirm in the page (default: dry-run, logged "
+                             "only)")
+    parser.add_argument("--focus-settle", type=float, default=1.0, metavar="SECONDS",
+                        help="Focus check: wait this long after a lens command before measuring sharpness "
+                             "(default: 1.0)")
     parser.add_argument("--allow-head-motion", action="store_true",
                         help="let a data-capture procedure move the neck (head only) after the operator's confirm "
                              "in the page; also needs REACHY_ENABLE_MOTION=true (default: dry-run, logged only)")
@@ -881,7 +976,7 @@ def main():
         camera_port=args.camera_port or (50051 if args.source == "sim" else 50057),
         fps=args.fps, preview_width=args.preview_width, zoom_commands=args.allow_zoom_commands,
         head_motion=args.allow_head_motion, gripper_motion=args.allow_gripper_motion,
-        t3_history_dir=args.t3_history_dir,
+        focus_settle_s=args.focus_settle, t3_history_dir=args.t3_history_dir,
     )
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     uvicorn.run(create_app(settings, detector_model=args.detector_model, sim_lens=args.sim_lens,
