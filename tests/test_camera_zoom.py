@@ -130,7 +130,7 @@ def test_viewer_status_and_capture_carry_the_zoom_warning_and_id():
         pair = client.post("/api/stereo/pairs").json()
         context = pair["camera_context"]
         assert context["zoom"]["captured"] == "IN"
-        assert context["calibration_id"].endswith("@zoom=IN")
+        assert context["calibration_id"].endswith("@zoom=IN,focus=unknown")  # no focus read-back in this fixture
         assert context["calibration_id"].startswith(context["analysis_profile"]["id"])
 
 

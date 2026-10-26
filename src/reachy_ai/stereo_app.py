@@ -10,6 +10,8 @@ r_gripper alone behind the gripper gate: dry-run unless REACHY_ENABLE_MOTION=tru
 fresh confirm per move, a Stop that releases it. The Sound check's routes call only the audio helper
 (REACHY_AUDIO_URL, #59): no motion.
 The Robot inventory's route (#62) only reads: the SDK through the SDK process, the helper's fixed NUC probes.
+The Focus check's route (#77) sends raw lens commands (focus, zoom, homing, autofocus) through the SDK process after
+the operator's confirm: dry-run unless --allow-zoom-commands; it moves no joint.
 """
 
 import asyncio
@@ -26,10 +28,11 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 from reachy_ai.audio import speech
 from reachy_ai.audio.audio_client import AudioClient
-from reachy_ai.camera_zoom import EYES, calibration_id, normalize_zoom, zoom_status
+from reachy_ai.camera_zoom import EYES, calibration_id, focus_by_eye, lens_readings, normalize_zoom, zoom_status
 from reachy_ai.config import HEAD_PRESETS
 from reachy_ai.games.t3_viewer import install_routes as install_t3_routes
 from reachy_ai.pair_bundle import BundleTooLarge, build_bundle, json_bytes, viewer_version
+from reachy_ai.perception import focus as focus_mod
 from reachy_ai.perception.pair_detector import (
     DEFAULT_MODEL,
     DetectorBusy,
@@ -40,6 +43,8 @@ from reachy_ai.perception.pair_detector import (
 from reachy_ai.perception.procedures import (
     PROCEDURES,
     CaptureRun,
+    FocusNotConfirmed,
+    FocusRefused,
     GripperNotConfirmed,
     GripperRefused,
     HeadNotConfirmed,
@@ -51,6 +56,7 @@ from reachy_ai.perception.procedures import (
     ZoomNotConfirmed,
     encode_jpeg,
     get_procedure,
+    slim_focus,
     slim_gripper,
 )
 from reachy_ai.perception.stereo_depth import DepthUnavailable, PairDepth
@@ -72,6 +78,63 @@ class _ServiceZoom:
         with self.service.lock:
             levels = {eye: (self.service.diagnostics.get(eye) or {}).get("zoom_level") for eye in EYES}
         return [{"eye": eye, "level": normalize_zoom(levels[eye])} for eye in EYES]
+
+
+class _ServiceLens:
+    """Lens facade for `CaptureRun.apply_focus`: raw lens commands and fresh-frame sharpness, through the SDK process.
+
+    Commands are live or a logged dry run by `--allow-zoom-commands` (`dry_run`); reads are always sent. `measure`
+    waits for frames observed after the last command ended (the SDK process waits the settle delay first), then
+    averages the sharpness of three of them on the board region, which is fixed per step (`reset_regions`), not
+    chosen per frame."""
+
+    def __init__(self, service, quads_provider=None):
+        self.service = service
+        self.dry_run = not service.settings.zoom_commands
+        self.quads_provider = quads_provider or (lambda eye: None)
+        self._regions: dict = {}
+
+    def cached(self):
+        """The last read-back (connection time, or after a live command); nothing is sent."""
+        with self.service.lock:
+            return lens_readings({eye: self.service.diagnostics.get(eye) for eye in EYES})
+
+    def read(self):
+        records = self.service.request_lens("read")
+        return {r["eye"]: {k: r.get(k) for k in ("zoom_level", "zoom", "focus") if k in r} for r in records}
+
+    def reset_regions(self):
+        self._regions = {}
+
+    def _command(self, op, eye, value=None):
+        return self.service.request_lens(op, eye, value, timeout_s=90.0)[0]
+
+    def set_focus(self, eye, value):
+        return self._command("set_focus", eye, value)
+
+    def set_zoom(self, eye, value):
+        return self._command("set_zoom", eye, value)
+
+    def homing(self, eye):
+        return self._command("homing", eye)
+
+    def autofocus(self, eye):
+        return self._command("autofocus", eye)
+
+    def set_level(self, level):
+        return self.service.request_zoom(level)
+
+    def measure(self, eye):
+        # The SDK process waits the settle delay (`--focus-settle`) after a command before it reads back and stamps
+        # the result, so frames observed after that stamp show the settled lens.
+        with self.service.lock:
+            done = self.service.command_done_ns or 0
+        frames = self.service.fresh_frames(eye, focus_mod.FRAMES_PER_MEASURE, done)
+        if eye not in self._regions:
+            gray = focus_mod.to_gray(frames[0])
+            self._regions[eye] = focus_mod.board_region(gray, self.quads_provider(eye))
+        mask, source = self._regions[eye]
+        return {**focus_mod.measure_frames(frames, mask), "region": source}
 
 
 class _ServiceHead:
@@ -127,7 +190,20 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
             captured = levels["left"] if levels["left"] == levels["right"] else None
             return {"levels": levels, "captured": captured, "profile": None, "scene_policy": None,
                     "matches_profile": None, "warnings": [], "warning": None}
-        return zoom_status(profile.get("zoom_level"), readbacks)
+        return zoom_status(profile.get("zoom_level"), readbacks, profile.get("lens_state"))
+
+    def t3_quads(eye):
+        """The T3 reference's board squares in raw right-eye pixels (the Focus check's sharpness region), or None."""
+        held = getattr(app.state, "t3", {}).get("reference")
+        if eye != "right" or held is None:
+            return None
+        try:
+            from reachy_ai.games.t3_board_reader import _geometry, to_raw
+            ref = held["reference"]
+            geometry = _geometry({"source": ref.source, "lens": ref.lens})
+            return [to_raw(q, geometry) for q in ref.quads.values()]
+        except Exception:  # noqa: BLE001 - no reference region: the grid finder or a centre crop is used
+            return None
 
     app = FastAPI(title="Reachy Stereo View", lifespan=lifespan)
     app.state.stereo = camera
@@ -172,9 +248,10 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
                 profile = depth.status().get("profile", {})
                 zoom = zoom_context(profile)
                 record["camera_context"]["zoom"] = zoom
-                record["camera_context"]["calibration_id"] = (calibration_id(profile.get("id"), zoom["captured"])
-                                                                  if zoom and settings.source != "sim"
-                                                                  else profile.get("id"))
+                record["camera_context"]["calibration_id"] = (
+                    calibration_id(profile.get("id"), zoom["captured"],
+                                   focus_by_eye({eye: camera.diagnostics.get(eye) for eye in EYES}))
+                    if zoom and settings.source != "sim" else profile.get("id"))
                 record["camera_context"]["analysis_profile"] = dict(profile)
                 return camera.snapshot_metadata(record), record
         except ValueError as exc:
@@ -231,7 +308,8 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
         try:
             with run_lock:
                 profile_zoom = depth.status().get("profile", {}).get("zoom_level")
-                records = run.apply_zoom(step_id, _ServiceZoom(camera), confirm, profile_zoom)
+                records = run.apply_zoom(step_id, _ServiceZoom(camera), confirm, profile_zoom,
+                                         lens=_ServiceLens(camera, t3_quads))
         except (ZoomNotConfirmed, CommandBusy) as exc:
             raise HTTPException(409, str(exc)) from exc
         except KeyError as exc:
@@ -242,6 +320,28 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
             raise HTTPException(503, str(exc)) from exc
         read_only = run.procedure.step(step_id).zoom_role in ("start", "check")  # nothing was commanded
         return {"dry_run": not read_only and not camera.settings.zoom_commands, "records": records,
+                "state": run.state()}
+
+    @app.post("/api/stereo/capture-run/steps/{step_id}/focus")
+    def run_focus(step_id: str, confirm: bool = Body(False, embed=True), choice: str | None = Body(None, embed=True)):
+        """Focus check (#77): this step's lens operation. A read or a sharpness measurement sends no command and needs
+        no confirm; homing, a sweep, autofocus and the finish step are refused without the operator's confirm and are
+        dry-run unless --allow-zoom-commands. A sweep is long (about two minutes): one confirm for its bounded
+        commands. `choice` (finish only): keep, restore or sweep."""
+        run = current_run()
+        try:
+            with run_lock:
+                records = run.apply_focus(step_id, _ServiceLens(camera, t3_quads), confirm, choice)
+        except (FocusNotConfirmed, FocusRefused, CommandBusy) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(404, "Unknown step") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except (RuntimeError, TimeoutError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        send = run.procedure.step(step_id).focus not in ("read", "measure")
+        return {"dry_run": send and not camera.settings.zoom_commands, "records": [slim_focus(r) for r in records],
                 "state": run.state()}
 
     @app.post("/api/stereo/capture-run/steps/{step_id}/head")

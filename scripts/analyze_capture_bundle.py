@@ -6,6 +6,7 @@
     python scripts/analyze_capture_bundle.py reachy-capture-sound_check.zip
     python scripts/analyze_capture_bundle.py reachy-capture-robot_inventory.zip
     python scripts/analyze_capture_bundle.py reachy-capture-gripper_range.zip
+    python scripts/analyze_capture_bundle.py reachy-capture-focus_check.zip
 
 The bundle comes from the stereo viewer's "Data capture" dropdown (or the CLI fallbacks) and is checked
 against its SHA-256 manifest first. Which analyser runs follows the procedure kind:
@@ -36,6 +37,12 @@ against its SHA-256 manifest first. Which analyser runs follows the procedure ki
          -68 deg (the sim's validated release) was reached, where the SDK's gripper.open() / close() go (or why
          that was skipped), the force sensor's Stage 0 zero and its drift over the run, the peak load and
          temperature, and every abort. A format_version it does not know is reported, not read.
+  focus  (Focus check, #77) per eye: the starting zoom level and raw zoom and focus, the sharpness on the board
+         before and after (variance of the Laplacian and Canny edge density, measured again here on the bundle's
+         own pairs), the sweep's curve, its peak and the value applied, 'no focus effect' on a flat curve (the
+         simulator), the exact restore, and the comparison with Pollen's autofocus. The inventory analyser also
+         reports whether the camera service homes and autofocuses at boot and whether a focus node runs; the zoom
+         analyser reports the refocus at each level and the exact lens restore of a v5 run.
 """
 
 import argparse
@@ -58,9 +65,14 @@ import derive_stereo_calibration as grid  # noqa: E402
 import ruler_depth_test as ruler  # noqa: E402
 import zoom_fov_check as zoom_check  # noqa: E402
 
-from reachy_ai.camera_zoom import EYES, SCENE_ZOOM, ZOOM_READBACK  # noqa: E402
+from reachy_ai.camera_zoom import (  # noqa: E402
+    EYES,
+    SCENE_ZOOM,
+    ZOOM_READBACK,  # noqa: E402
+)
 from reachy_ai.config import GRIPPER_FOLLOW_TOL_DEG  # noqa: E402
 from reachy_ai.pair_bundle import read_bundle  # noqa: E402
+from reachy_ai.perception import focus as focus_mod  # noqa: E402
 from reachy_ai.perception.procedures import (  # noqa: E402
     INVENTORY_PROBES,
     SENSITIVITY_BASELINE_M,
@@ -153,6 +165,8 @@ def restore_findings(capture):
         return None, []  # an older bundle: no start or restore steps
     start, records = capture.get("start_zoom"), restore[0].get("zoom_commands") or []
     last = {r.get("eye"): r for r in records}  # the latest attempt per eye
+    if records and all(r.get("mode") == "raw" for r in records):  # v5: the raw zoom and focus, set back exactly
+        return raw_restore_findings(last)
     if start is None:
         return None, ["The starting zoom is unknown (not read, unreadable or the eyes differed): the zoom was "
                       "not restored; set it to its starting level by hand."]
@@ -172,6 +186,38 @@ def restore_findings(capture):
         after = sorted({r["after"] for r in last.values()})
         status = f"zoom restored to {start} (read back {', '.join(after)})"
     return status, findings
+
+
+def raw_restore_findings(last):
+    """(status line, findings) for a v5 restore: every eye's raw zoom and focus read back as at the start."""
+    findings = []
+    for eye, r in last.items():
+        target = r.get("target") or {}
+        want = f"zoom {target.get('zoom')}, focus {target.get('focus')}"
+        got = r.get("after") or {}
+        if r.get("dry_run"):
+            findings.append(f"Restore to {want} ({eye}) was a dry run: nothing was sent.")
+        elif not r.get("ok"):
+            findings.append(f"Restore FAILED ({eye}): requested {want}, read back zoom {got.get('zoom')}, focus "
+                            f"{got.get('focus')}; set the lens back by hand (zoom_homing() re-references the motors).")
+    status = None
+    if not findings and last:
+        status = ("lens restored exactly: " + "; ".join(
+            f"{eye} zoom {(r.get('after') or {}).get('zoom')}, focus {(r.get('after') or {}).get('focus')}"
+            for eye, r in last.items()))
+    return status, findings
+
+
+def refocus_rows(capture):
+    """The refocus sweep at each zoom level of a v5 zoom run: one row per level and eye."""
+    rows = []
+    for step in capture["steps"]:
+        for r in step.get("focus_results") or []:
+            if r.get("action") == "sweep":
+                rows.append({"step": step["label"], "eye": r["eye"], "outcome": r.get("outcome"),
+                             "start_focus": r.get("start_focus"), "chosen": r.get("chosen"),
+                             "range": r.get("range"), "zoom": r.get("zoom"), "note": r.get("note")})
+    return rows
 
 
 def start_reads(capture):
@@ -276,9 +322,104 @@ def analyze_zoom(capture, files):
                         "read-backs.")
     status, restore = restore_findings(capture)
     findings.extend(restore)
-    return {"kind": "zoom", "rows": rows, "scene_zoom": SCENE_ZOOM, "scene_zoom_is_widest": widest_ok,
+    refocus = refocus_rows(capture)
+    findings.extend(f"{r['step']} ({r['eye']}): {r['note']}" for r in refocus
+                    if r["outcome"] in ("no_focus_effect", "command_failed", "unmeasurable") and r["note"])
+    return {"kind": "zoom", "start_lens": capture.get("start_lens"), "refocus": refocus, "rows": rows,
+            "scene_zoom": SCENE_ZOOM, "scene_zoom_is_widest": widest_ok,
             "start_zoom": capture.get("start_zoom"), "start_match": start_match(capture, files, rows),
             "restore_status": status, "findings": findings}
+
+
+def analyze_focus(capture, files):
+    """#77: the Focus check's lens states, sweep curves, sharpness before and after, and autofocus comparison."""
+    findings = []
+    record = json.loads(files["focus/run_record.json"]) if "focus/run_record.json" in files else {}
+    start = capture.get("start_lens") or record.get("start_lens")
+    if start is None:
+        findings.append("The starting zoom and focus were not read (or not both eyes' before a command): they could "
+                        "not be restored exactly.")
+    eyes = {}
+    for eye in EYES:
+        sweeps = [r for r in record.get("sweeps", []) if r["eye"] == eye]
+        last = sweeps[-1] if sweeps else None
+        autofocus = [r for r in record.get("autofocus", []) if r["eye"] == eye]
+        finish = [r for r in record.get("finish", []) if r["eye"] == eye]
+        row = {"start": (start or {}).get(eye), "sweep": None, "autofocus": None, "finish": None}
+        if last:
+            curve = last.get("curve") or []
+            best = max(curve, key=lambda p: p["laplacian_var"], default=None)
+            row["sweep"] = {"outcome": last.get("outcome"), "range": last.get("range"), "zoom": last.get("zoom"),
+                            "points": len(curve), "start_focus": last.get("start_focus"), "chosen": last.get("chosen"),
+                            "peak_focus": best and best["focus"],
+                            "peak_laplacian_var": best and best["laplacian_var"],
+                            "start_laplacian_var": next((p["laplacian_var"] for p in curve
+                                                         if p["focus"] == last.get("start_focus")), None),
+                            "flat": last.get("outcome") == "no_focus_effect",
+                            "dry_run": last.get("outcome") == "dry_run",
+                            "peak_at_range_edge": last.get("peak_at_range_edge"), "verify_ok": last.get("verify_ok"),
+                            "lens_after": last.get("lens_after"), "note": last.get("note")}
+            if last.get("outcome") == "no_focus_effect":
+                findings.append(f"{eye}: {focus_mod.NO_EFFECT} (the sharpness barely changed over the range "
+                                f"{last['range'][0]}-{last['range'][1]}); the starting focus {last['start_focus']} was "
+                                "kept. Expected in the simulator; on the robot it means a broken or unpowered focus "
+                                "motor, or a scene with no texture.")
+            elif last.get("outcome") not in ("applied", "dry_run"):
+                findings.append(f"{eye}: sweep {last.get('outcome')}: {last.get('note')}")
+            if last.get("outcome") == "dry_run":
+                findings.append(f"{eye}: the sweep was a dry run (no focus command was sent): no curve.")
+            if last.get("peak_at_range_edge"):
+                findings.append(f"{eye}: the sharpest focus {last['chosen']} is at the edge of Pollen's range: the "
+                                "true peak may lie outside it.")
+            if last.get("verify_ok") is False:
+                findings.append(f"{eye}: {last.get('note')}")
+        if autofocus:
+            a = autofocus[-1]
+            row["autofocus"] = {"outcome": a.get("outcome"), "focus_before": (a.get("lens_before") or {}).get("focus"),
+                                "focus_after": (a.get("lens_after") or {}).get("focus"),
+                                "laplacian_before": (a.get("sharpness_before") or {}).get("laplacian_var"),
+                                "laplacian_after": (a.get("sharpness_after") or {}).get("laplacian_var")}
+            if a.get("outcome") == "failed":
+                findings.append(f"{eye}: Pollen's autofocus failed ({(a.get('command') or {}).get('error')}): is the "
+                                "reachy_focus node running?")
+        if finish:
+            f = finish[-1]
+            row["finish"] = {"choice": f.get("choice"), "ok": f.get("ok"), "dry_run": f.get("dry_run"),
+                             "target": f.get("target"), "after": f.get("after") or f.get("lens_now"),
+                             "manual": f.get("manual")}
+            if f.get("manual"):
+                findings.append(f"{eye}: {f.get('note')}")
+            elif f.get("dry_run"):
+                findings.append(f"{eye}: the finish step ({f.get('choice')}) was a dry run: nothing was sent.")
+        eyes[eye] = row
+    pairs = []
+    for step in capture["steps"]:
+        if step.get("focus") != "measure":
+            continue
+        measured = {r["eye"]: r for r in step.get("focus_results") or [] if r.get("action") == "measure"}
+        for entry in step["captures"]:
+            pair = decode_pair(files, entry["folder"])
+            for eye in EYES:
+                gray = focus_mod.to_gray(pair[EYES.index(eye)])
+                mask, source = focus_mod.board_region(gray)
+                numbers = focus_mod.sharpness(gray, mask)
+                pairs.append({"step": step["label"], "pair": entry["pair_id"], "eye": eye, "region": source,
+                              "laplacian_var": round(numbers["laplacian_var"], 2),
+                              "canny_density": round(numbers["canny_density"], 5),
+                              "viewer_measure": {k: (round(measured[eye][k], 4) if eye in measured else None)
+                                                 for k in ("laplacian_var", "canny_density")},
+                              "focus": entry.get("focus")})
+    if len({p["step"] for p in pairs}) < 2:
+        findings.append("Fewer than two sharpness steps with a pair: no before/after comparison.")
+    by_eye = {}
+    for p in pairs:
+        by_eye.setdefault(p["eye"], []).append(p)
+    for eye, rows in by_eye.items():
+        if len(rows) >= 2 and rows[0]["laplacian_var"] > 0:
+            ratio = rows[-1]["laplacian_var"] / rows[0]["laplacian_var"]
+            eyes[eye]["pair_sharpness_ratio"] = round(ratio, 2)
+    return {"kind": "focus", "start_lens": start, "eyes": eyes, "pairs": pairs,
+            "sim": bundle_geometry(capture, files)[0] == "sim", "findings": findings}
 
 
 def depth_verdict(row):
@@ -731,6 +872,61 @@ def device_card(device):
     return match.group(1) if match else None
 
 
+def camera_focus_line_kind(text):
+    """'commented' (starts with #), 'definition' (a def, class or create_service line: the capability exists, nothing
+    calls it here), 'active' (a call of something named ...homing or ...autofocus: it runs) or 'mention' (any other
+    line that merely contains the word, e.g. a log message or a flag)."""
+    stripped = text.strip()
+    if stripped.startswith("#"):
+        return "commented"
+    if re.match(r"(async\s+)?(def|class)\s", stripped) or "create_service" in stripped:
+        return "definition"
+    return "active" if re.search(r"(homing|autofocus)\w*\s*\(", stripped, re.IGNORECASE) else "mention"
+
+
+def camera_focus_result(reply, outcome):
+    """#77: does the camera service home and autofocus at boot, and is a focus node running?
+
+    The probe's grep lists every line of camera_zoom_service.py with 'homing' or 'autofocus'. A call that runs is an
+    'active' line; commented-out lines and bare definitions do not run at boot. The node list is `ros2 node list`.
+    The lines are reported in full so the reader can judge the heuristic."""
+    if not reply or reply.get("outcome") == "not_run":
+        return {"probe": outcome, "grep": None, "nodes": None,
+                "findings": [], "summary": "not run" + (f" ({reply.get('reason')})" if reply.get("reason") else "")}
+    commands = reply.get("commands") or []
+    grep = next((c for c in commands if c.get("command", "").startswith("grep ")), None)
+    nodes_cmd = next((c for c in commands if " node list" in c.get("command", "")), None)
+    findings = []
+    lines = {kind: {"active": [], "definition": [], "commented": [], "mention": []} for kind in ("homing", "autofocus")}
+    if grep is not None:
+        for line in (grep.get("stdout") or "").splitlines():
+            number, _, text = line.partition(":")
+            kind = "homing" if "homing" in text.lower() else "autofocus"
+            lines[kind][camera_focus_line_kind(text)].append(
+                {"line": int(number) if number.isdigit() else None, "text": text.strip()})
+        for kind, what in (("homing", "home the lens"), ("autofocus", "autofocus")):
+            found = lines[kind]
+            if found["active"]:
+                continue
+            findings.append(f"#77: the camera service has no active {kind} call, so it does not {what} at boot "
+                            f"({len(found['commented'])} commented, {len(found['definition'])} definition line(s)). "
+                            "The lens may start un-homed and unfocused: run Focus check.")
+    nodes = None
+    if nodes_cmd is not None:
+        nodes = [n.strip() for n in (nodes_cmd.get("stdout") or "").splitlines() if n.strip().startswith("/")]
+        if not any("focus" in n.lower() for n in nodes):
+            findings.append("#77: no focus node in `ros2 node list` (Pollen's autofocus needs the reachy_focus node): "
+                            "the SDK's start_autofocus() will not work.")
+    counts = lambda kind: "/".join(str(len(lines[kind][k])) for k in ("active", "definition", "commented"))  # noqa: E731
+    summary = "; ".join(filter(None, [
+        None if grep is None else f"homing lines {counts('homing')} and autofocus lines {counts('autofocus')} "
+                                  "(active/definition/commented)",
+        None if nodes is None else "focus node " + ("running" if any("focus" in n.lower() for n in nodes)
+                                                    else "NOT running") + f" ({len(nodes)} nodes)"])) or "no output"
+    return {"probe": outcome, "grep": None if grep is None else lines, "nodes": nodes, "findings": findings,
+            "summary": summary}
+
+
 def analyze_inventory(capture, files):
     """#7 (ReSpeaker, channels, firmware), #59 (speaker device), #6 (IMU), system and SDK, from the bundle."""
     findings = []
@@ -818,12 +1014,15 @@ def analyze_inventory(capture, files):
     system = {"os": (values.get("os_release") or {}).get("PRETTY_NAME"),
               "kernel": probe_output(system_reply).strip() or None, "python": values.get("python"),
               "helper_version": status.get("version")}
+    camera_focus = camera_focus_result(probes.get("camera_focus") or {}, outcomes.get("camera_focus"))
+    findings.extend(camera_focus["findings"])
     redaction = capture.get("redaction") or {}
     if redaction.get("viewer_replacements"):
         findings.append(f"The viewer's redaction pass removed {redaction['viewer_replacements']} item(s) the "
                         "helper's pass had missed: check the helper's version.")
     return {"kind": "inventory", "sdk": sdk_result, "probes": outcomes, "respeaker": respeaker, "speaker": speaker,
-            "imu": imu, "system": system, "operator": capture.get("operator") or {}, "redaction": redaction,
+            "imu": imu, "system": system, "camera_focus": camera_focus,
+            "operator": capture.get("operator") or {}, "redaction": redaction,
             "findings": findings}
 
 
@@ -878,11 +1077,44 @@ def print_inventory(result):
     sy = result["system"]
     print(f"system: {sy['os'] or 'OS unknown'} · {sy['kernel'] or 'kernel unknown'} · NUC Python "
           f"{sy['python'] or 'unknown'} · audio helper v{sy['helper_version'] or '?'}")
+    print(f"#77 camera focus: {result['camera_focus']['summary']}")
     print("probes: " + " · ".join(f"{n} {outcome_text(e)}" for n, e in result["probes"].items()))
     op = result["operator"]
     arm = op.get("arm_resting")
     print(f"operator: arm resting on the table: {'not answered' if arm is None else 'yes' if arm else 'no'}"
           + (f" · note: {op['note']}" if op.get("note") else ""))
+
+
+def print_focus(result):
+    start = result["start_lens"]
+    print("starting lens: " + ("not read" if not start else "; ".join(
+        f"{e} {v['zoom_level']} zoom {v['zoom']}, focus {v['focus']}" for e, v in start.items())))
+    for eye, row in result["eyes"].items():
+        sweep = row["sweep"]
+        if sweep is None:
+            line = "no sweep"
+        elif sweep["dry_run"]:
+            line = "sweep: dry run (nothing sent)"
+        elif sweep["flat"]:
+            line = f"sweep: {focus_mod.NO_EFFECT} (kept focus {sweep['start_focus']}; {sweep['points']} points)"
+        else:
+            line = (f"sweep: peak focus {sweep['peak_focus']} (Laplacian var {sweep['peak_laplacian_var']:.1f} vs "
+                    f"{'n/a' if sweep['start_laplacian_var'] is None else format(sweep['start_laplacian_var'], '.1f')} "
+                    f"at the start {sweep['start_focus']}), applied {sweep['chosen']}, range {sweep['range']}, "
+                    f"{sweep['points']} points" + (", verified" if sweep["verify_ok"] else ", NOT verified"))
+        af = row["autofocus"]
+        if af:
+            line += (f" | Pollen autofocus {af['outcome']}: focus {af['focus_before']} -> {af['focus_after']}, "
+                     f"Laplacian var {af['laplacian_before']} -> {af['laplacian_after']}")
+        fin = row["finish"]
+        if fin:
+            line += f" | finish: {fin['choice']}" + ("" if fin["ok"] else " (not confirmed)")
+        if row.get("pair_sharpness_ratio") is not None:
+            line += f" | pair sharpness after/before x{row['pair_sharpness_ratio']}"
+        print(f"{eye:>5}: {line}")
+    for p in result["pairs"]:
+        print(f"  pair {p['step']:<20} {p['eye']:>5}: Laplacian var {p['laplacian_var']:>9} · Canny "
+              f"{p['canny_density']} (region {p['region']})")
 
 
 def print_gripper(result):
@@ -918,6 +1150,12 @@ def print_report(manifest, capture, result):
           f" · {len(manifest['files'])} files, SHA-256 verified")
     if result["kind"] == "zoom":
         print("starting zoom:", result["start_zoom"] or "unknown (not read in this bundle)")
+        if result.get("start_lens"):
+            print("starting lens: " + "; ".join(f"{e} zoom {v['zoom']}, focus {v['focus']}"
+                                                  for e, v in result["start_lens"].items()))
+        for r in result.get("refocus") or []:
+            print(f"refocus {r['step']} {r['eye']}: {r['outcome']} (focus {r['start_focus']} -> {r['chosen']}, "
+                  f"range {r['range']})")
         print(result["start_match"]["text"])
         if result["restore_status"]:
             print(result["restore_status"])
@@ -948,6 +1186,8 @@ def print_report(manifest, capture, result):
                   + (f" | {', '.join(flags)}" if flags else ""))
     elif result["kind"] == "inventory":
         print_inventory(result)
+    elif result["kind"] == "focus":
+        print_focus(result)
     elif result["kind"] == "gripper":
         print_gripper(result)
     elif result["kind"] == "head":
@@ -992,6 +1232,8 @@ def main():
         result = analyze_inventory(capture, files)
     elif capture["kind"] == "gripper":
         result = analyze_gripper(capture, files)
+    elif capture["kind"] == "focus":
+        result = analyze_focus(capture, files)
     else:
         source, sim_lens, where = bundle_geometry(capture, files)
         # --calibration is a robot profile; a sim bundle uses the sim's own geometry.

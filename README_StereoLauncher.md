@@ -140,8 +140,9 @@ The step-by-step guide is **`docs/DATA_CAPTURE.md`**. The short version:
       sideways, press **Stop head**.
    2. **Head sweep**.
    3. **Depth ruler test**.
-   4. **Zoom FOV check, last.** If it starts at `ZERO`, the zoom cannot be put back through the SDK;
-      restart the robot's camera service afterwards.
+   4. **Zoom FOV check, last.** It reads the raw zoom and focus first and sets them back exactly at the end.
+   5. **Focus check** whenever the pictures look soft: reads the lens, measures the sharpness on the board,
+      optionally homes the lens, sweeps the focus and keeps the sharpest value (or restores the exact start).
 4. After each procedure, press **Download capture bundle**. Keep the zip in `outputs/`, and never
    commit it (stage files by name, never `git add -A`). Attach it to issue #28.
 
@@ -233,9 +234,15 @@ tail -n 80 /tmp/reachy_stereo.log
 - **After Stop head:** move the head to a preset again.
 - **"Neck read-back … off the command":** the head didn't reach its pose. Check nothing is blocking it.
 
-**S13. The zoom restore to `ZERO` fails**
-- Expected: `ZERO` (the SDK's unset level) can't be commanded. On the robot, restart its camera service.
-  On the sim, restart the sim.
+**S13. The zoom restore fails**
+- The v5 zoom check restores the raw zoom and focus integers exactly; if they could not be read at the start, it
+  falls back to the starting level, and `ZERO` (the SDK's unset level) can't be commanded as a level. Run
+  **Focus check** → *Home lens* (`zoom_homing()`), or restart the robot's camera service. On the sim, restart the sim.
+
+**S13a. Blurry images**
+- Run **Focus check** (Data capture dropdown): *Read lens*, *Measure sharpness*, then *Sweep focus*. On the sim it
+  reports "no focus effect" (the sim does not model focus); on the robot a lens that was never homed may need
+  *Home lens* first.
 
 **Analysis**
 

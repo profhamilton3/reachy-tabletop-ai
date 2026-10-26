@@ -108,7 +108,9 @@ class StereoGeometry:
                     self.R, self.T = np.array(saved["R"], dtype=float), np.array(saved["T"], dtype=float).reshape(3)
                     self.size = tuple(int(v) for v in saved["image_size"])
                     self.identity.update({"profile_id": saved["id"], "zoom_caveat": saved.get("zoom_caveat"),
-                                          "zoom_level": saved.get("zoom_level")})
+                                          "zoom_level": saved.get("zoom_level"),
+                                          # #77: {"left": {"focus": n}, "right": {...}} once a profile records one
+                                          "lens_state": saved.get("lens_state")})
                 else:  # legacy NPZ: stored SDK images are 480w x 640h
                     with np.load(self.path, allow_pickle=False) as saved:
                         self.K = [saved[k].copy() for k in ("mtx_l", "mtx_r")]

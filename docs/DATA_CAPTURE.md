@@ -134,7 +134,7 @@ if the IMU topic is known. Then open the SSH tunnel (`docs/SOUND_CHECK.md` §1 a
 | Step | Button | What it reads |
 |---|---|---|
 | 1. SDK reads | **Read robot** | The SDK version; every joint's position and compliance; the gripper; the force sensor; the fans; both cameras' zoom and focus; the neck sign check (IK only). |
-| 2. NUC probes | **Run NUC probes** | `audio_devices`, `audio_hw_params`, `usb`, `system`, `ros2_topics`, `imu`. Each probe has its own result: ok, failed, or not run, with the reason. |
+| 2. NUC probes | **Run NUC probes** | `audio_devices`, `audio_hw_params`, `usb`, `system`, `ros2_topics`, `imu`, `camera_focus` (#77). Each probe has its own result: ok, failed, or not run, with the reason. |
 | 3. Operator answers | **Save answers** | "Is the arm resting on the table?" (for the record only), plus a free note. |
 
 - **Each SDK read stands alone.** A failed or stuck read (5 s limit) records its error type, and the other
@@ -147,29 +147,81 @@ if the IMU topic is known. Then open the SSH tunnel (`docs/SOUND_CHECK.md` §1 a
 - **Download.** Press **Download capture bundle** (`reachy-capture-robot_inventory.zip`). It holds
   `capture.json`, one `probes/<name>.json` per probe and `manifest.json`. Attach it to #28.
 
-### Zoom field-of-view check (v4)
+### Focus check (v1, #77)
+
+Is the lens in focus, and where is it sharpest? A real motorised lens drifts and, depending on the installed
+camera service, may start un-homed and unfocused (Pollen's current service has its boot homing and boot autofocus
+commented out). The simulator renders sharp at every focus, so there the check is expected to report **"no focus
+effect"**. It moves no joint; it sends lens commands, each behind the confirm tick of its step, and they are a
+logged dry run unless the viewer was started with `--allow-zoom-commands` (the launcher passes it; `--dry-run`
+drops it). Arm at rest, the taped board clear, still and well lit. Nothing here runs per frame.
+
+1. *Read lens* (read only): each eye's zoom level, raw `zoom` and raw `focus`. The first complete read of the run
+   is the **starting lens state**; it is fixed once any lens command has been sent.
+2. *Move head* to `board_view` (the usual confirm).
+3. *Sharpness: before*: press *Measure sharpness*, then *Capture*. The sharpness is measured **on the board**:
+   the variance of the Laplacian (the number the sweep decides on) and Pollen's Canny(50, 100) edge density, over
+   the T3 reference squares if a T3 reference is held, else the taped grid if the finder sees it, else a centre
+   crop (a blurry board often defeats the finder). Three fresh frames are averaged after the settle delay
+   (`--focus-settle`, default 1 s). The region is fixed for the step, not re-found per frame.
+4. *Home lens* (optional, its own confirm): for a lens never homed since power-up (positions are relative to a
+   homing run, so without one every preset is offset). It runs `zoom_homing()` on both cameras, then sets the
+   **starting zoom level** again. It needs step 1 first and equal starting levels in the two eyes.
+5. *Sweep focus* (confirm): per eye, a coarse scan over Pollen's zoom-dependent range
+   (`min = 500 - (e^(0.01 zoom) + 25) * 5`, `max = 500 - (e^(zoom / 120) + 5) * 5`, clamped to 0-500) in steps of
+   10, then a fine scan of +-10 around the best in steps of 2. The sharpest value is applied and verified
+   (read-back, and the sharpness there again). About 60 commands an eye, one confirm for the bounded set, about
+   two minutes: hold the board still. A **flat curve** (the sharpness varies by under 8% of its mean) is reported
+   as "no focus effect" and the starting focus is kept. A peak at the edge of the range is flagged.
+6. *Run autofocus* (optional, confirm): Pollen's `start_autofocus()`, left to run, then `stop_autofocus()`, per eye,
+   with the sharpness measured before and after. It scores the whole frame, not the board, and needs the
+   `reachy_focus` node (Robot inventory reports whether it runs), so it is a comparison, not the default.
+7. *Finish* (confirm): choose **keep** the lens as it is, **re-apply the sweep result**, or **restore the exact
+   starting zoom and focus** (the integers from step 1, zoom first, then focus, verified by read-back).
+8. *Sharpness: after*: *Measure sharpness*, then *Capture*. Then head to neutral.
+
+The bundle holds both states, the curves (`focus/curves.csv`), the values and the before/after pairs
+(`focus/run_record.json`); `python scripts/analyze_capture_bundle.py reachy-capture-focus_check.zip` re-measures
+the sharpness on the bundle's own pairs and reports the peak, the autofocus comparison and the restore.
+
+**Zoom, focus and the calibration.** A zoom or focus change moves the picture: the depth calibration
+(2026-08-27) was derived at one lens state and stays as it is. On the robot the capture's `calibration_id` now
+carries the raw focus after the zoom (`<profile>@zoom=INTER,focus=L331/R321`; `focus=unknown` if it could not be
+read), so a refocused camera is never mistaken for the calibrated one, and a T3 reference taken before a refocus
+goes stale. The viewer's zoom status warns **"unverified at this lens state"** whenever the focus differs from
+the lens state the profile records (`lens_state`, `{"left": {"focus": ...}, "right": {...}}`); the profile
+records none today, so on the robot it always says unverified until the profile is re-derived with one. The
+simulator keeps the plain id and shows no such warning.
+
+### Zoom field-of-view check (v5)
 
 Run this last in a robot session. Arm at rest on the table, taped 3x3 board clear.
 1. Step 0, the starting zoom, untouched: press *Read zoom* (read-back only; no zoom command). The level can be
    `ZERO`, the SDK's unset level (the simulator starts there); it is recorded as `ZERO`, not mapped to another
    level. The **first complete read** of the run is the starting level; later reads are kept as extra
-   read-backs and never change it, and it is fixed once any zoom command has been sent. Then tick the confirm
+   read-backs and never change it, and it is fixed once any zoom command has been sent. The same read records
+   the cameras' raw `zoom` and `focus` integers (the starting lens state). Then tick the confirm
    box, press *Move head* (to `board_view`), wait for the read-back and press *Capture*: this pair is at the
    starting zoom.
 2. For each of **OUT, INTER, IN**: tick *I confirm: command zoom X*, press *Set zoom X*, wait for the pause to
-   finish, press *Capture*. Capture is refused until that step's zoom command has completed. The tick must be
-   repeated for every command.
+   finish; then tick *I confirm: sweep the focus motor* and press *Refocus on the board* (a focus sweep, as in the
+   Focus check, so the grid finder sees a sharp board); then press *Capture*. Capture is refused until that
+   step's zoom command has completed and its refocus has been run (a failed or flat refocus is allowed: it is a
+   finding in the bundle). The tick must be repeated for every command.
 3. Head to neutral.
-4. Last step: tick *I confirm: command zoom restore* and press *Restore zoom*. This commands the starting
-   level from step 0 and records the read-back. If the starting level is unknown, nothing is sent. If it
-   cannot be commanded, the failure is recorded. `ZERO` cannot be commanded through the SDK; restarting the
-   robot's camera service is expected to re-home the lens (unconfirmed). Any other level: set it by hand.
+4. Last step: tick *I confirm: command zoom restore* and press *Restore zoom*. This sets the starting raw `zoom`
+   and `focus` back **exactly** (zoom first, then focus, only the value that differs) and verifies them by
+   read-back. If the raw start was not read (an older SDK, or an unreadable eye), the starting *level* is
+   restored instead, as in v4: if that level is unknown nothing is sent, and if it cannot be commanded the
+   failure is recorded. A starting `ZERO` *level* cannot be commanded as a level, but its raw integers can be set
+   (and `zoom_homing()` exists), which is why v5 restores the integers.
 
 If the viewer is dry-run, the zoom does not change, and the analyser says so. This also measures whether OUT
 is really the widest view. The analyser reports the starting level, the cell pitch of the starting pair and
 which tested level it matches within 3% (e.g. "start ZERO matches INTER (ratio 1.00)", or "matches none"), and
-flags a restore that failed, was a dry run, was not run, or had no known starting level. It groups pairs by
-each capture's own zoom read-back, not by step.
+flags a restore that failed, was a dry run, was not run, or had no known starting level. It also reports the
+refocus at each level and the exact lens restore of a v5 run ("lens restored exactly: left zoom 270, focus 331;
+..."). It groups pairs by each capture's own zoom read-back, not by step.
 
 ### Depth ruler test (v3)
 
@@ -262,7 +314,12 @@ python scripts/analyze_capture_bundle.py reachy-capture-zoom_fov.zip
 python scripts/analyze_capture_bundle.py reachy-capture-depth_ruler.zip --json depth.json
 python scripts/analyze_capture_bundle.py reachy-capture-head_sweep.zip
 python scripts/analyze_capture_bundle.py reachy-capture-robot_inventory.zip
+python scripts/analyze_capture_bundle.py reachy-capture-focus_check.zip
 ```
+
+- **focus**: per eye, the starting zoom level and raw zoom and focus; the sweep (range, peak, value applied,
+  verified or not); "no focus effect" on a flat curve (expected on the simulator); Pollen's autofocus before and
+  after; the finish choice; and the sharpness of the bundle's own before/after pairs re-measured offline.
 
 - **inventory**: answers the open questions directly.
   - **#7**: whether the ReSpeaker was found (`arecord -l`, `lsusb`), its channel count, and so its firmware:
@@ -271,6 +328,11 @@ python scripts/analyze_capture_bundle.py reachy-capture-robot_inventory.zip
   - **#6**: the IMU topic, its message type and publisher count, and one sample's fields.
   - **System**: the OS, kernel and Python versions.
   - **SDK**: the version, the joint count and every read error.
+  - **#77 camera focus**: whether the camera service has an active homing call and an active autofocus call (the
+    `camera_focus` probe greps `camera_zoom_service.py` for `homing|autofocus`; commented lines and bare
+    definitions do not run at boot) and whether a focus node is in `ros2 node list`. The grep needs the helper
+    started with `--camera-service-file <path to camera_zoom_service.py on the NUC>`; without it only the node list
+    runs. Each line found is in the bundle's `probes/camera_focus.json`.
   - A probe that did not run is reported as unknown, never as absent.
 
 - **zoom**: the apparent cell pitch in px per level (raw frames) and its ratio to the widest level.

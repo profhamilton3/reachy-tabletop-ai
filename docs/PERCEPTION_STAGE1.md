@@ -53,8 +53,8 @@ the target whatever the RMS is. If it does, record the measured bound instead of
   (`reachy_sdk.camera.ZoomLevel`; `ZERO` is homing only). That `OUT` is the widest is the SDK's naming and is *not yet
   measured on this robot*; `scripts/zoom_fov_check.py` reports it.
 - The zoom level is recorded in every capture (`camera_context.zoom`) and folded into the capture's
-  `calibration_id`: `<profile identity id>@zoom=<OUT|INTER|IN>` (`unknown` if unreadable; simulator captures keep
-  the plain id).
+  `calibration_id`: `<profile identity id>@zoom=<OUT|INTER|IN>,focus=L<n>/R<n>` (`unknown` if unreadable; the raw
+  focus is folded in since #77, see `docs/DATA_CAPTURE.md`; simulator captures keep the plain id).
 - The profile records its own zoom (`zoom_level`). It is `null` (never recorded) for the August pictures, so the
   viewer shows a warning for every physical capture until the profile is re-derived at a known zoom.
 - The viewer shows a warning (`#zoom-warning`, from `status.zoom` and the frozen pair's `camera_context.zoom`)

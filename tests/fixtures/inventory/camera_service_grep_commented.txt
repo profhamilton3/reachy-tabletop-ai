@@ -1,0 +1,5 @@
+44:        # self.zoom_homing()
+61:    def zoom_homing(self, request, response):
+78:        # self.start_autofocus()
+95:    def set_focus_state(self, request, response):
+97:        self.autofocus_enabled = request.state

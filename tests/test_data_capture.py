@@ -23,6 +23,7 @@ from reachy_ai.perception import procedures as proc
 from reachy_ai.perception.stereo_depth import PairDepth
 from reachy_ai.stereo import StereoService, StereoSettings
 from reachy_ai.stereo_app import create_app
+from tests.focus_fakes import FakeLens
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -186,7 +187,7 @@ def zoom_run():
 def test_bundle_has_every_pair_labels_zoom_calibration_and_sha256():
     data = zoom_run().build_zip({"viewer": "9.9", "sdk": "0.7.0"})
     manifest, files = read_bundle(data)
-    assert manifest["procedure"] == {"id": "zoom_fov", "name": "Zoom field-of-view check", "version": "4"}
+    assert manifest["procedure"] == {"id": "zoom_fov", "name": "Zoom field-of-view check", "version": "5"}
     assert manifest["calibration_id"] == "cal-1" and manifest["versions"]["sdk"] == "0.7.0"
     for n, level in enumerate(("out", "inter", "in")):
         folder = f"steps/{n + 2:02d}_zoom_{level}/cap1"
@@ -197,7 +198,7 @@ def test_bundle_has_every_pair_labels_zoom_calibration_and_sha256():
         "Zoom: restore starting level"]
     zoom_steps = capture["steps"][1:4]
     assert [s["captures"][0]["zoom_level"] for s in zoom_steps] == ["OUT", "INTER", "IN"]
-    assert capture["procedure"]["version"] == "4" and capture["calibration_id"] == "cal-1"
+    assert capture["procedure"]["version"] == "5" and capture["calibration_id"] == "cal-1"
     assert zoom_steps[0]["zoom_commands"][0]["requested"] == "OUT"
     assert capture["steps"][0]["requested_head"] == "board_view" and capture["steps"][0]["captures"] == []
     assert {e["name"] for e in manifest["files"]} == set(files)
@@ -244,6 +245,20 @@ def viewer(source="robot", level="OUT"):
         return [{"eye": e, "requested": level, "dry_run": True, "after": "OUT", "ok": False} for e in ("left", "right")]
 
     service.request_zoom = request_zoom
+    service.lens_requests = []
+
+    def request_lens(op, eye=None, value=None, timeout_s=60.0):
+        # What the SDK process answers: reads give the cached zoom level; commands are dry-run (the viewer here
+        # has no --allow-zoom-commands). The raw zoom and focus are not on the fake lens.
+        service.lens_requests.append((op, eye, value))
+        if op == "read":
+            return [{"eye": e, "action": "read", "zoom_level": level, "zoom": None, "focus": None} for e in
+                    ("left", "right")]
+        return [{"eye": eye, "action": op, "target": value, "dry_run": True, "sent": False, "ok": False,
+                 "before": {}, "after": {}}]
+
+    service.request_lens = request_lens
+    service.fresh_frames = lambda eye, count, after_ns, timeout_s=10.0: [np.zeros((64, 48, 3), np.uint8)] * count
     service.head_requests_seen = []
 
     def request_head(action, preset=None, approved=False):
@@ -275,9 +290,9 @@ def test_viewer_zoom_needs_confirm_then_is_dry_run_and_capture_and_download_work
     service, http = viewer()
     with http as client:
         listing = client.get("/api/stereo/procedures").json()
-        assert [p["id"] for p in listing["procedures"]] == ["zoom_fov", "depth_ruler", "board_view_approach",
-                                                            "head_sweep", "sound_check", "robot_inventory",
-                                                            "gripper_range"]
+        assert [p["id"] for p in listing["procedures"]] == ["zoom_fov", "focus_check", "depth_ruler",
+                                                            "board_view_approach", "head_sweep", "sound_check",
+                                                            "robot_inventory", "gripper_range"]
         assert listing["zoom_commands"] == "dry-run" and listing["head_motion"] == "dry-run"
         assert listing["head_presets"]["board_view"] == [0.0, 64.0, 0.0]
         assert client.get("/api/stereo/capture-run").status_code == 409  # nothing chosen yet
@@ -289,6 +304,8 @@ def test_viewer_zoom_needs_confirm_then_is_dry_run_and_capture_and_download_work
         assert service.zoom_requests == []
         result = client.post(url + "/zoom", json={"confirm": True}).json()
         assert service.zoom_requests == ["INTER"] and result["dry_run"] is True
+        assert client.post(url + "/capture").status_code == 409  # v5: refocus on the board first
+        assert client.post(url + "/focus", json={"confirm": True}).json()["dry_run"] is True
         state = client.post(url + "/capture").json()
         assert state["steps"][2]["captured"] == 1 and state["pairs"] == 1
         monkeypatch.chdir(tmp_path)
@@ -306,7 +323,7 @@ def test_viewer_zoom_needs_confirm_then_is_dry_run_and_capture_and_download_work
         capture = json.loads(files["capture.json"])
         assert capture["steps"][2]["captures"][0]["zoom_level"] == "OUT"  # the real read-back, not the request
         assert capture["steps"][2]["requested_zoom"] == "INTER"
-        assert capture["calibration_id"].endswith("@zoom=OUT") and manifest["procedure"]["id"] == "zoom_fov"
+        assert "@zoom=OUT" in capture["calibration_id"] and manifest["procedure"]["id"] == "zoom_fov"
         assert list(tmp_path.iterdir()) == []
         assert client.delete("/api/stereo/capture-run").status_code == 200
         assert client.get("/api/stereo/capture-run").status_code == 409
@@ -347,6 +364,7 @@ def test_capture_is_refused_before_the_last_command_has_settled():
     with http as client:
         client.post("/api/stereo/capture-run", json={"procedure": "zoom_fov"})
         client.post("/api/stereo/capture-run/steps/zoom_out/zoom", json={"confirm": True})
+        client.post("/api/stereo/capture-run/steps/zoom_out/focus", json={"confirm": True})  # the refocus gate
         service._accept({"kind": "zoom_result", "id": "z", "dry_run": True, "records": [],
                          "finished_ns": time.monotonic_ns()})
         refused = client.post("/api/stereo/capture-run/steps/zoom_out/capture")
@@ -403,6 +421,7 @@ def test_simulator_zoom_bundle_records_source_zero_and_the_start_and_restore_ste
         assert service.zoom_requests == []
         settle(service)
         assert client.post(base + "zoom_out/zoom", json={"confirm": True}).status_code == 200
+        assert client.post(base + "zoom_out/focus", json={"confirm": True}).status_code == 200
         settle(service)
         client.post(base + "zoom_out/capture")
         assert client.post(base + "zoom_restore/zoom", json={}).status_code == 409  # a command: needs the confirm
@@ -702,7 +721,7 @@ def test_unknown_start_restore_sends_nothing_and_records_the_manual_step():
     failed.apply_zoom("zoom_start", RecordingSetter(start="ZERO"), False)
     refused = failed.apply_zoom("zoom_restore", RecordingSetter(dry_run=False, accepts=False), True)
     assert all(r["manual"] and r["note"] == proc.ZERO_RESTORE_NOTE for r in refused)
-    assert "restarting the robot's camera service is expected to re-home the lens (unconfirmed)" in refused[0]["note"]
+    assert "ZERO cannot be commanded as a zoom level" in refused[0]["note"] and "zoom_homing()" in refused[0]["note"]
     other = proc.CaptureRun(proc.get_procedure("zoom_fov"))
     other.apply_zoom("zoom_start", RecordingSetter(start="INTER"), False)
     manual = other.apply_zoom("zoom_restore", RecordingSetter(dry_run=False, accepts=False), True)
@@ -741,6 +760,11 @@ def test_capture_is_refused_until_the_steps_zoom_command_has_completed():
         assert client.post(capture).status_code == 409
         client.post("/api/stereo/capture-run/steps/zoom_out/zoom", json={"confirm": True})  # dry-run still completes
         settle(service)
+        refused = client.post(capture)  # commanded, but not refocused on the board yet (#77)
+        assert refused.status_code == 409 and "not been refocused" in refused.json()["detail"]
+        assert client.post("/api/stereo/capture-run/steps/zoom_out/focus", json={"confirm": False}).status_code == 409
+        assert client.post(capture).status_code == 409
+        assert client.post("/api/stereo/capture-run/steps/zoom_out/focus", json={"confirm": True}).status_code == 200
         assert client.post(capture).json()["pairs"] == 1
         # steps that command no zoom are not gated by it
         client.post("/api/stereo/capture-run", json={"procedure": "depth_ruler"})
@@ -753,6 +777,8 @@ def test_a_failed_zoom_command_does_not_open_the_capture_gate():
     run.zoom_commands["zoom_in"] = [{"eye": "left", "requested": "IN", "ok": False, "error": "ValueError"}]
     assert run.capture_blocker("zoom_in")
     run.apply_zoom("zoom_in", RecordingSetter(), True)
+    assert "not been refocused" in run.capture_blocker("zoom_in")  # v5: the refocus sweep comes before the capture
+    run.apply_focus("zoom_in", FakeLens(dry_run=True), confirmed=True)
     assert run.capture_blocker("zoom_in") is None
     assert run.capture_blocker("end_neutral") is None and run.capture_blocker("zoom_start") is None
 
@@ -808,5 +834,4 @@ def test_zoom_analyser_explains_a_refused_zero_restore():
     _, files, capture = analyse.load(run.build_zip({}))
     findings = " | ".join(analyse.analyze_zoom(capture, files)["findings"])
     assert "Restore FAILED (left): requested ZERO" in findings
-    assert "ZERO cannot be commanded through the SDK; restarting the robot's camera service is expected to " \
-           "re-home the lens (unconfirmed)." in findings
+    assert proc.ZERO_RESTORE_NOTE in findings

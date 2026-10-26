@@ -559,6 +559,20 @@
   const volumeNotes = {};  // Sound check: the operator's volume note per step, kept across re-renders
   const SOUND_BUTTONS = {status: 'Check helper', tone: 'Play tone', say: 'Say phrase', loopback: 'Record loopback', baseline: 'Record baseline'};
   const INVENTORY_BUTTONS = {sdk: 'Read robot', nuc: 'Run NUC probes'};
+  const focusChoice = {};  // Focus check: the finish step's choice per step, kept across re-renders
+  function focusSummary(results) {
+    const last = results.at(-1);
+    if (!last) return '';
+    const per = results.filter(r => r.action === last.action).slice(-2);
+    const f = v => v == null ? '?' : typeof v === 'number' ? v.toFixed(v < 1 ? 4 : 1) : v;
+    if (last.action === 'read') return ' · lens ' + per.map(r => `${r.eye[0].toUpperCase()}: ${r.zoom_level ?? '?'} zoom ${r.zoom ?? '?'} focus ${r.focus ?? '?'}`).join('; ');
+    if (last.action === 'measure') return ' · sharpness (Laplacian var) ' + per.map(r => `${r.eye[0].toUpperCase()} ${f(r.laplacian_var)}`).join(', ') + ` · region ${per[0].region}`;
+    if (last.action === 'sweep') return ' · sweep ' + per.map(r => `${r.eye[0].toUpperCase()}: ${r.outcome === 'no_focus_effect' ? 'no focus effect' : r.outcome === 'dry_run' ? 'dry run' : r.outcome} (focus ${r.start_focus ?? '?'} → ${r.chosen ?? '?'})`).join('; ');
+    if (last.action === 'autofocus') return ' · autofocus ' + per.map(r => `${r.eye[0].toUpperCase()}: ${r.outcome} (focus ${r.lens_before?.focus ?? '?'} → ${r.lens_after?.focus ?? '?'})`).join('; ');
+    if (last.action === 'homing' || last.action === 'restore_level') return ' · ' + results.slice(-4).map(r => `${r.action} ${r.eye[0].toUpperCase()}: ${r.dry_run ? 'dry run' : r.ok ? 'ok' : 'NOT confirmed'}`).join('; ') + (results.some(r => r.manual) ? ' · set the zoom level by hand' : '');
+    if (last.action === 'finish') return ` · finish (${last.choice}): ` + per.map(r => `${r.eye[0].toUpperCase()} ${r.dry_run ? 'dry run' : r.ok ? 'ok' : (r.note || 'not confirmed')}`).join('; ');
+    return '';
+  }
   const inventoryDraft = {arm: '', note: ''};  // Robot inventory: the operator's answers, kept across re-renders
   function inventorySummary(r) {
     if (r.outcome === 'failed') return `failed: ${r.error}`;
@@ -614,6 +628,28 @@
         const set = Object.assign(document.createElement('button'), {textContent: step.zoom ? `Set zoom ${step.zoom}` : 'Restore zoom'});
         set.onclick = () => { const ok = box.checked; confirmed['zoom' + step.id] = false; runStep(step.id, 'zoom', {confirm: ok}, 'Zoom command '); };
         li.append(label, set);
+      }
+      if (step.focus === 'read' || step.focus === 'measure') {
+        const act = Object.assign(document.createElement('button'), {textContent: step.focus === 'read' ? 'Read lens' : 'Measure sharpness', disabled: runBusy});
+        act.onclick = () => runStep(step.id, 'focus', {confirm: false}, `${act.textContent}: `, 60000);
+        li.append(act);
+      } else if (step.focus) {
+        const names = {homing: 'Home lens', sweep: step.zoom ? 'Refocus on the board' : 'Sweep focus', autofocus: 'Run autofocus', finish: 'Finish'};
+        const what = {homing: 'home the lens (zoom_homing), then set the starting zoom level again', sweep: 'sweep the focus motor (about two minutes)',
+                      autofocus: "run Pollen's autofocus", finish: 'apply the choice at left'}[step.focus];
+        let choice = null;
+        if (step.focus === 'finish') {
+          choice = Object.assign(document.createElement('select'), {disabled: runBusy, id: `choice-${step.id}`});
+          for (const [value, text] of [['keep', 'keep the lens as it is'], ['sweep', 're-apply the sweep result'], ['restore', 'restore the exact starting zoom and focus']])
+            choice.append(Object.assign(document.createElement('option'), {value, textContent: text}));
+          choice.value = focusChoice[step.id] || 'keep'; choice.onchange = () => { focusChoice[step.id] = choice.value; };
+          li.append(choice);
+        }
+        const [box, label] = confirmBox('focus', `I confirm: ${what}`);
+        const act = Object.assign(document.createElement('button'), {textContent: names[step.focus], disabled: runBusy});
+        act.onclick = () => { const ok = box.checked; confirmed['focus' + step.id] = false;
+          runStep(step.id, 'focus', {confirm: ok, choice: choice ? choice.value : null}, `${names[step.focus]}: `, step.focus === 'sweep' ? 900000 : 240000); };
+        li.append(label, act);
       }
       if (step.sound) {
         const act = Object.assign(document.createElement('button'), {textContent: SOUND_BUTTONS[step.sound], disabled: runBusy});
@@ -678,7 +714,8 @@
           (step.answer ? ` · operator: ${step.answer.heard ? 'heard it' : 'not heard'}${step.answer.volume_note ? ` (${step.answer.volume_note})` : ''}` : '') +
           (grip ? ` · ${gripperSummary(grip)}` : '') +
           (head ? ` · head ${head.mode === 'live' ? head.outcome : head.outcome === 'refused' ? 'refused' : 'dry-run'}${neck}` : '') +
-          (step.zoom_commands.length ? zoomSummary(step.zoom_commands) : '')}));
+          (step.zoom_commands.length ? zoomSummary(step.zoom_commands) : '') +
+          (step.focus_results?.length ? focusSummary(step.focus_results) : '')}));
       return li;
     });
     $('capture-steps').replaceChildren(...rows);
@@ -696,7 +733,7 @@
     const last = commands.at(-1);
     const warn = commands.find(c => c.warning || c.note);
     const text = last.action === 'read' ? `read ${commands.slice(-2).map(c => c.level ?? '?').join('/')}`
-      : last.dry_run ? 'dry-run' : last.after ?? '?';
+      : last.dry_run ? 'dry-run' : last.mode === 'raw' ? `${last.ok ? 'restored' : 'NOT restored'} (zoom ${last.after?.zoom ?? '?'}, focus ${last.after?.focus ?? '?'})` : last.after ?? '?';
     return ` · zoom ${text}` + (warn ? ` · ${warn.warning || warn.note}` : '');
   }
   async function runStep(stepId, action, body, label, timeout) {

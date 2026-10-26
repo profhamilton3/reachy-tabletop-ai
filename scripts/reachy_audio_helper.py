@@ -22,7 +22,9 @@ channels are (plain, or the ReSpeaker USB array's respeaker6 / respeaker1 firmwa
                                                   record and return a WAV; with "tone", the recording starts
                                                   first and the tone plays during it (the loopback check)
     GET  /probe/<name>                            one probe of the fixed allow-list (PROBES): audio_devices,
-                                                  audio_hw_params, usb, system, ros2_topics, imu; anything else 404
+                                                  audio_hw_params, usb, system, ros2_topics, imu, camera_focus (#77: a
+                                                  fixed grep of --camera-service-file, and `ros2 node list`);
+                                                  anything else 404
 
 A probe runs only fixed argument lists (never a shell, never operator text). The record device and the IMU topic
 come from the command line and are checked against strict patterns at startup. Every probe command has a
@@ -83,7 +85,7 @@ TTS_TIMEOUT_S = 30.0  # piper's first synthesis loads the voice model
 LIST_TIMEOUT_S = 5.0
 LOOPBACK_LEAD_S = 0.3  # the recorder runs this long before the tone starts
 #: NUC probes (#62): the fixed allow-list, in the order the Robot inventory runs them.
-PROBES = ("audio_devices", "audio_hw_params", "usb", "system", "ros2_topics", "imu")
+PROBES = ("audio_devices", "audio_hw_params", "usb", "system", "ros2_topics", "imu", "camera_focus")
 PROBE_TIMEOUT_S = 5.0
 ECHO_TIMEOUT_S = 8.0  # ros2 topic echo --once waits for one message
 MAX_PROBE_OUTPUT = 64 * 1024  # per stream (stdout, stderr) of each probe command
@@ -94,6 +96,10 @@ DEVICE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,31}(:[A-Za-z0-9_]{1,32}(=[
                             r"(,[A-Za-z0-9_]{1,32}(=[A-Za-z0-9_]{1,32})?){0,3})?$")
 #: An absolute ROS 2 topic name: /imu, /head/imu, /reachy/neck_imu/data.
 TOPIC_PATTERN = re.compile(r"^(/[A-Za-z_][A-Za-z0-9_]{0,63}){1,8}$")
+#: The camera zoom service's source file (#77), an absolute path to a .py file: no spaces, no `..`, no leading dash.
+SERVICE_FILE_PATTERN = re.compile(r"^(/[A-Za-z0-9_][A-Za-z0-9_.+-]{0,63}){1,12}\.py$")
+#: What the camera_focus probe greps for (a fixed pattern, never operator text): the homing and autofocus lines.
+CAMERA_FOCUS_GREP = "homing|autofocus"
 
 LOG = logging.getLogger("reachy_audio_helper")
 
@@ -287,6 +293,14 @@ def checked_gain(value):
     return gain
 
 
+def checked_service_file(value):
+    """An absolute path to a .py file that matches SERVICE_FILE_PATTERN (and has no `..`), else ValueError."""
+    if value is not None and (not SERVICE_FILE_PATTERN.fullmatch(value) or ".." in value.split("/")):
+        raise ValueError("{!r} is not an absolute path to a .py file such as /opt/reachy/camera_zoom_service.py"
+                         .format(value))
+    return value
+
+
 def checked_topic(value):
     """An absolute ROS 2 topic name that matches TOPIC_PATTERN, else ValueError."""
     if value is not None and not TOPIC_PATTERN.fullmatch(value):
@@ -412,9 +426,10 @@ class Prober:
     """The fixed, read-only NUC probes. `run` and `which` are replaceable for tests."""
 
     def __init__(self, record_device=None, imu_topic=None, run=run_probe_command, which=shutil.which,
-                 names=None, release_path="/etc/os-release"):
+                 names=None, release_path="/etc/os-release", camera_service_file=None):
         self.record_device = checked_device(record_device)
         self.imu_topic = checked_topic(imu_topic)
+        self.camera_service_file = checked_service_file(camera_service_file)
         self.run, self.which, self.release_path = run, which, release_path
         self.hosts, self.users = names if names is not None else local_names()
 
@@ -432,6 +447,17 @@ class Prober:
             return [(["lsusb"], PROBE_TIMEOUT_S)]
         if name == "system":
             return [(["uname", "-sr"], PROBE_TIMEOUT_S)]
+        if name == "camera_focus":
+            # #77: does the camera service home and autofocus at boot (the grep; commented lines show as such), and is
+            # a focus node running (ros2 node list)? Either part runs without the other.
+            plan = []
+            if self.camera_service_file:
+                plan.append((["grep", "-n", "-E", CAMERA_FOCUS_GREP, self.camera_service_file], PROBE_TIMEOUT_S))
+            if self.which("ros2"):
+                plan.append((["ros2", "node", "list"], PROBE_TIMEOUT_S))
+            if not plan:
+                return ("no --camera-service-file configured, and " + ROS2_MISSING)
+            return plan
         if name in ("ros2_topics", "imu"):
             if name == "imu" and not self.imu_topic:
                 return "no --imu-topic configured"
@@ -453,13 +479,15 @@ class Prober:
             reply.update(outcome="failed" if plan == ROS2_MISSING else "not_run", reason=plan)
         else:
             reply["commands"] = [self.run(argv, timeout) for argv, timeout in plan]
-            failed = [c for c in reply["commands"] if c.get("error")]
+            # grep exits 1 when nothing matches: "no active or commented homing or autofocus line" is an answer
+            failed = [c for c in reply["commands"] if c.get("error") and not (
+                c["command"].startswith("grep ") and c.get("exit") == 1 and not c.get("timed_out"))]
             if failed:
                 reply.update(outcome="failed", reason=failed[0]["error"])
         if name == "system":
             reply["values"] = {"os_release": os_release(self.release_path), "python": platform.python_version()}
         keep = {self.imu_topic, self.record_device}
-        for command in reply["commands"] if name == "ros2_topics" else ():
+        for command in reply["commands"] if name in ("ros2_topics", "camera_focus") else ():
             keep |= topic_lines(command["stdout"])
         reply = redact(reply, self.hosts, self.users, keep)
         reply["redacted"] = True
@@ -927,9 +955,11 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(200, result)
 
 
-def make_server(port, backend, channel_layout="plain", imu_topic=None, prober=None, muted=False):
+def make_server(port, backend, channel_layout="plain", imu_topic=None, prober=None, muted=False,
+                camera_service_file=None):
     """The HTTP server, bound to 127.0.0.1. Port 0 picks a free port (tests)."""
-    prober = prober or Prober(record_device=getattr(backend, "record_device", None), imu_topic=imu_topic)
+    prober = prober or Prober(record_device=getattr(backend, "record_device", None), imu_topic=imu_topic,
+                              camera_service_file=camera_service_file)
     handler = type("BoundHandler", (Handler,), {"helper": AudioHelper(backend, channel_layout, prober, muted)})
     server = ThreadingHTTPServer((HOST, port), handler)
     server.daemon_threads = True
@@ -971,6 +1001,10 @@ def main(argv=None):
     parser.add_argument("--imu-topic", type=_argument(checked_topic),
                         help="the neck IMU's ROS 2 topic, e.g. /imu, for the imu probe (#6); start the helper "
                              "from a terminal with ROS sourced")
+    parser.add_argument("--camera-service-file", type=_argument(checked_service_file),
+                        help="the camera zoom service's source file on this machine, e.g. "
+                             "/opt/reachy/camera_zoom_service.py, for the camera_focus probe (#77): it greps the file "
+                             "for homing and autofocus lines. Read only; without it only `ros2 node list` runs")
     parser.add_argument("--max-gain", type=_argument(checked_gain), default=DEFAULT_MAX_GAIN,
                         help="volume cap: speech is scaled to at most this fraction of full scale, more than 0 to 1 "
                              "(default %(default)s)")
@@ -978,7 +1012,8 @@ def main(argv=None):
                         help="start muted: /say and /tone succeed without sound until POST /mute {\"on\": false}")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    server = make_server(args.port, build_backend(args), args.channel_layout, args.imu_topic, muted=args.mute)
+    server = make_server(args.port, build_backend(args), args.channel_layout, args.imu_topic, muted=args.mute,
+                         camera_service_file=args.camera_service_file)
     LOG.info("audio helper v%s, backend %s, channel layout %s, max gain %g%s, listening on %s:%d (local only)",
              VERSION, args.backend, args.channel_layout, args.max_gain, ", muted" if args.mute else "", HOST,
              server.server_address[1])

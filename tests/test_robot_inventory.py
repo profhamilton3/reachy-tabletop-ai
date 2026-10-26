@@ -251,6 +251,7 @@ def scenario_prober(name, leak=False):
         out, err = {"arecord -l": (files["arecord -l"], None), "aplay -l": ("aplay_l.txt", None),
                     "lsusb": (files["lsusb"], None), "uname -sr": ("uname.txt", None),
                     "ros2 topic list": ("ros2_topic_list.txt", None), "ros2 topic info": ("imu_info.txt", None),
+                    "ros2 node list": ("ros2_node_list.txt", None),
                     "ros2 topic echo": ("imu_echo.txt", None)}.get(key, (None, files["hw"]))
         return {"command": " ".join(argv), "exit": 0, "timed_out": False, "truncated": False,
                 "stdout": fixture(out), "stderr": fixture(err) + (fixture("leaky_stderr.txt") if leak else "")}

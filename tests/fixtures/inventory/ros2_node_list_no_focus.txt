@@ -1,0 +1,2 @@
+/camera_zoom_service
+/reachy_sdk_server
