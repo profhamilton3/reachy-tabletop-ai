@@ -57,7 +57,8 @@ viewer's command line only (it is never exported). Starting `reachy-stereo` dire
 pass those flags and the variable yourself.
 
 `--max-clock-offset SECONDS` (default `REACHY_MAX_CLOCK_OFFSET_S`, else 2.0) sets the clock limit of the
-pre-capture health check below.
+pre-capture health check below. An environment value that is not a number of seconds in (0, 600] is ignored
+with a warning and 2.0 is used.
 
 Open http://localhost:8081. Zoom steps work on the simulator under the same rules as on the robot: a confirm
 tick per command and `--allow-zoom-commands` (otherwise a logged dry run). Head steps work on the simulator's

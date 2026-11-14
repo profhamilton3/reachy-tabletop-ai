@@ -460,3 +460,29 @@ def test_a_closed_port_is_unreachable_and_its_address_is_not_recorded():
     report = precapture.check(robot, frame_timeout_s=0.1, read_timeout_s=1.0)
     check = by_name(report)["sdk_reachable"]
     assert check.passed is False and "127.0.0.1" not in json.dumps(report.to_dict())
+
+
+# --- the clock limit from the environment (config.precapture_max_clock_offset_s) ---------------------------
+
+@pytest.mark.parametrize("raw, expected", [(None, 2.0), ("", 2.0), ("5", 5.0), (" 0.5 ", 0.5), ("600", 600.0)])
+def test_clock_limit_env_accepts_seconds_in_range(raw, expected, monkeypatch):
+    from reachy_ai import config
+    monkeypatch.delenv("REACHY_MAX_CLOCK_OFFSET_S", raising=False)
+    assert config.precapture_max_clock_offset_s(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["2s", "nan", "inf", "-inf", "0", "-1", "601", "1e9"])
+def test_clock_limit_env_rejects_a_bad_value_and_keeps_the_default(raw):
+    from reachy_ai import config
+    with pytest.warns(RuntimeWarning, match="REACHY_MAX_CLOCK_OFFSET_S"):
+        assert config.precapture_max_clock_offset_s(raw) == config.PRECAPTURE_MAX_CLOCK_OFFSET_DEFAULT_S
+
+
+def test_clock_limit_env_is_read_from_the_environment(monkeypatch):
+    from reachy_ai import config
+    monkeypatch.setenv("REACHY_MAX_CLOCK_OFFSET_S", "7.5")
+    assert config.precapture_max_clock_offset_s() == 7.5
+    monkeypatch.setenv("REACHY_MAX_CLOCK_OFFSET_S", "soon")
+    with pytest.warns(RuntimeWarning):
+        assert config.precapture_max_clock_offset_s() == 2.0
+

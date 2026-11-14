@@ -1,4 +1,6 @@
+import math
 import os
+import warnings
 
 REACHY_IP: str = os.environ.get("REACHY_IP", "")
 REACHY_ENABLE_MOTION: bool = os.environ.get("REACHY_ENABLE_MOTION", "false").lower() == "true"
@@ -152,6 +154,30 @@ ARM_HEAD_FOLLOW_DIFF_DEG: float = 10.0   # SDK head IK vs the record's neck angl
 # --- Pre-capture health check (health/precapture.py) ---------------------------------------------------
 # The robot's clock against the workstation's: a capture procedure is refused when they differ by more than
 # this. The robot's ROS logs show boot-time clock steps of up to 64 s (Reachy-Lab reachy-1-2-ros findings 3.6).
-PRECAPTURE_MAX_CLOCK_OFFSET_S: float = float(os.environ.get("REACHY_MAX_CLOCK_OFFSET_S", "2.0"))
+PRECAPTURE_MAX_CLOCK_OFFSET_DEFAULT_S: float = 2.0
+PRECAPTURE_MAX_CLOCK_OFFSET_CEILING_S: float = 600.0
+
+
+def precapture_max_clock_offset_s(raw: str | None = None) -> float:
+    """The clock limit from `REACHY_MAX_CLOCK_OFFSET_S` (or `raw`). A value that is not a finite number in
+    (0, 600] is ignored with a warning and the default is used: a typo must not break the import of this module
+    (and with it the safety gate), and `nan` or `inf` must not switch the check off."""
+    if raw is None:
+        raw = os.environ.get("REACHY_MAX_CLOCK_OFFSET_S")
+    if raw is None or not raw.strip():
+        return PRECAPTURE_MAX_CLOCK_OFFSET_DEFAULT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if not (math.isfinite(value) and 0.0 < value <= PRECAPTURE_MAX_CLOCK_OFFSET_CEILING_S):
+        warnings.warn(f"REACHY_MAX_CLOCK_OFFSET_S={raw!r} is not a number of seconds in (0, "
+                      f"{PRECAPTURE_MAX_CLOCK_OFFSET_CEILING_S:g}]; using {PRECAPTURE_MAX_CLOCK_OFFSET_DEFAULT_S:g}",
+                      RuntimeWarning, stacklevel=2)
+        return PRECAPTURE_MAX_CLOCK_OFFSET_DEFAULT_S
+    return value
+
+
+PRECAPTURE_MAX_CLOCK_OFFSET_S: float = precapture_max_clock_offset_s()
 PRECAPTURE_FRAME_TIMEOUT_S: float = 2.0   # each eye must deliver a new frame within this
 PRECAPTURE_READ_TIMEOUT_S: float = 2.0    # each SDK read (and the clock round trip) is bounded by this
