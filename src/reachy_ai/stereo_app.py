@@ -12,9 +12,12 @@ fresh confirm per move, a Stop that releases it. The Sound check's routes call o
 The Robot inventory's route (#62) only reads: the SDK through the SDK process, the helper's fixed NUC probes.
 The Focus check's route (#77) sends raw lens commands (focus, zoom, homing, autofocus) through the SDK process after
 the operator's confirm: dry-run unless --allow-zoom-commands; it moves no joint.
+Starting any procedure first runs the read-only pre-capture health check (health/precapture.py) in the SDK process;
+a failed check refuses the procedure (the Sound check and Robot inventory only record it).
 """
 
 import asyncio
+import logging
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -31,6 +34,7 @@ from reachy_ai.audio.audio_client import AudioClient
 from reachy_ai.camera_zoom import EYES, calibration_id, focus_by_eye, lens_readings, normalize_zoom, zoom_status
 from reachy_ai.config import HEAD_PRESETS
 from reachy_ai.games.t3_viewer import install_routes as install_t3_routes
+from reachy_ai.health import precapture
 from reachy_ai.pair_bundle import BundleTooLarge, build_bundle, json_bytes, viewer_version
 from reachy_ai.perception import focus as focus_mod
 from reachy_ai.perception.pair_detector import (
@@ -41,6 +45,7 @@ from reachy_ai.perception.pair_detector import (
     draw_detections,
 )
 from reachy_ai.perception.procedures import (
+    HEALTH_RECORD_ONLY_KINDS,
     PROCEDURES,
     CaptureRun,
     FocusNotConfirmed,
@@ -62,6 +67,7 @@ from reachy_ai.perception.procedures import (
 from reachy_ai.perception.stereo_depth import DepthUnavailable, PairDepth
 from reachy_ai.stereo import CommandBusy, StereoService, StereoSettings
 
+LOG = logging.getLogger(__name__)
 
 class _ServiceZoom:
     """`ZoomSetter`-shaped front for the SDK process: dry-run unless the viewer allows zoom commands."""
@@ -253,6 +259,8 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
                                    focus_by_eye({eye: camera.diagnostics.get(eye) for eye in EYES}))
                     if zoom and settings.source != "sim" else profile.get("id"))
                 record["camera_context"]["analysis_profile"] = dict(profile)
+                # the last lens read-back per eye (zoom level, raw zoom and focus): the run's telemetry
+                record["camera_context"]["lens"] = lens_readings({eye: camera.diagnostics.get(eye) for eye in EYES})
                 return camera.snapshot_metadata(record), record
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
@@ -282,14 +290,34 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
     def run_state():
         return current_run().state()
 
+    def health_report():
+        """The pre-capture health report from the SDK process; a connection that is not ready is an unreachable
+        SDK, recorded as such."""
+        try:
+            return camera.request_health()
+        except CommandBusy as exc:
+            raise HTTPException(409, f"{exc}: start the procedure again when it has finished.") from exc
+        except (RuntimeError, TimeoutError) as exc:
+            return precapture.unreachable(str(exc), {"max_clock_offset_s": settings.max_clock_offset_s}).to_dict()
+
     @app.post("/api/stereo/capture-run")
     def run_start(procedure: str = Body(embed=True)):
+        """Start a procedure. The pre-capture health check runs first (reads only); a failed check refuses the
+        procedure with each failed check listed, and the current run (if any) is kept. The Sound check and the
+        Robot inventory start anyway and record the report."""
         try:
-            # the robot host is one more name the inventory's redaction pass removes
-            run = CaptureRun(get_procedure(procedure),
-                             redact_hosts=(settings.robot_host,) if settings.source == "robot" else ())
+            chosen = get_procedure(procedure)
         except KeyError as exc:
             raise HTTPException(404, exc.args[0]) from exc
+        report = health_report()
+        if not report.get("passed"):
+            LOG.warning("Pre-capture health check failed for %s: %s", chosen.id,
+                        "; ".join(precapture.failed_lines(report)))
+            if chosen.kind not in HEALTH_RECORD_ONLY_KINDS:
+                raise HTTPException(409, precapture.refusal_text(report))
+        # the robot host is one more name the inventory's redaction pass removes
+        run = CaptureRun(chosen, redact_hosts=(settings.robot_host,) if settings.source == "robot" else (),
+                         precapture=report)
         with run_lock:
             app.state.run = run
         return run.state()

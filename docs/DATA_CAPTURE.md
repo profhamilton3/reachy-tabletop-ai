@@ -56,6 +56,9 @@ The launcher passes `--allow-head-motion --allow-zoom-commands` and sets `REACHY
 viewer's command line only (it is never exported). Starting `reachy-stereo` directly stays dry-run unless you
 pass those flags and the variable yourself.
 
+`--max-clock-offset SECONDS` (default `REACHY_MAX_CLOCK_OFFSET_S`, else 2.0) sets the clock limit of the
+pre-capture health check below.
+
 Open http://localhost:8081. Zoom steps work on the simulator under the same rules as on the robot: a confirm
 tick per command and `--allow-zoom-commands` (otherwise a logged dry run). Head steps work on the simulator's
 neck. See *The simulator's zoom model* below.
@@ -84,6 +87,41 @@ A capture is refused (with the reason shown) until it is safe to take:
 At the end of a run the last step, *End: head to neutral*, brings the head back to (0, 0, 0). The head stays
 powered (stiff) there. **Release head** turns its motors off smoothly; the head may sag, so do it only with a
 hand ready and the run finished.
+
+## Pre-capture health check
+
+Choosing a procedure first runs a read-only health check (`src/reachy_ai/health/precapture.py`) in the viewer's
+SDK process. It takes a few seconds; the page shows *Checking the robot…*. If any check fails, the procedure does
+not start: the page lists every failed check, one per line, and the run you had (if any) stays as it was. Fix the
+cause and choose the procedure again.
+
+Why: the robot's ROS logs (Reachy-Lab `reachy-1-2-ros/reports/SUMMARY_REPORT_OF_FINDINGS.md`) hold periods of
+hours in which every motor bus was failing and `ros2_control_node` had aborted while the cameras and the SDK
+server stayed up, and clock steps of up to 64 s after boot. A capture taken then would look valid.
+
+| check | passes when |
+|---|---|
+| `sdk_reachable` | a `GetJointsState` round trip to the SDK server answers (bounded at 2 s) |
+| `left_frame`, `right_frame` | each camera returns a frame and then a new one within 2 s; on `--source robot` the new one must not be pixel-identical to the one before it or to the one the previous check saw (a frozen camera). The simulator renders a still scene identically, so there identical pixels are noted, not failed |
+| `joints` | every joint the SDK lists returns a finite `present_position` |
+| `neck` | `neck_roll`, `neck_pitch` and `neck_yaw` return a finite `present_position` |
+| `force_gripper` | `r_force_gripper` returns a finite force |
+| `clock_offset` | the robot's clock is within the limit (default 2 s) of the workstation's. The robot's time is the `JointsState.timestamp` the SDK server stamps when it sends the reply; the offset is robot minus workstation at the round trip's midpoint, best of three. A reply without a timestamp fails: the offset is unknown, not zero |
+
+The check only reads: no goal, power, compliance, zoom or focus command, and no gRPC call other than
+`GetJointsState` (`tests/test_probe_read_only.py`). A check that cannot run (no SDK connection) counts as failed.
+
+The **Sound check** and the **Robot inventory** run the check too, but start even if it fails and only record
+it: they move nothing, and the inventory is how you find out what is wrong. The summary line of the run shows
+`health check passed, clock offset +0.012 s`, or the failed checks.
+
+**What it cannot see.** The joint values the SDK holds are a cache fed by a stream from the server. If the
+motor buses fail or `ros2_control_node` aborts while the SDK server stays up, the cache may keep its last values,
+which are finite, so `joints` and `neck` can still pass. Whether they do on this robot has not been tested (see
+the report's section 6, item 1). `sdk_reachable` shows that the server answers, not that the controller behind it
+is running.
+
+The CLI fallbacks run the same check and stop with the failed checks listed.
 
 ## First robot session: approach the board view in steps
 
@@ -301,7 +339,25 @@ Each bundle holds, per step, `left.jpg`, `right.jpg` and `pair.json`, plus:
     live/dry-run, the outcome, the gate's reasons, the neck read-back after the move);
   - the neck read-back frozen with each capture;
   - the run's Stop and Release events;
+  - `precapture_health`: the full pre-capture health report the run started with (every check, its detail and
+    values, the settings it ran with); `null` for a run built without one;
+  - `telemetry` (`format_version: 1`), the run's telemetry record:
+    - `clock_offset`: the clock check's result (`offset_s`, robot minus workstation, positive when the robot is
+      ahead; `rtt_s`; `uncertainty_s` = half the round trip; `robot_utc`; `workstation_utc`; `limit_s`);
+    - `ros_log_session`: `{"folder": null, "reason": ...}`. The robot's ROS log session folder cannot be read
+      without new robot-side code (the SDK has no such read, and the audio helper's fixed probes do not list
+      `~/.ros/log`). To find a bundle in the robot's logs, use its UTC times corrected by the clock offset;
+  - per capture, `telemetry`:
+    - `frames_received`: for each eye, when its frame reached the viewer's SDK process (`observed_time_ns` on
+      the monotonic clock, and `received_unix_ns` / `received_utc` on the wall clock). This is not the exposure
+      time: the gRPC image stream carries no source timestamp;
+    - `lens`: for each eye, the zoom level, raw zoom and raw focus. This is the last value the viewer read back,
+      at connection or after the last lens command or read, not a fresh read at the moment of capture;
+    - `neck_deg`: the neck read-back frozen with the pair (the same values as the entry's `neck_deg`).
 - `manifest.json`.
+
+The Gripper range and Focus check run records (`gripper/run_record.json`, `focus/run_record.json`) carry
+`precapture_health` and `telemetry` too.
 
 A Robot inventory bundle has no images. It holds `capture.json` (the SDK reads, each probe's outcome and
 reason, the operator's answers, the helper status, and the redaction record), `probes/<name>.json` (each
@@ -364,6 +420,9 @@ python scripts/analyze_capture_bundle.py reachy-capture-focus_check.zip
 Before the session:
 - [ ] The viewer started with the switches you intend (see *Start the viewer*); the page shows the head and
       zoom modes you expect.
+- [ ] Wait a minute after the robot boots before you start (its clock can step by up to a minute at boot). The
+      first procedure you choose must pass the pre-capture health check; a failed `clock_offset` means the
+      robot or the workstation is not time-synced.
 - [ ] Arm at rest on the table, board clear, nobody near the head.
 - [ ] No notebook or other program is connected to the robot (two clients must never command the neck).
 - [ ] The page shows `neck_sign_check: passed`.
@@ -384,5 +443,6 @@ Per-capture IMU recording follows once #6 has found the topic. There is no IMU c
 ## No-viewer fallback
 
 `scripts/zoom_fov_check.py` and `scripts/ruler_depth_test.py` run the zoom and depth procedures from a terminal
-(`REACHY_IP` set; zoom commands only with `--live-zoom` plus a typed `y` per command). They also write
-`capture-bundle.zip` in the same format. They never move the head: aim it with the viewer first.
+(`REACHY_IP` set; zoom commands only with `--live-zoom` plus a typed `y` per command). Each runs the pre-capture
+health check first and stops if it fails. They also write `capture-bundle.zip` in the same format, with the
+report and the frames' received times; they hold no lens read-back, so `lens` is `null`. They never move the head: aim it with the viewer first.

@@ -23,6 +23,11 @@ speed and torque, a force-limited close, `REACHY_ENABLE_MOTION`), and the grippe
 end." Nothing is written to disk by this module: the run lives in memory (pairs and audio clips alike) and
 `CaptureRun.build_zip` returns the bundle bytes.
 
+Every procedure starts with the read-only pre-capture health check (health/precapture.py), run by the viewer or
+the CLI fallback, not here. A failed check refuses the procedure, except a Sound check or Robot inventory
+(HEALTH_RECORD_ONLY_KINDS): they move nothing and the inventory is the diagnosis, so they only record it. The run
+keeps the report (`precapture`) and the bundle carries it with the telemetry record (format TELEMETRY_FORMAT_VERSION).
+
 The viewer (stereo_app.py) and the CLI fallbacks (scripts/zoom_fov_check.py,
 scripts/ruler_depth_test.py) both drive these same objects; the offline analysers
 (scripts/analyze_capture_bundle.py) read the bundle back.
@@ -60,6 +65,7 @@ from reachy_ai.config import (
     HEAD_PRESETS,
     NECK_JOINTS,
 )
+from reachy_ai.health import precapture as health
 from reachy_ai.motion import arm_routes
 from reachy_ai.motion.primitives import GRIPPER_ABORTS
 from reachy_ai.pair_bundle import build_bundle, json_bytes
@@ -88,6 +94,9 @@ RECORDING_SOUNDS = ("loopback", "baseline")
 INVENTORY_PROBES = ("audio_devices", "audio_hw_params", "usb", "system", "ros2_topics", "imu", "camera_focus")
 PROBE_OUTCOMES = ("ok", "failed", "not_run")
 HELPER_UNREACHABLE = "helper unreachable"
+#: Pre-capture health check: these kinds record a failed report instead of being refused by it.
+HEALTH_RECORD_ONLY_KINDS = ("sound", "inventory")
+TELEMETRY_FORMAT_VERSION = 1
 
 
 class ZoomNotConfirmed(PermissionError):
@@ -566,6 +575,7 @@ class CaptureRun:
     teach_results: dict[str, list[dict]] = field(default_factory=dict)  # every Teach arm pose attempt per step
     focus_results: dict[str, list[dict]] = field(default_factory=dict)  # every lens (Focus check) attempt per step
     _lens_start: dict | None = None  # eye -> {zoom_level, zoom, focus}: first complete lens read, before any command
+    precapture: dict | None = None  # the pre-capture health report the run started with (HealthReport.to_dict())
     created_utc: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     commands_attempted: bool = False  # a zoom command (live or dry-run) has been asked for
     _start: str | None = None  # the starting zoom: the first complete read, fixed once a command was attempted
@@ -869,7 +879,8 @@ class CaptureRun:
         finish = [{**r, "step": s.id} for s in self.procedure.steps for r in self.focus_results.get(s.id, [])
                   if r.get("action") == "finish"]
         return {"start_lens": self._lens_start, "sharpness": measures, "sweeps": sweeps, "autofocus": autofocus,
-                "finish": finish, "curve_file": "focus/curves.csv",
+                "finish": finish, "curve_file": "focus/curves.csv", "precapture_health": self.precapture,
+                "telemetry": self.telemetry(),
                 "start_text": focus_text({e: (self._lens_start or {}).get(e, {}).get("focus") for e in EYES})}
 
     def focus_curves_csv(self) -> bytes:
@@ -1210,6 +1221,10 @@ class CaptureRun:
                            "focus_results": [slim_focus(r) for r in self.focus_results.get(s.id, [])]}
                           for s in self.procedure.steps],
                 "head_events": self.head_events, "gripper_events": self.gripper_events,
+                "precapture": None if self.precapture is None else {
+                    "passed": self.precapture.get("passed"), "checked_utc": self.precapture.get("checked_utc"),
+                    "failed": health.failed_lines(self.precapture),
+                    "clock_offset_s": (health.clock_offset(self.precapture) or {}).get("offset_s")},
                 "gripper_aborted": self.gripper_aborted, "pairs": self.pair_count(), "max_pairs": MAX_PAIRS_PER_RUN,
                 "can_download": bool(self.pair_count() or self.sound_count() or self.inventory_count()
                                      or self.teach_count() or self.focus_results)}
@@ -1278,6 +1293,7 @@ class CaptureRun:
                                 "note": "the SDK has no gripper object with open() and close() "
                                         "(reachy_sdk 0.7.0 has joints.r_gripper only)"}),
             "aborted": self.gripper_aborted, "gripper_events": self.gripper_events,
+            "precapture_health": self.precapture, "telemetry": self.telemetry(),
             "files": {"samples": "gripper/samples.csv", "run_record": "gripper/run_record.json"},
         }
 
@@ -1298,7 +1314,8 @@ class CaptureRun:
                                 "focus": zoom.get("focus"),
                                 "observation_skew_ms": record["meta"].get("observation_skew_ms"),
                                 "neck_deg": neck_readback(record["meta"]),
-                                "head_command": record["meta"].get("head_command")})
+                                "head_command": record["meta"].get("head_command"),
+                                "telemetry": capture_telemetry(record["meta"])})
             row = {"index": index, "id": step.id, "label": step.label, "instruction": step.instruction,
                    "distance_m": step.distance_m, "requested_zoom": step.zoom,
                    "requested_head": step.head, "requested_head_deg": head_deg(step.head),
@@ -1323,7 +1340,8 @@ class CaptureRun:
                            teach_results=[_slim_teach(r) for r in self.teach_results.get(step.id, [])])
             steps.append(row)
         summary = {"schema_version": "2", "procedure": self.identity(), "kind": self.procedure.kind,
-                   "calibration_id": self.calibration_id(), "steps": steps, "head_events": self.head_events}
+                   "calibration_id": self.calibration_id(), "steps": steps, "head_events": self.head_events,
+                   "precapture_health": self.precapture, "telemetry": self.telemetry()}
         if self.procedure.kind == "zoom":
             summary["start_zoom"] = self.start_zoom()  # None: not read, unreadable or the eyes differed
             summary["start_lens"] = self.lens_start()  # eye -> {zoom_level, zoom, focus}; None if not both read
@@ -1370,6 +1388,14 @@ class CaptureRun:
             if profile["source"] == "sim":
                 summary["sim_lens"] = profile.get("lens")
         return {"capture.json": json_bytes(summary), **files}
+
+    def telemetry(self) -> dict:
+        """The run's telemetry record (format TELEMETRY_FORMAT_VERSION): the clock offset from the pre-capture
+        health check and the robot's ROS log session folder (a documented null). Per capture, each entry in
+        capture.json carries its own `telemetry` (capture_telemetry)."""
+        report = self.precapture or {}
+        return {"format_version": TELEMETRY_FORMAT_VERSION, "clock_offset": health.clock_offset(report),
+                "ros_log_session": report.get("ros_log_session") or health.ros_log_session()}
 
     def identity(self) -> dict:
         return {"id": self.procedure.id, "name": self.procedure.name, "version": self.procedure.version}
@@ -1424,6 +1450,17 @@ def git_sha() -> str | None:
         return out.stdout.strip() or None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def capture_telemetry(meta: dict) -> dict:
+    """One capture's telemetry: when each eye's frame was received (the viewer's SDK process; monotonic and wall
+    clock), the zoom level, raw zoom and focus last read back per eye, and the neck read-back. None where the
+    source did not record it (the CLI fallbacks hold no lens read-back)."""
+    lens = (meta.get("camera_context") or {}).get("lens")
+    return {"frames_received": meta.get("frames_received"), "lens": lens,
+            "lens_source": "the viewer's last lens read-back (at connection, or after the last lens command or read)"
+            if lens else None,
+            "neck_deg": neck_readback(meta)}
 
 
 def neck_readback(meta: dict) -> dict | None:

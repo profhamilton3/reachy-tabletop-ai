@@ -10,9 +10,10 @@ frame), so the ratio between levels shows the field-of-view change. No arm or he
 
 Without --live-zoom no zoom command is sent (dry run: the commands are only logged). With it,
 each level is an explicit, logged camera-service call; the starting zoom is restored at the end.
-Captures are saved under --out as <eye>_<level>.png with the report, plus capture-bundle.zip: the
-same bundle the viewer's "Data capture" dropdown downloads (docs/DATA_CAPTURE.md), which
-scripts/analyze_capture_bundle.py reads. Steps and the confirm rule come from
+It first runs the read-only pre-capture health check and stops if it fails. Captures are saved
+under --out as <eye>_<level>.png with the report, plus capture-bundle.zip: the same bundle the
+viewer's "Data capture" dropdown downloads (docs/DATA_CAPTURE.md), which scripts/analyze_capture_bundle.py
+reads. Steps and the confirm rule come from
 reachy_ai.perception.procedures; with --live-zoom each zoom command asks for a typed y first.
 """
 
@@ -69,13 +70,14 @@ def main():
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     robot = common.connect()
+    report = common.health_check(robot)  # read-only; exits listing the failed checks
     zoom = ZoomSetter(robot, dry_run=not args.live_zoom, settle_s=args.settle)
     out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M%S")
     out.mkdir(parents=True, exist_ok=True)
     start = {eye: zoom.read(eye) for eye in EYES}
     print("starting zoom:", start, "| zoom commands:", "LIVE" if args.live_zoom else "dry run (not sent)")
     rows = []
-    run = CaptureRun(zoom_fov_procedure(args.levels))
+    run = CaptureRun(zoom_fov_procedure(args.levels), precapture=report)
     run.apply_zoom("zoom_start", zoom, confirmed=True)  # step 0: read-back only, recorded as the starting level
     try:
         for level in args.levels:
@@ -88,8 +90,9 @@ def main():
             if args.live_zoom and not all(c["ok"] for c in commands):
                 print(f"zoom {level}: command not confirmed by readback {commands}; stopping")
                 break
-            frames = dict(zip(EYES, common.fresh_pair(robot)))
-            run.add_capture(step_id, {"pair_id": f"cli-{level}", "camera_context": {
+            left, right, received = common.fresh_pair_received(robot)
+            frames = {"left": left, "right": right}
+            run.add_capture(step_id, {"pair_id": f"cli-{level}", "frames_received": received, "camera_context": {
                 "zoom": {"captured": zoom.read("left") if zoom.read("left") == zoom.read("right") else None,
                          "levels": {eye: zoom.read(eye) for eye in EYES}}}},
                 encode_jpeg(frames["left"]), encode_jpeg(frames["right"]))

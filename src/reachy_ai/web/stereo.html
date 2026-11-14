@@ -151,7 +151,7 @@
       <ul id="capture-steps"></ul>
       <div class="actions"><button id="run-download">Download capture bundle</button>
         <button id="run-discard">Discard run</button></div>
-      <p class="subtle" id="capture-note" role="status" aria-live="polite"></p>
+      <p class="subtle" id="capture-note" role="status" aria-live="polite" style="white-space: pre-line"></p>
     </div>
   </section>
   <section id="t3-panel" aria-label="T3-Analysis">
@@ -601,7 +601,8 @@
     if (!runState) return;
     const proc = procedures.find(p => p.id === runState.procedure.id);
     $('capture-summary').textContent = `${runState.procedure.name} v${runState.procedure.version} · ${runState.procedure.summary}`
-      + ` · zoom commands: ${zoomMode} · head motion: ${headMode} · gripper motion: ${gripperMode}`;
+      + ` · zoom commands: ${zoomMode} · head motion: ${headMode} · gripper motion: ${gripperMode}`
+      + healthSummary(runState.precapture);
     $('capture-instructions').replaceChildren(...(proc?.instructions || []).map(t => Object.assign(document.createElement('li'), {textContent: t})));
     const rows = runState.steps.map(step => {
       const li = document.createElement('li');
@@ -729,6 +730,12 @@
     if (r.mode !== 'live') return r.action === 'release' ? 'gripper release (dry run: logged, not sent)' : 'gripper dry-run';
     return `gripper ${r.outcome}${pos}` + (r.n_samples ? ` · ${r.n_samples} samples` : '');
   }
+  function healthSummary(h) {
+    if (!h) return '';
+    if (!h.passed) return ` · health check FAILED (recorded, not refused): ${h.failed.join('; ')}`;
+    const offset = h.clock_offset_s == null ? '' : `, clock offset ${h.clock_offset_s >= 0 ? '+' : ''}${h.clock_offset_s.toFixed(3)} s`;
+    return ` · health check passed${offset}`;
+  }
   function zoomSummary(commands) {
     const last = commands.at(-1);
     const warn = commands.find(c => c.warning || c.note);
@@ -750,9 +757,13 @@
   $('capture-select').onchange = async event => {
     try {
       if (!event.target.value) { await runApi('', {method: 'DELETE'}); runState = null; note(''); }
-      else { runState = await runApi('', {method: 'POST', headers: {'content-type': 'application/json'},
+      else { note('Checking the robot (pre-capture health check)…');
+             runState = await runApi('', {method: 'POST', headers: {'content-type': 'application/json'},
                                           body: JSON.stringify({procedure: event.target.value})}); note('Run started; nothing is saved on the server.'); }
-    } catch (error) { note(error.message); }
+    } catch (error) {
+      note(error.message);
+      event.target.value = runState?.procedure.id || '';  // a refused procedure leaves the current run as it was
+    }
     renderRun();
   };
   $('run-discard').onclick = async () => { $('capture-select').value = ''; $('capture-select').onchange({target: $('capture-select')}); };

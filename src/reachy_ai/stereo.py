@@ -4,8 +4,9 @@ The SDK owns its camera streaming threads. A single child process contains that
 connection so its blocking startup/first-frame calls can be stopped on timeout.
 No arm or robot-service command is issued here. Four commands exist, all requested
 only by a data-capture procedure after the operator's explicit confirm, all run in the child
-process that owns the connection, one at a time (bounded queues of 1). The zoom queue also carries the
-Robot inventory's read-only request (#62: robot_inventory.sdk_inventory, which only reads):
+process that owns the connection, one at a time (bounded queues of 1). The zoom queue also carries two
+read-only requests: the Robot inventory's (#62: robot_inventory.sdk_inventory) and the pre-capture health check
+(health.precapture.check) that every capture procedure runs when it starts. Both only read:
 
 - a camera zoom level (camera_zoom.ZoomSetter): dry-run (logged only) unless the viewer is started
   with --allow-zoom-commands;
@@ -43,11 +44,14 @@ from typing import Any
 import cv2
 import numpy as np
 
+from reachy_ai.config import PRECAPTURE_MAX_CLOCK_OFFSET_S
+
 LOG = logging.getLogger(__name__)
 EYES = ("left", "right")
 OBSERVATION_QUEUE = 4  # frames and head readbacks in flight; the newest are kept
 ZOOM_QUEUE = HEAD_QUEUE = GRIPPER_QUEUE = 1  # commands in flight to the SDK process; a second one is refused
 INVENTORY_TIMEOUT_S = 90.0  # the inventory's reads are bounded one by one (robot_inventory.READ_TIMEOUT_S)
+HEALTH_TIMEOUT_S = 60.0  # the health check's reads are bounded one by one (config.PRECAPTURE_READ_TIMEOUT_S)
 
 
 class CommandBusy(RuntimeError):
@@ -66,6 +70,7 @@ class StereoSettings:
     restart_seconds: float = 12
     max_pair_skew_ms: float = 250
     zoom_commands: bool = False  # False: a requested zoom or lens (focus) change is only logged (dry-run)
+    max_clock_offset_s: float = PRECAPTURE_MAX_CLOCK_OFFSET_S  # pre-capture health check: robot vs workstation
     focus_settle_s: float = 1.0  # Focus check: wait this long after a lens command before frames are measured
     head_motion: bool = False    # False: a head move is only logged; True still needs REACHY_ENABLE_MOTION
     gripper_motion: bool = False  # False: a gripper move is only logged; True still needs REACHY_ENABLE_MOTION
@@ -78,8 +83,15 @@ class StereoSettings:
             raise ValueError("Preview FPS must be 1–30 and width 160–1920")
         if not 0 <= self.focus_settle_s <= 30:
             raise ValueError("Focus settle delay must be 0-30 seconds")
+        if not 0 < self.max_clock_offset_s <= 600:
+            raise ValueError("The clock offset limit must be above 0 and at most 600 seconds")
         if not 0 < self.stale_seconds < self.restart_seconds or self.max_pair_skew_ms <= 0:
             raise ValueError("Require positive skew and 0 < stale interval < restart interval")
+
+
+def _utc_ns(unix_ns: int) -> str:
+    seconds, nanos = divmod(unix_ns, 1_000_000_000)
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(seconds)) + f".{nanos // 1000:06d}Z"
 
 
 def _source(message):
@@ -221,6 +233,7 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
         from reachy_ai.camera_zoom import LensCommander, ZoomSetter
         setter = ZoomSetter(robot, dry_run=not settings.zoom_commands)
         lens = LensCommander(robot, dry_run=not settings.zoom_commands, settle_s=settings.focus_settle_s)
+        last_health = [None]  # the previous health report on this connection: its frame digests
         while not stop.is_set():
             try:
                 request = commands.get(timeout=0.2)
@@ -228,6 +241,9 @@ def _sdk_worker(settings: StereoSettings, messages, control, stop, commands=None
                 continue
             if request.get("kind") == "inventory":
                 publish(_inventory_result(robot, settings, request))
+                continue
+            if request.get("kind") == "health":
+                publish(_health_result(robot, settings, request, last_health))
                 continue
             if request.get("kind") == "lens":
                 publish(_lens_result(lens, request))
@@ -358,6 +374,20 @@ def _inventory_result(robot, settings, request):
     return {"kind": "inventory_result", "id": request["id"], "inventory": inventory}
 
 
+def _health_result(robot, settings, request, last_health):
+    """The pre-capture health check (health.precapture.check) as a control message. Only reads; never raises.
+
+    The pixel-change rule applies on the robot only: the simulator renders a still scene identically."""
+    from reachy_ai.health import precapture
+    try:
+        report = precapture.check(robot, previous=last_health[0], max_clock_offset_s=settings.max_clock_offset_s,
+                                  require_pixel_change=settings.source == "robot").to_dict()
+    except Exception as exc:  # noqa: BLE001 - report the type only
+        return {"kind": "health_result", "id": request["id"], "error": type(exc).__name__}
+    last_health[0] = report
+    return {"kind": "health_result", "id": request["id"], "report": report}
+
+
 @dataclass(frozen=True)
 class EyeFrame:
     frame_id: str
@@ -393,6 +423,7 @@ class StereoService:
         self._zoom_waits: dict[str, dict] = {}
         self._lens_waits: dict[str, dict] = {}
         self._inventory_waits: dict[str, dict] = {}
+        self._health_waits: dict[str, dict] = {}
         self.head_requests = None
         self.head_halt = None
         self._head_waits: dict[str, dict] = {}
@@ -517,8 +548,9 @@ class StereoService:
                 self._apply_zoom_result(message)
             elif kind == "lens_result":
                 self._apply_lens_result(message)
-            elif kind == "inventory_result":
-                wait = self._inventory_waits.get(message["id"])
+            elif kind in ("inventory_result", "health_result"):
+                waits = self._inventory_waits if kind == "inventory_result" else self._health_waits
+                wait = waits.get(message["id"])
                 if wait is not None:
                     wait["message"] = message
                     wait["event"].set()
@@ -684,6 +716,34 @@ class StereoService:
         if message.get("error"):
             raise RuntimeError(f"Inventory failed ({message['error']})")
         return message["inventory"]
+
+    def request_health(self, timeout_s: float = HEALTH_TIMEOUT_S) -> dict:
+        """The pre-capture health report (health.precapture), from the SDK process that owns the connection.
+
+        Read-only. Raises RuntimeError when the connection has not reported ready (the caller records that as an
+        unreachable SDK) and CommandBusy while a zoom, lens or inventory request is pending (they share a queue)."""
+        with self.lock:
+            ready = self.commands is not None and "sdk_version" in self.diagnostics
+        if not ready:
+            raise RuntimeError("the robot connection is not ready")
+        request_id = uuid.uuid4().hex
+        wait = {"event": threading.Event(), "message": None}
+        with self.lock:
+            self._health_waits[request_id] = wait
+        try:
+            try:
+                self.commands.put_nowait({"id": request_id, "kind": "health"})
+            except queue.Full:
+                raise CommandBusy("A zoom, lens or inventory request is already pending") from None
+            if not wait["event"].wait(timeout_s):
+                raise TimeoutError("no health result from the SDK process")
+        finally:
+            with self.lock:
+                self._health_waits.pop(request_id, None)
+        message = wait["message"]
+        if message.get("error"):
+            raise RuntimeError(f"the health check failed to run ({message['error']})")
+        return message["report"]
 
     def _command_finished(self, message):
         finished = message.get("finished_ns")
@@ -910,6 +970,13 @@ class StereoService:
                                          "settings_at_connection": copy.deepcopy(
                                              {e: self.diagnostics.get(e) for e in EYES})},
                       "frames": dict(self.frames)}
+            # When each eye's frame reached the SDK process, on the wall clock too (observed_ns is monotonic; the
+            # two are related here, once per capture). Source capture times are not available (gRPC drops them).
+            wall_minus_mono = time.time_ns() - time.monotonic_ns()
+            record["frames_received"] = {
+                eye: {"observed_time_ns": f.observed_ns, "received_unix_ns": f.observed_ns + wall_minus_mono,
+                      "received_utc": _utc_ns(f.observed_ns + wall_minus_mono)}
+                for eye, f in record["frames"].items()}
             record["head_command"] = copy.deepcopy(self.last_head_command)
             # Freeze observed readbacks with the pair; never use later live head angles.
             if self.head:
@@ -954,6 +1021,9 @@ def main():
     parser.add_argument("--focus-settle", type=float, default=1.0, metavar="SECONDS",
                         help="Focus check: wait this long after a lens command before measuring sharpness "
                              "(default: 1.0)")
+    parser.add_argument("--max-clock-offset", type=float, default=PRECAPTURE_MAX_CLOCK_OFFSET_S, metavar="SECONDS",
+                        help="pre-capture health check: refuse a capture procedure when the robot's clock is further "
+                             "than this from the workstation's (default: REACHY_MAX_CLOCK_OFFSET_S or 2.0)")
     parser.add_argument("--allow-head-motion", action="store_true",
                         help="let a data-capture procedure move the neck (head only) after the operator's confirm "
                              "in the page; also needs REACHY_ENABLE_MOTION=true (default: dry-run, logged only)")
@@ -977,6 +1047,7 @@ def main():
         fps=args.fps, preview_width=args.preview_width, zoom_commands=args.allow_zoom_commands,
         head_motion=args.allow_head_motion, gripper_motion=args.allow_gripper_motion,
         focus_settle_s=args.focus_settle, t3_history_dir=args.t3_history_dir,
+        max_clock_offset_s=args.max_clock_offset,
     )
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     uvicorn.run(create_app(settings, detector_model=args.detector_model, sim_lens=args.sim_lens,

@@ -64,6 +64,7 @@ def main():
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     robot = common.connect()
+    report = common.health_check(robot)  # read-only; exits listing the failed checks
     depth = PairDepth("robot", calibration=args.calibration)
     if depth.geometry.error:
         sys.exit(depth.geometry.error)
@@ -76,17 +77,18 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     rows = []
     procedure = depth_ruler_procedure(args.distances, args.pairs)
-    run = CaptureRun(procedure)
+    run = CaptureRun(procedure, precapture=report)
     for ruler, step in zip(args.distances, [s for s in procedure.steps if s.distance_m is not None]):
         input(f"{step.instruction.split(' then press')[0]}, then press Enter… ")
         previous, values = (None, None), []
         for i in range(args.pairs):
-            left, right = common.fresh_pair(robot, previous)
+            left, right, received = common.fresh_pair_received(robot, previous)
             previous = (left, right)
             roi = tuple(float(v) for v in args.roi.split(",")) if args.roi else default_roi(right.shape)
             z, item = measure(depth, left, right, roi)
             values.append(z)
-            run.add_capture(step.id, {"pair_id": f"cli-{ruler}-{i}", "camera_context": {"zoom": status}},
+            run.add_capture(step.id, {"pair_id": f"cli-{ruler}-{i}", "frames_received": received,
+                                      "camera_context": {"zoom": status}},
                             encode_jpeg(left), encode_jpeg(right))
             if i == 0:
                 shown = right.copy()

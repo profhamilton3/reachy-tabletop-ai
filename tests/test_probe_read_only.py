@@ -1,12 +1,15 @@
-"""scripts/probe_sdk1.py and scripts/smoke_test_all.py are read-only (#61).
+"""scripts/probe_sdk1.py and scripts/smoke_test_all.py are read-only (#61), and so is the pre-capture health check
+(reachy_ai.health.precapture, and the viewer's SDK-process handler that runs it).
 
 Both run in their default mode against a fake reachy_sdk whose every write is recorded and raises:
 goal_position / compliant assignment, turn_on / turn_off / turn_off_smoothly, look_at, goto, fan on/off,
-camera zoom / focus setters. The scripts catch exceptions per section, so the test asserts on the record,
+camera zoom / focus setters, and any gRPC call on the SDK channel other than the one read the health check makes
+(GetJointsState). The scripts catch exceptions per section, so the test asserts on the record,
 not on a crash. Offline: the SDK, cv2, pycoral and pyaudio imports are all patched."""
 
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -37,9 +40,10 @@ class Recorder:
 class FakeJoint:
     """Reads work; assigning any attribute (goal_position, compliant, torque_limit, ...) or an item is a write."""
 
-    def __init__(self, rec, name, compliant):
+    def __init__(self, rec, name, compliant, uid=0):
         object.__setattr__(self, "_rec", rec)
         object.__setattr__(self, "name", name)
+        object.__setattr__(self, "uid", uid)
         object.__setattr__(self, "present_position", 0.0)
         object.__setattr__(self, "goal_position", 0.0)
         object.__setattr__(self, "compliant", compliant)
@@ -62,7 +66,8 @@ class Holder(dict):
 class FakePart:
     def __init__(self, rec, part_name, compliant):
         self._rec = rec
-        self.joints = Holder((n, FakeJoint(rec, n, compliant)) for n in JOINTS[part_name])
+        first_uid = 0 if part_name == "r_arm" else len(JOINTS["r_arm"])
+        self.joints = Holder((n, FakeJoint(rec, n, compliant, first_uid + i)) for i, n in enumerate(JOINTS[part_name]))
         for name, joint in self.joints.items():
             setattr(self, name, joint)
 
@@ -112,12 +117,38 @@ class FakeFan:
         self._rec.write(f"{self.name}.off()")
 
 
+class FakeChannel:
+    """The SDK's gRPC channel: GetJointsState (a read) answers with the robot's clock; any other RPC is a write."""
+
+    READ = "/reachy.sdk.joint.JointService/GetJointsState"
+
+    def __init__(self, rec, robot_offset_s=0.0):
+        self._rec, self.calls, self.robot_offset_s = rec, [], robot_offset_s
+
+    def _method(self, path, **kwargs):
+        def call(request, timeout=None, **kw):
+            self.calls.append(path)
+            if path != self.READ:
+                self._rec.write(f"rpc {path}")
+            from google.protobuf.timestamp_pb2 import Timestamp
+            from reachy_sdk_api import joint_pb2
+
+            stamp = Timestamp()
+            stamp.FromNanoseconds(int((time.time() + self.robot_offset_s) * 1e9))
+            return joint_pb2.JointsState(ids=list(request.ids), timestamp=stamp)
+        return call
+
+    unary_unary = unary_stream = stream_unary = stream_stream = _method
+
+
 def fake_sdk_module(rec):
     class ReachySDK:
         def __init__(self, host, sdk_port=50051, **kwargs):
             self.r_arm = FakePart(rec, "r_arm", compliant=False)
             self.l_arm = None  # right arm only
             self.head = FakePart(rec, "head", compliant=False)
+            self.joints = Holder({**self.r_arm.joints, **self.head.joints})
+            self._grpc_channel = FakeChannel(rec)
             self.left_camera = FakeCamera(rec, "left_camera")
             self.right_camera = FakeCamera(rec, "right_camera")
             self.force_sensors = types.SimpleNamespace(r_force_gripper=types.SimpleNamespace(force=0.25))
@@ -374,3 +405,83 @@ def test_the_teach_code_has_no_write_calls_in_its_source():
                  ".compliant =", "torque_limit =", "speed_limit =", "gripper_step", "play_leg"):
         assert call not in source, call
     assert procedures.arm_teach_procedure().id not in procedures.PROCEDURES   # not listed until the viewer can run it
+
+
+# --- Pre-capture health check: read-only -------------------------------------------------------------------------
+
+class TickingCamera(FakeCamera):
+    """A live camera: every read is a new decode with new pixels (sensor noise). Setters are still writes."""
+
+    def __init__(self, rec, name):
+        object.__setattr__(self, "_rec", rec)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "_n", 0)
+
+    @property
+    def last_frame(self):
+        object.__setattr__(self, "_n", self._n + 1)
+        return np.full((48, 64, 3), self._n % 256, dtype=np.uint8)
+
+
+def healthy_robot():
+    robot = sys.modules["reachy_sdk"].ReachySDK(host="fake")
+    robot.left_camera, robot.right_camera = TickingCamera(robot.r_arm._rec, "left_camera"), TickingCamera(
+        robot.r_arm._rec, "right_camera")
+    return robot
+
+
+def test_precapture_check_writes_nothing_and_its_only_rpc_is_get_joints_state(rec):
+    from reachy_ai.health import precapture
+
+    robot = healthy_robot()
+    report = precapture.check(robot, frame_timeout_s=0.5)
+    assert rec.writes == []
+    assert report.passed, precapture.failed_lines(report.to_dict())
+    assert robot._grpc_channel.calls == [FakeChannel.READ] * precapture.CLOCK_SAMPLES
+    assert report.check("joints").values["count"] == len(JOINTS["r_arm"]) + len(JOINTS["head"])
+    assert abs(report.check("clock_offset").values["offset_s"]) < 0.5
+
+
+def test_precapture_check_on_a_frozen_and_off_clock_robot_still_writes_nothing(rec):
+    from reachy_ai.health import precapture
+
+    robot = sys.modules["reachy_sdk"].ReachySDK(host="fake")   # the plain fake camera never delivers a new frame
+    robot._grpc_channel.robot_offset_s = 64.0                    # the largest boot-time clock step in the logs
+    object.__setattr__(robot.head.neck_pitch, "present_position", float("nan"))  # test setup, not a write
+    report = precapture.check(robot, frame_timeout_s=0.05)
+    assert rec.writes == []
+    assert sorted(report.to_dict()["failed"]) == ["clock_offset", "joints", "left_frame", "neck", "right_frame"]
+
+
+def test_the_viewer_health_handler_writes_nothing(rec):
+    from reachy_ai.stereo import StereoSettings, _health_result
+
+    robot, last = healthy_robot(), [None]
+    first = _health_result(robot, StereoSettings(source="robot"), {"id": "h1"}, last)
+    second = _health_result(robot, StereoSettings(source="robot"), {"id": "h2"}, last)
+    assert rec.writes == []
+    assert first["report"]["passed"] and second["report"]["passed"] and last[0] is second["report"]
+
+
+def test_the_health_check_has_no_write_calls_in_its_source():
+    import inspect
+
+    from reachy_ai import stereo
+    from reachy_ai.health import precapture
+
+    source = inspect.getsource(precapture) + inspect.getsource(stereo._health_result)
+    for call in (".look_at(", "turn_on(", "turn_off(", "turn_off_smoothly(", "goto(", ".goal_position =",
+                 ".compliant =", "torque_limit =", "speed_limit =", "zoom_level =", ".zoom =", ".focus =",
+                 "zoom_homing(", "autofocus(", "SendJointsCommands", "StreamJointsCommands", ".on()", ".off()",
+                 "primitives"):
+        assert call not in source, call
+
+
+def test_the_fake_channel_catches_a_command_rpc(rec):
+    """Not vacuous: a joint command through the SDK's own stub on the fake channel is recorded as a write."""
+    from reachy_sdk_api import joint_pb2, joint_pb2_grpc
+
+    stub = joint_pb2_grpc.JointServiceStub(FakeChannel(rec))
+    with pytest.raises(WriteAttempt):
+        stub.SendJointsCommands(joint_pb2.JointsCommand())
+    assert rec.writes == ["rpc /reachy.sdk.joint.JointService/SendJointsCommands"]

@@ -66,6 +66,7 @@ compliance, gripper or camera setters); `tests/test_probe_read_only.py` enforces
 | `grounding/depth_to_robot.py` | Camera frame → robot frame transform |
 | `motion/primitives.py` | All deterministic motion functions |
 | `motion/safety.py` | Safety gate — must pass before any motion |
+| `health/precapture.py` | Read-only pre-capture health check; a failure refuses a capture procedure |
 | `telemetry/logger.py` | 50 Hz servo/sensor → HDF5 |
 | `audio/respeaker.py` | ReSpeaker DoA + 4-channel capture |
 

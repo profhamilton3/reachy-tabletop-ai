@@ -148,3 +148,10 @@ ARM_MAX_LOAD: float = 40.0                # |present_load| in the SDK's units, a
 ARM_FK_TOL_M: float = 0.03                # the REST read-back's FK tip against the record's REST tip (item 8)
 ARM_BOARD_CLEARANCE_CM: float = 9.0       # a leg this close to the board (the record's cap) triggers item 7
 ARM_HEAD_FOLLOW_DIFF_DEG: float = 10.0   # SDK head IK vs the record's neck angles: logged above this
+
+# --- Pre-capture health check (health/precapture.py) ---------------------------------------------------
+# The robot's clock against the workstation's: a capture procedure is refused when they differ by more than
+# this. The robot's ROS logs show boot-time clock steps of up to 64 s (Reachy-Lab reachy-1-2-ros findings 3.6).
+PRECAPTURE_MAX_CLOCK_OFFSET_S: float = float(os.environ.get("REACHY_MAX_CLOCK_OFFSET_S", "2.0"))
+PRECAPTURE_FRAME_TIMEOUT_S: float = 2.0   # each eye must deliver a new frame within this
+PRECAPTURE_READ_TIMEOUT_S: float = 2.0    # each SDK read (and the clock round trip) is bounded by this

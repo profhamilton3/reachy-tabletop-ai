@@ -24,6 +24,7 @@ from reachy_ai.perception.stereo_depth import PairDepth
 from reachy_ai.stereo import StereoService, StereoSettings
 from reachy_ai.stereo_app import create_app
 from tests.focus_fakes import FakeLens
+from tests.health_fakes import healthy
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -275,6 +276,7 @@ def viewer(source="robot", level="OUT"):
         return {"action": "stop", "mode": "dry-run", "outcome": "dry-run", "readback_deg": None}
 
     service.request_head, service.request_head_stop = request_head, request_head_stop
+    healthy(service)  # the SDK process's answer to the pre-capture health check: a healthy robot
     return service, TestClient(create_app(service.settings, service))
 
 
