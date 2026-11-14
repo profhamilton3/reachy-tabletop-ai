@@ -74,6 +74,8 @@ the force sensor's drift.
 | `sdk_open_close` | `{outcome, note}`: where the SDK's `gripper.open()` / `close()` go. `reachy_sdk` 0.7.0 has no gripper object, so `skipped` with the reason |
 | `aborted` | the outcome that ended the run's moves, or `null` |
 | `gripper_events` | Stop records between steps |
+| `precapture_health` | the pre-capture health report the run started with (`docs/DATA_CAPTURE.md`, *Pre-capture health check*); added without a version change: a reader of version 1 may ignore it |
+| `telemetry` | the run's telemetry record: `clock_offset` and `ros_log_session` (same section) |
 | `files` | the paths of the samples and this record |
 
 ## Move outcomes (`capture.json` → step → `gripper_commands[].outcome`)
