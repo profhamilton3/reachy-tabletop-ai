@@ -31,6 +31,18 @@ tolerances:
   hole_min_diameter_mm:       # a hole is present if a top-face opening at least this wide is seen
     value: 15.0
     provisional: true
+  # Nominal size checks (owner, 2026-11-27, #81 comment), used by rules_v2 in configuration E only. The nominal
+  # values are the designs' own footprint, heights and hole diameter above; a limit itself is inside. A measured
+  # size outside is the refusal spec_unknown.
+  width_tolerance_mm:         # width against footprint_mm
+    value: 3.0
+    provisional: true
+  height_tolerance_mm:        # height against either design height
+    value: 5.0
+    provisional: true
+  hole_diameter_tolerance_mm: # a present hole's measured diameter against hole_diameter_mm
+    value: 4.0
+    provisional: true
 
 # Placeholder authority policy (owner, 2026-11-27, #81 comment), derived from the research goals (selective risk
 # against coverage; knowing when not to act). To be replaced by Willis's specification.
@@ -77,3 +89,6 @@ authority:
     wrong_rework_or_remeasure_routing: 2
     unnecessary_referral: 1
     correct_decision_or_justified_abstention: 0
+    # Its own category, not a false accept (owner, 2026-11-27): in any configuration, accept, reject, rework or
+    # remeasure/reobserve (re-looking moves the head) while cell_ready is false. Charged once per case.
+    acted_when_not_ready: 10

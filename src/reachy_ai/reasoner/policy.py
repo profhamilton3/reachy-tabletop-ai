@@ -9,8 +9,13 @@ Two halves:
 A decision is a proposal. Its destination is a name; the safety gates and the operator decide whether anything
 may move. A and B skip Stage 0 (cell health) by design: they are ablation baselines.
 
-Not covered by the #81 rules, so `decide()` does not look at them: observation.orientation, observation.width_mm,
-observation.colour, case.expected_design_id and twin.
+The default rules file is rules_v2 (owner decisions on #81, 2026-11-27). It changes E only: E also reads
+observation.orientation, observation.width_mm, case.expected_design_id and twin.path_feasibility. A and B read
+none of them. No configuration reads observation.colour or twin.part_pose. `load_policy(rules_file=RULES_V1_FILE)`
+loads the earlier rules.
+
+A decision's first reason is the rule or gate that decided it. A further reason records a check that was skipped,
+or, after a gate's refusal, the disposition that could not be carried out.
 """
 from __future__ import annotations
 
@@ -24,12 +29,18 @@ import yaml
 from reachy_ai.reasoner import contract as c
 
 POLICY_DIR = Path(__file__).resolve().parents[3] / "config" / "disposition"
-SPEC_FILE, RULES_FILE, SPLIT_FILE = "spec_v1.yaml", "rules_v1.yaml", "split_v0.yaml"
+SPEC_FILE, RULES_FILE, SPLIT_FILE = "spec_v1.yaml", "rules_v2.yaml", "split_v0.yaml"
+RULES_V1_FILE = "rules_v1.yaml"  # superseded, kept for traceability
 
 SHAPES = ("block", "cylinder")
 HEIGHT_CLASSES = ("short", "tall")
 DECIDING_FEATURES = ("shape", "height", "hole")
-RULE_KINDS = ("stage0_cell_ready", "sufficiency", "height_bounds", "classify", "unmatched")
+#: A gate checks the decision the rules reached; the other kinds are rules, and the first that fires wins.
+GATE_KINDS = ("twin_feasibility",)
+RULE_KINDS = ("stage0_cell_ready", "missing_measurement", "sufficiency", "orientation", "height_bounds",
+              "nominal_size", "expected_design", "classify", "unmatched") + GATE_KINDS
+TOLERANCES = ("height_class_boundary_mm", "hole_min_diameter_mm", "width_tolerance_mm", "height_tolerance_mm",
+              "hole_diameter_tolerance_mm")
 
 
 class PolicyError(ValueError):
@@ -110,6 +121,9 @@ class Spec:
     designs: tuple[Design, ...]
     height_class_boundary_mm: float
     hole_min_diameter_mm: float
+    width_tolerance_mm: float
+    height_tolerance_mm: float
+    hole_diameter_tolerance_mm: float
     approved_rework_operation: bool
     quality_authority: str
     authority: dict
@@ -160,7 +174,7 @@ def _load_spec(path: Path) -> Spec:
     families = [(d.shape, d.height_class, d.hole_diameter_mm is not None) for d in designs]
     _require(len(set(families)) == len(families), w, "two designs have the same shape, height class and hole")
 
-    tolerances = _keys(w + ".tolerances", data["tolerances"], ("height_class_boundary_mm", "hole_min_diameter_mm"))
+    tolerances = _keys(w + ".tolerances", data["tolerances"], TOLERANCES)
     values = {}
     for name, entry in tolerances.items():
         _keys(f"{w}.tolerances.{name}", entry, ("value", "provisional"))
@@ -172,9 +186,7 @@ def _load_spec(path: Path) -> Spec:
                        "refusals", "scoring_costs"))
     _require(isinstance(authority["approved_rework_operation"], bool), w + ".authority",
              "approved_rework_operation must be true or false")
-    spec = Spec(version=data["version"], provisional=data["provisional"], designs=tuple(designs),
-                height_class_boundary_mm=values["height_class_boundary_mm"],
-                hole_min_diameter_mm=values["hole_min_diameter_mm"],
+    spec = Spec(version=data["version"], provisional=data["provisional"], designs=tuple(designs), **values,
                 approved_rework_operation=authority["approved_rework_operation"],
                 quality_authority=authority["quality_authority"], authority=authority, sha256=sha)
     for row in spec.designs:
@@ -199,7 +211,11 @@ class Rules:
     max_reobservations: int
     hides: dict[str, tuple[str, ...]]
     configurations: dict[str, tuple[str, ...]]
+    gates: dict[str, tuple[str, ...]]
     sha256: str
+
+    def gates_for(self, configuration: str) -> tuple[Rule, ...]:
+        return tuple(self.rules[rule_id] for rule_id in self.gates.get(configuration, ()))
 
     def sequence(self, configuration: str) -> tuple[Rule, ...]:
         if configuration not in self.configurations:
@@ -211,7 +227,7 @@ class Rules:
 def _load_rules(path: Path) -> Rules:
     data, sha = _read(path)
     w = path.name
-    _keys(w, data, ("version", "rules", "max_reobservations", "sufficiency", "configurations"))
+    _keys(w, data, ("version", "rules", "max_reobservations", "sufficiency", "configurations"), ("gates",))
     rules: dict[str, Rule] = {}
     for row in _entries(w + ".rules", data["rules"]):
         _keys(w + ".rules", row, ("id", "kind", "text"))
@@ -233,9 +249,18 @@ def _load_rules(path: Path) -> Rules:
         _require(set(ids) <= set(rules), where, "names a rule that is not listed")
         _require(len(set(ids)) == len(ids), where, "names a rule twice")
         _require(rules[ids[-1]].kind == "unmatched", where, "must end with the unmatched rule")
+        _require(not [i for i in ids if rules[i].kind in GATE_KINDS], where, "a gate belongs under gates")
+    gates = _keys(w + ".gates", data.get("gates", {}), (), c.DETERMINISTIC_CONFIGURATIONS)
+    for name, ids in gates.items():
+        where = f"{w}.gates.{name}"
+        _entries(where, ids)
+        _require(set(ids) <= set(rules), where, "names a rule that is not listed")
+        _require(len(set(ids)) == len(ids), where, "names a rule twice")
+        _require(all(rules[i].kind in GATE_KINDS for i in ids), where, "only a gate may be listed here")
     return Rules(version=data["version"], rules=rules, max_reobservations=limit,
                  hides={k: tuple(v) for k, v in hides.items()},
-                 configurations={k: tuple(v) for k, v in configurations.items()}, sha256=sha)
+                 configurations={k: tuple(v) for k, v in configurations.items()},
+                 gates={k: tuple(v) for k, v in gates.items()}, sha256=sha)
 
 
 # ---------------------------------------------------------------- split
@@ -302,10 +327,10 @@ class Policy:
                               split_sha256=self.split.sha256)
 
 
-def load_policy(directory: Path | str = POLICY_DIR) -> Policy:
+def load_policy(directory: Path | str = POLICY_DIR, rules_file: str = RULES_FILE) -> Policy:
     directory = Path(directory)
     spec = _load_spec(directory / SPEC_FILE)
-    return Policy(spec=spec, rules=_load_rules(directory / RULES_FILE),
+    return Policy(spec=spec, rules=_load_rules(directory / rules_file),
                   split=load_split(directory / SPLIT_FILE, tuple(d.design for d in spec.designs)))
 
 
@@ -362,6 +387,18 @@ def _stage0(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outcome
     return _Outcome(None, "cell_not_ready", None, f"cell_ready is false; {why}.")
 
 
+def _missing_measurement(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outcome | None:
+    observation = request.observation
+    absent = (("width", observation.width_mm is None),
+              ("height", observation.height_mm is None),
+              ("hole diameter", observation.hole.state == "present" and observation.hole.diameter_mm is None),
+              ("orientation", observation.orientation == "unknown"))
+    names = [name for name, is_missing in absent if is_missing]
+    if not names:
+        return None
+    return _remeasure(policy, request, f"Missing measurement(s): {', '.join(names)}.", can_reobserve)
+
+
 def _sufficiency(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outcome | None:
     deciding = {"shape", "height"}
     if _hole_is_deciding(policy.spec, request.observation):
@@ -373,11 +410,83 @@ def _sufficiency(policy: Policy, request: c.Request, can_reobserve: bool) -> _Ou
     return _remeasure(policy, request, f"A deciding feature is hidden ({', '.join(hiding)}).", can_reobserve)
 
 
+def _orientation(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outcome | None:
+    orientation = request.observation.orientation
+    if orientation == "upright":
+        return None
+    why = f"Orientation is {orientation}: the spec's heights assume an upright part."
+    return _remeasure(policy, request, why, can_reobserve)
+
+
 def _height_bounds(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outcome | None:
     height, boundary = request.observation.height_mm, policy.spec.height_class_boundary_mm
     if height is None or not height.value - height.bound <= boundary <= height.value + height.bound:
         return None
     why = (f"Height {height.value:g} +- {height.bound:g} mm straddles the class boundary {boundary:g} mm.")
+    return _remeasure(policy, request, why, can_reobserve)
+
+
+def _against(measured: c.Measurement, nominals: set, tolerance: float) -> str:
+    """Where measured value +- bound lies against nominal +- tolerance: "inside" one such band, "outside" all of
+    them, or "straddles" a limit. A limit itself is inside."""
+    low, high, slack = measured.value - measured.bound, measured.value + measured.bound, tolerance + 1e-9
+    if any(nominal - slack <= low and high <= nominal + slack for nominal in nominals):
+        return "inside"
+    if all(high < nominal - slack or low > nominal + slack for nominal in nominals):
+        return "outside"
+    return "straddles"
+
+
+def _nominal_size(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outcome | None:
+    spec, observation = policy.spec, request.observation
+    hole = observation.hole.diameter_mm  # the contract allows one only for a present hole
+    checks = (
+        ("width", observation.width_mm, {d.footprint_mm for d in spec.designs}, spec.width_tolerance_mm),
+        ("height", observation.height_mm, {d.height_mm for d in spec.designs}, spec.height_tolerance_mm),
+        ("hole diameter", hole, {d.hole_diameter_mm for d in spec.designs if d.hole_diameter_mm is not None},
+         spec.hole_diameter_tolerance_mm),
+    )
+    found: dict[str, list[str]] = {"outside": [], "straddles": []}
+    for name, measured, nominals, tolerance in checks:
+        if measured is None:  # a size this configuration needs and lacks is the missing-measurement rule's
+            continue
+        place = _against(measured, nominals, tolerance)
+        if place != "inside":
+            found[place].append(
+                f"{name} {measured.value:g} +- {measured.bound:g} mm (nominal "
+                f"{' or '.join(format(n, 'g') for n in sorted(nominals))} +- {tolerance:g} mm)")
+    if found["outside"]:
+        return _Outcome(None, "spec_unknown", None,
+                        f"Wholly outside the nominal sizes of {spec.version}: {'; '.join(found['outside'])}. Refer.")
+    if found["straddles"]:
+        why = f"Straddles a nominal size limit of {spec.version}: {'; '.join(found['straddles'])}."
+        return _remeasure(policy, request, why, can_reobserve)
+    return None
+
+
+def _expected_design(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outcome | None:
+    """Only what is known can disagree: an unknown kind, height or hole is not an inconsistency."""
+    spec, observation, expected = policy.spec, request.observation, request.case.expected_design_id
+    if expected is None:
+        return None
+    try:
+        row = spec.design(expected)
+    except KeyError:
+        return _Outcome(None, "spec_unknown", None,
+                        f"Expected design {expected} is not in {spec.version}, so the observation cannot be "
+                        "checked against it. Refer.")
+    shape, height_class = _family(spec, observation)
+    hole = _effective_hole(spec, observation.hole)
+    differs = []
+    if shape is not None and shape != row.shape:
+        differs.append(f"kind {shape}, expected {row.shape}")
+    if height_class is not None and height_class != row.height_class:
+        differs.append(f"height class {height_class}, expected {row.height_class}")
+    if hole != "unknown" and (hole == "present") != (row.hole_diameter_mm is not None):
+        differs.append(f"hole {hole}, expected {'absent' if row.hole_diameter_mm is None else 'present'}")
+    if not differs:
+        return None
+    why = f"The observation is inconsistent with expected design {expected}: {'; '.join(differs)}."
     return _remeasure(policy, request, why, can_reobserve)
 
 
@@ -413,8 +522,12 @@ def _unmatched(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outc
 
 _APPLY = {
     "stage0_cell_ready": _stage0,
+    "missing_measurement": _missing_measurement,
     "sufficiency": _sufficiency,
+    "orientation": _orientation,
     "height_bounds": _height_bounds,
+    "nominal_size": _nominal_size,
+    "expected_design": _expected_design,
     "classify": _classify,
     "unmatched": _unmatched,
 }
@@ -423,8 +536,24 @@ _APPLY = {
 _DESTINATION = {"accept": "left_tray", "reject": "right_tray", "rework": "rework_tray"}
 
 
+def _twin_feasibility(request: c.Request, destination: str) -> tuple[str | None, str]:
+    """(the refusal if the part cannot be sent there, else None; why, or "" with nothing to record)."""
+    if request.twin is None:
+        return None, f"The twin block is null: the feasibility check for {destination} was skipped."
+    feasibility = dict(request.twin.path_feasibility or ())
+    if destination not in feasibility:
+        return "insufficient_evidence", f"twin feasibility missing for {destination}"
+    if feasibility[destination]:
+        return None, ""
+    return "beyond_capability", f"The twin block says {destination} is infeasible."
+
+
+_GATES = {"twin_feasibility": _twin_feasibility}
+
+
 def decide(request: c.Request, policy: Policy, configuration: str, code_sha: str) -> c.Decision:
-    """The decision of a deterministic configuration (A, B or E). The first rule that fires wins.
+    """The decision of a deterministic configuration (A, B or E). The first rule that fires wins; then the
+    configuration's gates check the destination of the decision it reached.
 
     Re-observation belongs to the configurations that contain the sufficiency rule (B and E). In A, a spec
     disposition of remeasure goes straight to refer."""
@@ -436,9 +565,22 @@ def decide(request: c.Request, policy: Policy, configuration: str, code_sha: str
             break
     else:  # unreachable with a loaded policy: every sequence ends in the unmatched rule
         raise PolicyError(f"configuration {configuration}: no rule fired")
+    reasons = [c.Reason(rule_id=rule.id, text=outcome.text)]
+    for gate in policy.rules.gates_for(configuration):
+        destination = _DESTINATION.get(outcome.disposition)
+        if destination is None:  # a remeasure or a refusal goes nowhere: nothing to check
+            continue
+        refusal, why = _GATES[gate.kind](request, destination)
+        if refusal is not None:  # the gate decides; the disposition it stopped stays as the next reason
+            if refusal == "beyond_capability":  # the other refusal's reason is the owner's wording, as given
+                why += f" The {outcome.disposition} that {reasons[0].rule_id} reached cannot be carried out. Refer."
+            outcome = _Outcome(None, refusal, None, why)
+            reasons.insert(0, c.Reason(rule_id=gate.id, text=why))
+        elif why:
+            reasons.append(c.Reason(rule_id=gate.id, text=why))
     return c.Decision(
         request_id=request.request_id, configuration=configuration, disposition=outcome.disposition,
         refusal=outcome.refusal, remeasure_route=outcome.route,
         destination=_DESTINATION.get(outcome.disposition, "none"),
-        reasons=(c.Reason(rule_id=rule.id, text=outcome.text),), confidence=None, policy=policy.hashes(),
+        reasons=tuple(reasons), confidence=None, policy=policy.hashes(),
         model_id=None, code_sha=code_sha, adjudication=None)

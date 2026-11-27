@@ -17,6 +17,17 @@ are logged rows. The reports and the CSV export include held-out results: they a
 A case_id is one presentation of a part: its re-observations share it, and a repeated trial needs a new one.
 The latest recorded decision of a case under one policy version is that case's final decision.
 
+Correct answers (owner, 2026-11-27) come only from sim truth, for a case whose source is sim, or from an
+operator with an adjudication record. add_outcome() refuses anything else, and nothing is inferred.
+
+Scoring (owner decisions on #81, 2026-11-27):
+- a pending case, awaiting another look or a correct answer, counts as not decided autonomously: it stays in
+  coverage's denominator and is listed separately;
+- acting on a cell that is not ready is its own error, acted_when_not_ready, not a false accept: accept, reject,
+  rework or remeasure/reobserve (re-looking moves the head) while the request's cell_ready was false, in any
+  configuration. Every decision of a case is looked at, not only the final one, and the case is charged once. It
+  needs no correct answer. The confusion table is about part quality only.
+
 No motion, SDK or network.
 """
 from __future__ import annotations
@@ -42,8 +53,9 @@ OUTCOME_SOURCES = ("sim_truth", "operator")
 COMMITTED = ("accept", "rework", "reject")
 #: The scoring_costs keys of spec_v1.yaml's authority block.
 COST_KEYS = ("false_accept", "false_reject_or_scrap_of_good_part", "wrong_rework_or_remeasure_routing",
-             "unnecessary_referral", "correct_decision_or_justified_abstention")
+             "unnecessary_referral", "correct_decision_or_justified_abstention", "acted_when_not_ready")
 CORRECT = "correct_decision_or_justified_abstention"
+ACTED_WHEN_NOT_READY = "acted_when_not_ready"
 
 #: What makes two decisions the work of one policy version.
 POLICY_COLUMNS = ("configuration", "spec_sha256", "rules_sha256", "prompt_sha256", "split_sha256", "model_id")
@@ -191,9 +203,16 @@ def _label(disposition: str | None, refusal: str | None, route: str | None = Non
     return disposition if route is None else f"{disposition}:{route}"
 
 
+def _acted_when_not_ready(row: Mapping[str, Any]) -> bool:
+    """A decision that acts, on a cell that was not ready. A referral and a refusal move nothing."""
+    acts = row["disposition"] in COMMITTED or row["remeasure_route"] == "reobserve"
+    return acts and not row["cell_ready"]
+
+
 def cost_key(disposition: str | None, refusal: str | None, reference_disposition: str | None,
              reference_refusal: str | None) -> str:
-    """Which row of the scoring-cost table a final decision falls in, against the reference answer.
+    """Which row of the scoring-cost table a final decision falls in on part quality, against the reference
+    answer. acted_when_not_ready is not decided here: it needs no reference.
 
     An abstention is a refusal or a remeasure. It is justified when the reference answer is also an abstention
     (a refusal, or a part the spec says to remeasure); the two need not name the same reason."""
@@ -220,9 +239,15 @@ def _ratio(numerator: float, denominator: int) -> float | None:
     return None if denominator == 0 else numerator / denominator
 
 
-def _selective(committed: list, graded: int) -> dict:
-    """Coverage and risk over `committed`, a list of (confidence, cost_key, cost)."""
-    return {"committed": len(committed), "coverage": _ratio(len(committed), graded),
+def _pending(awaiting_look: list[str], awaiting_reference: list[str]) -> dict:
+    return {"pending": len(awaiting_look) + len(awaiting_reference),
+            "pending_cases": {"awaiting_look": sorted(awaiting_look),
+                              "awaiting_reference": sorted(awaiting_reference)}}
+
+
+def _selective(committed: list, cases: int) -> dict:
+    """Coverage of all `cases`, and risk over `committed`, a list of (confidence, cost_key, cost)."""
+    return {"committed": len(committed), "coverage": _ratio(len(committed), cases),
             "selective_error_rate": _ratio(sum(1 for _, key, _ in committed if key != CORRECT), len(committed)),
             "selective_cost": _ratio(sum(cost for _, _, cost in committed), len(committed))}
 
@@ -398,8 +423,10 @@ class DecisionStore:
         """Append an outcome of a decision; returns the outcome_id. A correction is another call.
 
         The reference is the right answer for the case: a disposition, or the refusal that was right. An
-        operator whose reference differs from the decision is overriding it, which needs an adjudication with
-        a reason (spec_v1 authority). The operator rating travels in the adjudication."""
+        operator's reference needs an adjudication record, even when it agrees with the decision; one that
+        differs is an override, whose adjudication must also give a reason (spec_v1 authority). A sim_truth
+        reference is accepted only when every request of the case came from the sim. The operator rating travels
+        in the adjudication."""
         if source not in OUTCOME_SOURCES:
             raise DecisionStoreError(f"outcome source {source!r} is not one of {', '.join(OUTCOME_SOURCES)}")
         if reference_disposition is not None and reference_refusal is not None:
@@ -424,6 +451,17 @@ class DecisionStore:
                 if adjudication is None or adjudication.human_adjudication_notes is None:
                     raise DecisionStoreError(f"an operator override ({decided} -> {reference}) needs an "
                                              "adjudication with human_adjudication_notes")
+            if source == "operator" and reference is not None and adjudication is None:
+                raise DecisionStoreError("an operator answer needs an adjudication record (the Appendix A fields "
+                                         "and the adjudicator), even when it agrees with the decision")
+            if source == "sim_truth" and reference is not None:
+                real = self._query(
+                    "SELECT other.case_id, other.source FROM decisions d JOIN requests r USING (request_id) "
+                    "JOIN requests other ON other.case_id = r.case_id "
+                    "WHERE d.decision_id=? AND other.source != 'sim' LIMIT 1", (decision_id,))
+                if real:
+                    raise DecisionStoreError(f"a sim_truth answer is accepted only for a case whose source is sim: "
+                                             f"case {real[0]['case_id']} has a {real[0]['source']} request")
             return self._insert("outcomes", {
                 "decision_id": decision_id, "source": source,
                 "reference_disposition": reference_disposition, "reference_refusal": reference_refusal,
@@ -473,8 +511,9 @@ class DecisionStore:
     def cases_for_tuning(self, splits: tuple[str, ...] = ("development",)) -> list[TuningCase]:
         """The cases that may feed a policy change: development only.
 
-        Asking for held-out ones raises, whether or not a policy is frozen. #82 requires that while none is;
-        it states nothing for the frozen state, so the guard stays closed there too."""
+        Asking for held-out ones raises, whether or not a policy is frozen (owner, 2026-11-27, #81). Using them
+        for a next version needs an explicit, logged unfreeze after the trials. unfreeze_for_next_version() logs
+        that, but this accessor does not open afterwards: no method here releases held-out cases for tuning."""
         splits = (splits,) if isinstance(splits, str) else tuple(splits)
         unknown = [s for s in splits if s not in c.SPLITS]
         if unknown:
@@ -505,9 +544,12 @@ class DecisionStore:
 
     def _joined(self) -> list[dict]:
         """Each decision with its request's columns, in decision order. Both tables have a recorded_utc, so the
-        decision's is selected under its own name."""
-        return self._query("SELECT r.*, d.*, d.recorded_utc AS decision_recorded_utc FROM decisions d "
+        decision's is selected under its own name. cell_ready is read from the stored request."""
+        rows = self._query("SELECT r.*, d.*, d.recorded_utc AS decision_recorded_utc FROM decisions d "
                            "JOIN requests r USING (request_id) ORDER BY d.decision_id")
+        for row in rows:
+            row["cell_ready"] = json.loads(row["request_json"])["health"]["cell_ready"]
+        return rows
 
     def _references(self, reference_source: str | None) -> tuple[dict, set]:
         """decision_id -> (reference_disposition, reference_refusal) from the latest outcome that states one,
@@ -525,39 +567,43 @@ class DecisionStore:
         conflicts = {key for key, values in by_source.items() if len(set(values.values())) > 1}
         return latest, conflicts
 
-    def _final_by_group(self) -> list[tuple[dict, list[dict], int]]:
-        """(group, the final decision row of each of its cases, how many decisions the group has)."""
+    def _final_by_group(self) -> list[tuple[dict, list[dict], list[dict]]]:
+        """(group, the final decision row of each of its cases, every decision row of the group)."""
         groups: dict[tuple, dict] = {}
-        counts: dict[tuple, int] = {}
+        every: dict[tuple, list] = {}
         for row in self._joined():
             key = tuple(row[column] for column in GROUP_COLUMNS)
             groups.setdefault(key, {})[row["case_id"]] = row  # rows are in decision_id order: the last wins
-            counts[key] = counts.get(key, 0) + 1
+            every.setdefault(key, []).append(row)
         ordered = sorted(groups, key=lambda k: tuple("" if v is None else v for v in k))
-        return [(dict(zip(GROUP_COLUMNS, key)), list(groups[key].values()), counts[key]) for key in ordered]
+        return [(dict(zip(GROUP_COLUMNS, key)), list(groups[key].values()), every[key]) for key in ordered]
 
     def confusion_table(self, *, reference_source: str | None = None) -> list[dict]:
         """One entry per policy version and split: counts[reference answer][final decision].
 
-        `pending` cases still await a re-observation and `ungraded` ones have no reference; neither is counted."""
+        It is about part quality only: acting on a cell that was not ready is reported by risk_coverage().
+        `pending` cases still await a re-observation or a reference; they are listed in `pending_cases` and are
+        not in `counts`."""
         references, conflicts = self._references(reference_source)
         report = []
-        for group, finals, decisions in self._final_by_group():
+        for group, finals, rows in self._final_by_group():
             counts: dict[str, dict[str, int]] = {}
-            pending = ungraded = graded = 0
+            awaiting_look: list[str] = []
+            awaiting_reference: list[str] = []
+            graded = 0
             for row in finals:
                 if row["remeasure_route"] == "reobserve":
-                    pending += 1
+                    awaiting_look.append(row["case_id"])
                     continue
                 if row["decision_id"] not in references:
-                    ungraded += 1
+                    awaiting_reference.append(row["case_id"])
                     continue
                 graded += 1
                 answer = _label(row["disposition"], row["refusal"], row["remeasure_route"])
                 line = counts.setdefault(_label(*references[row["decision_id"]]), {})
                 line[answer] = line.get(answer, 0) + 1
-            report.append({**group, "decisions": decisions, "cases": len(finals), "pending": pending,
-                           "ungraded": ungraded, "graded": graded,
+            report.append({**group, "decisions": len(rows), "cases": len(finals), "graded": graded,
+                           **_pending(awaiting_look, awaiting_reference),
                            "reference_conflicts": sum(1 for r in finals if r["decision_id"] in conflicts),
                            "counts": counts})
         return report
@@ -565,41 +611,54 @@ class DecisionStore:
     def risk_coverage(self, costs: Mapping[str, Any], *, reference_source: str | None = None) -> list[dict]:
         """Selective risk against coverage, per policy version and split.
 
-        Over each case's final decision that has a reference: coverage is the share that committed to accept,
-        rework or reject; the selective risk is the error rate, and the mean cost, over those. `mean_cost` is
-        over all graded cases, so it also charges unnecessary referrals. `costs` is the spec's
-        authority.scoring_costs. A figure with nothing to divide by is None.
+        One result per case, from its final decision, except that a case in which any decision acted on a cell
+        that was not ready is charged acted_when_not_ready instead of a part-quality cost; the block of that
+        name lists those cases and counts the decisions that acted. A case is `graded` when it is charged that
+        or its final decision has a reference; every other case is `pending`, awaiting a re-observation or a
+        reference. `committed` are the graded cases whose final decision is accept, rework or reject, and
+        `abstained` those ending in a referral or a refusal (a graded case still awaiting a re-look is neither).
+        Coverage is the committed share of ALL cases, so a pending case counts as not decided autonomously. The
+        selective risk is the error rate, and the mean cost, over the committed cases. `mean_cost` is over the
+        graded cases, so it also charges unnecessary referrals. `costs` is the spec's authority.scoring_costs. A
+        figure with nothing to divide by is None.
 
         `curve` lowers a confidence threshold over the committed decisions. It is empty unless every committed
         decision has a confidence (A, B and E have none, so each is one point)."""
         table = _check_costs(costs)
         references, conflicts = self._references(reference_source)
         report = []
-        for group, finals, decisions in self._final_by_group():
-            pending = ungraded = 0
-            scored = []  # (committed?, confidence, cost key, cost)
+        for group, finals, rows in self._final_by_group():
+            acted = [row for row in rows if _acted_when_not_ready(row)]
+            acted_cases = {row["case_id"] for row in acted}
+            awaiting_look: list[str] = []
+            awaiting_reference: list[str] = []
+            scored = []  # (final decision row, cost key)
             for row in finals:
-                if row["remeasure_route"] == "reobserve":
-                    pending += 1
+                if row["case_id"] in acted_cases:
+                    scored.append((row, ACTED_WHEN_NOT_READY))
+                elif row["remeasure_route"] == "reobserve":
+                    awaiting_look.append(row["case_id"])
                 elif row["decision_id"] not in references:
-                    ungraded += 1
+                    awaiting_reference.append(row["case_id"])
                 else:
-                    key = cost_key(row["disposition"], row["refusal"], *references[row["decision_id"]])
-                    scored.append((row["disposition"] in COMMITTED, row["confidence"], key, table[key]))
-            committed = [(confidence, key, cost) for is_committed, confidence, key, cost in scored if is_committed]
+                    scored.append((row, cost_key(row["disposition"], row["refusal"], *references[row["decision_id"]])))
+            committed = [(row["confidence"], key, table[key]) for row, key in scored if row["disposition"] in COMMITTED]
+            abstained = sum(1 for row, _ in scored
+                            if row["refusal"] is not None or row["remeasure_route"] == "refer")
             curve = []
             if committed and all(confidence is not None for confidence, _, _ in committed):
                 for threshold in sorted({confidence for confidence, _, _ in committed}, reverse=True):
                     above = [item for item in committed if item[0] >= threshold]
-                    curve.append({"threshold": threshold, **_selective(above, len(scored))})
+                    curve.append({"threshold": threshold, **_selective(above, len(finals))})
             by_cost_key: dict[str, int] = {}
-            for _, _, key, _ in scored:
+            for _, key in scored:
                 by_cost_key[key] = by_cost_key.get(key, 0) + 1
-            report.append({**group, "decisions": decisions, "cases": len(finals), "pending": pending,
-                           "ungraded": ungraded, "graded": len(scored), "abstained": len(scored) - len(committed),
+            report.append({**group, "decisions": len(rows), "cases": len(finals), "graded": len(scored),
+                           **_pending(awaiting_look, awaiting_reference), "abstained": abstained,
+                           ACTED_WHEN_NOT_READY: {"cases": sorted(acted_cases), "decisions": len(acted)},
                            "reference_conflicts": sum(1 for r in finals if r["decision_id"] in conflicts),
-                           **_selective(committed, len(scored)),
-                           "mean_cost": _ratio(sum(item[3] for item in scored), len(scored)),
+                           **_selective(committed, len(finals)),
+                           "mean_cost": _ratio(sum(table[key] for _, key in scored), len(scored)),
                            "by_cost_key": by_cost_key, "curve": curve})
         return report
 

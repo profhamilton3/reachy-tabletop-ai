@@ -222,7 +222,51 @@ def test_an_operator_override_needs_an_adjudication_with_a_reason(store, given):
     with pytest.raises(s.DecisionStoreError, match="override"):
         store.add_outcome(decision_id, "operator", reference_disposition="reject", adjudication=given)
     assert store.outcomes(decision_id) == []
-    store.add_outcome(decision_id, "operator", reference_disposition="accept")  # agreeing is no override
+    # agreeing is no override, so no notes are needed, but an answer still needs the adjudication record
+    store.add_outcome(decision_id, "operator", reference_disposition="accept", adjudication=adjudication(notes=None))
+
+
+@pytest.mark.parametrize("answer", [{"reference_disposition": "accept"}, {"reference_refusal": "cell_not_ready"}])
+def test_an_operator_answer_without_an_adjudication_record_is_refused(store, answer):
+    key, value = next(iter(answer.items()))
+    decided = value if key == "reference_disposition" else f"refusal:{value}"
+    decision_id = add(store, "case-1", decided)                    # the answer agrees with the decision
+    with pytest.raises(s.DecisionStoreError, match="needs an adjudication record"):
+        store.add_outcome(decision_id, "operator", **answer)
+    assert store.outcomes(decision_id) == []
+    store.add_outcome(decision_id, "operator", adjudication=adjudication(), **answer)
+    assert [o.reference for o in store.outcomes(decision_id)] == [decided]
+
+
+def test_an_operator_may_record_a_twin_result_that_states_no_answer(store):
+    decision_id = add(store, "case-1")
+    store.add_outcome(decision_id, "operator", twin=s.TwinResult(placed=True))
+    assert [o.reference for o in store.outcomes(decision_id)] == [None]
+
+
+def robot_request(case_id="robot-1", count=0):
+    base = c.loads_request((FIXTURES / "robot_perceived_with_colour.json").read_text())
+    return dataclasses.replace(base, request_id=f"req-{case_id}-{count}", reobservation_count=count,
+                               case=dataclasses.replace(base.case, case_id=case_id, split="development"))
+
+
+def test_sim_truth_on_a_robot_case_is_refused(store):
+    req = robot_request()
+    decision_id = store.record(req, decision(req))
+    with pytest.raises(s.DecisionStoreError, match="sim_truth answer is accepted only for a case whose source is sim"):
+        store.add_outcome(decision_id, "sim_truth", reference_disposition="accept")
+    assert store.outcomes(decision_id) == []
+    store.add_outcome(decision_id, "operator", reference_disposition="accept", adjudication=adjudication())
+
+
+def test_a_case_with_any_robot_request_takes_no_sim_truth(store):
+    sim = request("case-1")
+    sim_id = store.record(sim, decision(sim, "remeasure:reobserve"))
+    real = robot_request("case-1", count=1)
+    store.record(real, decision(real))
+    with pytest.raises(s.DecisionStoreError, match="source is sim"):
+        store.add_outcome(sim_id, "sim_truth", reference_disposition="accept")
+    assert store.outcomes(sim_id) == []
 
 
 @pytest.mark.parametrize("kwargs, phrase", [
@@ -396,7 +440,7 @@ HAND = [
     ("c09", "refusal:spec_unknown", "rework", "unnecessary_referral", 1),
     ("c10", "rework", "rework", "correct", 0),
 ]
-# graded 10; committed c01-c05 and c10 = 6; abstained 4
+# cases 12, of which pending 2 (c11, c12); graded 10; committed c01-c05 and c10 = 6 of 12; abstained 4
 # committed errors c02, c04, c05 = 3 of 6; committed cost 10 + 3 + 2 = 15 over 6
 # all cost 15 + 1 (c07) + 1 (c09) = 17 over 10
 
@@ -404,16 +448,19 @@ HAND = [
 def fill_hand(store, split="development"):
     for case_id, answer, reference, _, _ in HAND:
         add(store, case_id, answer, reference, split=split)
-    add(store, "c11", "accept")                                  # no reference: ungraded
-    add(store, "c12", "remeasure:reobserve", "accept")           # still waiting: pending
+    add(store, "c11", "accept")                                  # pending: awaiting a correct answer
+    add(store, "c12", "remeasure:reobserve", "accept")           # pending: awaiting another look
 
 
 def test_coverage_and_risk_match_the_hand_check(store):
     fill_hand(store)
     (row,) = store.risk_coverage(COSTS)
-    assert (row["cases"], row["graded"], row["ungraded"], row["pending"]) == (12, 10, 1, 1)
+    assert (row["cases"], row["graded"], row["pending"]) == (12, 10, 2)
+    assert row["pending_cases"] == {"awaiting_look": ["c12"], "awaiting_reference": ["c11"]}
     assert (row["committed"], row["abstained"]) == (6, 4)
-    assert row["coverage"] == pytest.approx(0.6)
+    assert row["committed"] + row["abstained"] + row["pending"] == row["cases"]
+    assert row["coverage"] == pytest.approx(0.5)  # 6 of all 12 cases
+    assert row["acted_when_not_ready"] == {"cases": [], "decisions": 0}
     assert row["selective_error_rate"] == pytest.approx(0.5)
     assert row["selective_cost"] == pytest.approx(2.5)
     assert row["mean_cost"] == pytest.approx(1.7)
@@ -442,6 +489,126 @@ def test_cost_rows_outside_the_hand_fixture(args, key):
     assert s.cost_key(*args) == key
 
 
+def not_ready_request(case_id="case-1", design="PART221", count=0):
+    base = request(case_id, design=design, count=count)
+    return dataclasses.replace(base, health=c.Health(cell_ready=False, precapture=None))
+
+
+def add_made(store, req, configuration):
+    """Record the real decision of a configuration about `req`."""
+    made = p.decide(req, POLICY, configuration, "abcdef1")
+    return store.record(req, made), made
+
+
+def say(store, decision_id, reference):
+    head, _, tail = reference.partition(":")
+    store.add_outcome(decision_id, "sim_truth",
+                      **({"reference_refusal": tail} if head == "refusal" else {"reference_disposition": head}))
+
+
+def test_the_cost_is_listed_in_the_spec_with_the_others():
+    assert s.ACTED_WHEN_NOT_READY == "acted_when_not_ready"
+    assert s.ACTED_WHEN_NOT_READY in s.COST_KEYS and COSTS[s.ACTED_WHEN_NOT_READY] == 10
+
+
+@pytest.mark.parametrize("reference", ["reject", "accept", None])
+def test_a_reject_by_b_on_a_not_ready_cell_is_acted_when_not_ready(store, reference):
+    decision_id, made = add_made(store, not_ready_request(design="PART210"), "B")
+    assert made.disposition == "reject"
+    if reference is not None:
+        say(store, decision_id, reference)
+    (row,) = store.risk_coverage(COSTS)
+    assert row["by_cost_key"] == {"acted_when_not_ready": 1}        # not a false accept, nor a correct reject
+    assert row["acted_when_not_ready"] == {"cases": ["case-1"], "decisions": 1}
+    assert (row["graded"], row["pending"], row["committed"], row["abstained"]) == (1, 0, 1, 0)
+    assert (row["selective_error_rate"], row["selective_cost"], row["mean_cost"]) == (1.0, 10.0, 10.0)
+
+
+@pytest.mark.parametrize("configuration, design, answer, committed", [
+    ("A", "PART221", "accept", 1), ("A", "PART210", "reject", 1), ("A", "PART220", "rework", 1),
+    ("B", "PART221", "accept", 1), ("B", "PART220", "rework", 1), ("B", "PART110", "remeasure:reobserve", 0)])
+def test_every_action_on_a_not_ready_cell_is_charged_in_a_and_b(store, configuration, design, answer, committed):
+    _, made = add_made(store, not_ready_request(design=design), configuration)
+    assert s._label(made.disposition, made.refusal, made.remeasure_route) == answer
+    (row,) = store.risk_coverage(COSTS)
+    assert (row["by_cost_key"], row["mean_cost"]) == ({"acted_when_not_ready": 1}, 10.0)
+    assert (row["committed"], row["abstained"], row["pending"]) == (committed, 0, 0)
+
+
+@pytest.mark.parametrize("configuration", ["C", "D", "E", "F"])
+@pytest.mark.parametrize("answer", ["accept", "reject", "rework", "remeasure:reobserve"])
+def test_it_applies_to_every_configuration(store, configuration, answer):
+    req = not_ready_request()
+    store.record(req, decision(req, answer, configuration=configuration))
+    assert store.risk_coverage(COSTS)[0]["by_cost_key"] == {"acted_when_not_ready": 1}
+
+
+@pytest.mark.parametrize("answer", ["remeasure:refer", "refusal:cell_not_ready", "refusal:spec_unknown",
+                                    "refusal:insufficient_evidence"])
+def test_a_referral_or_a_refusal_on_a_not_ready_cell_is_not_acting(store, answer):
+    req = not_ready_request()
+    decision_id = store.record(req, decision(req, answer))
+    say(store, decision_id, "refusal:cell_not_ready")
+    (row,) = store.risk_coverage(COSTS)
+    assert row["acted_when_not_ready"] == {"cases": [], "decisions": 0}
+    assert (row["by_cost_key"], row["abstained"]) == ({s.CORRECT: 1}, 1)
+
+
+def test_an_action_on_a_ready_cell_is_not_charged(store):
+    for case_id, answer in (("a", "accept"), ("b", "remeasure:reobserve")):
+        add(store, case_id, answer)
+    assert store.risk_coverage(COSTS)[0]["acted_when_not_ready"] == {"cases": [], "decisions": 0}
+
+
+def test_an_earlier_relook_on_a_not_ready_cell_does_not_vanish_with_a_later_decision(store):
+    _, made = add_made(store, not_ready_request(design="PART110"), "B")
+    assert made.remeasure_route == "reobserve"
+    later = request("case-1", design="PART210", count=1)            # the cell is ready on the second look
+    second, _ = add_made(store, later, "B")
+    say(store, second, "reject")
+    (row,) = store.risk_coverage(COSTS)
+    assert row["acted_when_not_ready"] == {"cases": ["case-1"], "decisions": 1}
+    assert (row["cases"], row["by_cost_key"], row["mean_cost"]) == (1, {"acted_when_not_ready": 1}, 10.0)
+    assert (row["committed"], row["selective_error_rate"]) == (1, 1.0)
+
+
+def test_a_case_that_acted_twice_is_charged_once_and_both_decisions_are_counted(store):
+    for count in (0, 1):
+        add_made(store, not_ready_request(design="PART110", count=count), "B")
+    (row,) = store.risk_coverage(COSTS)
+    assert row["acted_when_not_ready"] == {"cases": ["case-1"], "decisions": 2}
+    assert (row["graded"], row["mean_cost"], row["by_cost_key"]) == (1, 10.0, {"acted_when_not_ready": 1})
+
+
+def test_the_confusion_table_stays_about_part_quality(store):
+    decision_id, _ = add_made(store, not_ready_request(), "A")
+    (row,) = store.confusion_table()
+    assert "acted_when_not_ready" not in row and "accept_while_cell_not_ready" not in row
+    assert row["counts"] == {} and row["pending_cases"]["awaiting_reference"] == ["case-1"]  # still pending
+    assert store.outcomes(decision_id) == []                        # scoring writes no answer
+    say(store, decision_id, "accept")
+    assert store.confusion_table()[0]["counts"] == {"accept": {"accept": 1}}  # the part was judged rightly
+    assert store.risk_coverage(COSTS)[0]["by_cost_key"] == {"acted_when_not_ready": 1}
+
+
+def test_stage_0_refusing_the_same_cell_is_not_that_error(store):
+    decision_id, made = add_made(store, not_ready_request(), "E")
+    assert made.refusal == "cell_not_ready"
+    say(store, decision_id, "refusal:cell_not_ready")
+    (row,) = store.risk_coverage(COSTS)
+    assert row["acted_when_not_ready"] == {"cases": [], "decisions": 0}
+    assert (row["mean_cost"], row["by_cost_key"]) == (0.0, {s.CORRECT: 1})
+
+
+def test_a_skipped_check_is_kept_in_the_store_and_the_csv(store):
+    req = request("case-1")  # twin is null
+    made = p.decide(req, POLICY, "E", "abcdef1")
+    decision_id = store.record(req, made)
+    assert store.get(decision_id)[1] == made
+    (row,) = csv.DictReader(io.StringIO(store.export_csv()))
+    assert "R9: The twin block is null: the feasibility check for left_tray was skipped." in row["reasons"]
+
+
 def test_the_confusion_table_matches_the_hand_check(store):
     fill_hand(store)
     (row,) = store.confusion_table()
@@ -452,6 +619,8 @@ def test_the_confusion_table_matches_the_hand_check(store):
         "remeasure": {"remeasure:refer": 1},
         "refusal:cell_not_ready": {"refusal:cell_not_ready": 1}}
     assert sum(sum(line.values()) for line in row["counts"].values()) == row["graded"] == 10
+    assert row["pending"] == 2
+    assert row["pending_cases"] == {"awaiting_look": ["c12"], "awaiting_reference": ["c11"]}
 
 
 def test_a_cases_final_decision_is_its_latest(store):
@@ -479,11 +648,36 @@ def test_results_are_not_pooled_across_policy_versions_splits_or_input(store):
         ("development", "2", "perceived")}
 
 
-def test_a_figure_with_nothing_to_divide_by_is_none(store):
-    add(store, "case-1")                                            # ungraded only
+def test_pending_cases_lower_coverage_and_are_listed_separately(store):
+    add(store, "done-1", "accept", "accept")
+    add(store, "done-2", "reject", "reject")
+    assert store.risk_coverage(COSTS)[0]["coverage"] == 1.0
+    add(store, "waiting-look", "remeasure:reobserve")
+    assert store.risk_coverage(COSTS)[0]["coverage"] == pytest.approx(2 / 3)
+    unanswered = add(store, "waiting-answer", "accept")             # committed, but not yet graded
     (row,) = store.risk_coverage(COSTS)
-    assert [row[k] for k in ("coverage", "selective_error_rate", "selective_cost", "mean_cost")] == [None] * 4
+    assert (row["coverage"], row["committed"], row["graded"], row["pending"]) == (0.5, 2, 2, 2)
+    assert row["pending_cases"] == {"awaiting_look": ["waiting-look"], "awaiting_reference": ["waiting-answer"]}
+    assert (row["selective_error_rate"], row["selective_cost"], row["mean_cost"]) == (0.0, 0.0, 0.0)
+    store.add_outcome(unanswered, "sim_truth", reference_disposition="accept")
+    (row,) = store.risk_coverage(COSTS)
+    assert (row["coverage"], row["pending"]) == (0.75, 1)
+
+
+def test_the_curve_counts_pending_cases_too(store):
+    add(store, "a", "accept", "accept", configuration="C", confidence=0.9)
+    add(store, "b", "remeasure:reobserve", configuration="C", confidence=0.5)
+    (row,) = store.risk_coverage(COSTS)
+    assert [(point["threshold"], point["coverage"]) for point in row["curve"]] == [(0.9, 0.5)]
+
+
+def test_a_figure_with_nothing_to_divide_by_is_none(store):
+    add(store, "case-1")                                            # pending only
+    (row,) = store.risk_coverage(COSTS)
+    assert row["coverage"] == 0.0  # none of the one case was decided autonomously
+    assert [row[k] for k in ("selective_error_rate", "selective_cost", "mean_cost")] == [None] * 3
     add(store, "case-2", "remeasure:refer", "accept")               # graded, nothing committed
+    assert store.risk_coverage(COSTS)[0]["mean_cost"] == 1.0
     (row,) = store.risk_coverage(COSTS)
     assert row["coverage"] == 0.0 and row["selective_error_rate"] is None and row["selective_cost"] is None
 
