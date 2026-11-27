@@ -16,6 +16,9 @@ STEREO_CALIBRATION_PATH: str = os.environ.get(
     "STEREO_CALIBRATION_PATH", "data/calibration/stereo_params.json"
 )
 
+# The reasoner's decision memory (#82). Under outputs/, which is never committed.
+DECISION_STORE_PATH: str = os.environ.get("DECISION_STORE_PATH", "outputs/decisions/decisions.sqlite")
+
 WORKSPACE_X_MIN: float = 0.20   # metres from robot base
 WORKSPACE_X_MAX: float = 0.80
 WORKSPACE_Y_MIN: float = -0.40
