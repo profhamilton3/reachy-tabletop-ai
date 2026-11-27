@@ -1,0 +1,79 @@
+# Disposition specification v1 (#81, part of #80). PROVISIONAL until Willis supplies the specification.
+#
+# Designs: reachy-1-2-sim docs/input_3D_printer_files/ (STEP, units INCH; parsed 2026-11-27). Two of each
+# design, 16 parts. Committing the part dimensions: owner OK, 2026-11-27 (#81). The STEP/STL files stay out.
+# Naming PART<S><H><F>: S 1 block, 2 cylinder; H 1 short, 2 tall; F 0 solid, 1 through hole.
+# Instances are PART221-A and PART221-B (scene ids part221_a, part221_b).
+#
+# Dispositions do not depend on colour: parts may be repainted or printed in another PLA. A rule may use colour
+# only if a spec version declares it as a requirement. This version declares none.
+version: spec_v1
+provisional: true
+colour_requirement: null
+
+instances_per_design: 2
+
+designs:
+  - {design: PART110, shape: block, height_class: short, height_mm: 25.4, footprint_mm: 49.2, hole_diameter_mm: null, disposition: remeasure}
+  - {design: PART111, shape: block, height_class: short, height_mm: 25.4, footprint_mm: 49.2, hole_diameter_mm: 25.4, disposition: remeasure}
+  - {design: PART120, shape: block, height_class: tall, height_mm: 69.85, footprint_mm: 49.2, hole_diameter_mm: null, disposition: remeasure}
+  - {design: PART121, shape: block, height_class: tall, height_mm: 69.85, footprint_mm: 49.2, hole_diameter_mm: 25.4, disposition: remeasure}
+  - {design: PART210, shape: cylinder, height_class: short, height_mm: 25.4, footprint_mm: 49.2, hole_diameter_mm: null, disposition: reject}
+  - {design: PART211, shape: cylinder, height_class: short, height_mm: 25.4, footprint_mm: 49.2, hole_diameter_mm: 25.4, disposition: reject}
+  - {design: PART220, shape: cylinder, height_class: tall, height_mm: 69.85, footprint_mm: 49.2, hole_diameter_mm: null, disposition: rework}
+  - {design: PART221, shape: cylinder, height_class: tall, height_mm: 69.85, footprint_mm: 49.2, hole_diameter_mm: 25.4, disposition: accept}
+
+# Agreed as provisional values (owner, 2026-11-27) until Willis supplies limits.
+tolerances:
+  height_class_boundary_mm:   # midway between the two design heights; below is short, else tall
+    value: 47.6
+    provisional: true
+  hole_min_diameter_mm:       # a hole is present if a top-face opening at least this wide is seen
+    value: 15.0
+    provisional: true
+
+# Placeholder authority policy (owner, 2026-11-27, #81 comment), derived from the research goals (selective risk
+# against coverage; knowing when not to act). To be replaced by Willis's specification.
+authority:
+  provisional: true
+  quality_authority: "TBD (Willis)"
+
+  roles:
+    system: >-
+      Reasoner plus gates. Proposes a disposition or a refusal. It never performs rework or scrap, and it
+      abstains when the evidence is insufficient.
+    operator: >-
+      Siva on the robot, Terrance in the sim. Carries out placements, confirming each motion. May override a
+      disposition only by recording an adjudication with a reason; the decision itself is never edited.
+    quality_authority: >-
+      Willis, provisional. Owns the specification and tolerances. Sole authority to approve that a rework
+      operation exists, and to authorise scrap. Adjudicates held-out trials, independently of the policy author.
+
+  # No approved rework operation exists in this study (draft 3): "rework" means "rework recommended".
+  # Rework only if an approved rework operation exists; otherwise segregate and notify.
+  approved_rework_operation: false
+
+  dispositions:
+    accept: "The accept bin; no further action."
+    reject: >-
+      The segregated reject bin (quarantine). Physical scrap happens only after quality_authority confirms;
+      scrap is a human act outside the cell.
+    rework: >-
+      Rework recommended. No approved rework operation exists in this study. The part goes to a rework bin and
+      quality_authority is notified; the cell never performs rework.
+    remeasure: >-
+      reobserve (the cell re-looks, at most 2 times), then refer (human measurement). A referral is an
+      abstention, not a failure.
+  refusals: >-
+    cell_not_ready, insufficient_evidence, beyond_capability, spec_unknown, reasoner_invalid: no motion; the
+    operator is notified.
+
+  # Placeholders for the selective-risk metric; revise with the authors. Asymmetric, because shipping a bad
+  # part is the costliest error.
+  scoring_costs:
+    provisional: true
+    false_accept: 10
+    false_reject_or_scrap_of_good_part: 3
+    wrong_rework_or_remeasure_routing: 2
+    unnecessary_referral: 1
+    correct_decision_or_justified_abstention: 0

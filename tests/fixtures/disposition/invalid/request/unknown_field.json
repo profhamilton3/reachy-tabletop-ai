@@ -1,0 +1,68 @@
+{
+  "case": {
+    "case_id": "case-robot",
+    "expected_design_id": "PART221",
+    "instance_id": "PART221-A",
+    "lot": "fixture-lot",
+    "split": "development"
+  },
+  "created_utc": "2026-11-27T12:00:00Z",
+  "degradation": [],
+  "extra": 1,
+  "health": {
+    "cell_ready": true,
+    "precapture": {
+      "checked_utc": "2026-11-27T11:59:58Z",
+      "failed": [],
+      "format_version": 1,
+      "passed": true
+    }
+  },
+  "input_source": "perceived",
+  "observation": {
+    "bundle": {
+      "path": "outputs/bundles/example.zip",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "colour": {
+      "confidence": 0.9,
+      "lab_median": [
+        18.5,
+        0.4,
+        -0.9
+      ],
+      "name": "black",
+      "reliable": true
+    },
+    "height_mm": {
+      "bound": 1.5,
+      "value": 69.85
+    },
+    "hole": {
+      "diameter_mm": {
+        "bound": 1.5,
+        "value": 25.4
+      },
+      "state": "present"
+    },
+    "kind": "cylinder",
+    "orientation": "upright",
+    "sufficiency": {
+      "blurred": false,
+      "depth_insufficient": false,
+      "feature_not_visible": false,
+      "lens_unverified": false,
+      "occluded": false,
+      "stale": false
+    },
+    "width_mm": {
+      "bound": 1.5,
+      "value": 49.2
+    }
+  },
+  "reobservation_count": 0,
+  "request_id": "req-robot",
+  "schema_version": "disposition_decision.v1",
+  "source": "robot",
+  "twin": null
+}
