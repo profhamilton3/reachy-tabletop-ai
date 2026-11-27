@@ -1,0 +1,36 @@
+{
+  "adjudication": {
+    "action_approved_refused": "hand-built fixture",
+    "actual_location_final_disposition": "hand-built fixture",
+    "adjudicator": "adjudicator-fixture",
+    "camera_angle_confidence_occlusion": "hand-built fixture",
+    "expected_family_spec": "hand-built fixture",
+    "measured_dims_hole": "hand-built fixture",
+    "object_id_and_lot": "hand-built fixture",
+    "operator_rating": 4,
+    "predicted_class_and_disposition": "hand-built fixture",
+    "twin_pose_and_path_feasibility": "hand-built fixture"
+  },
+  "code_sha": "abcdef1",
+  "confidence": null,
+  "configuration": "E",
+  "destination": "left_tray",
+  "disposition": "accept",
+  "model_id": null,
+  "policy": {
+    "prompt_sha256": null,
+    "rules_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "spec_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "split_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "reasons": [
+    {
+      "rule_id": "R4",
+      "text": "hand-built fixture"
+    }
+  ],
+  "refusal": null,
+  "remeasure_route": null,
+  "request_id": "req-part221",
+  "schema_version": "disposition_decision.v1"
+}

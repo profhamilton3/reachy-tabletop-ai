@@ -1,0 +1,82 @@
+{
+  "case": {
+    "case_id": "case-sim-twin",
+    "expected_design_id": "PART221",
+    "instance_id": "PART221-A",
+    "lot": "fixture-lot",
+    "split": "development"
+  },
+  "created_utc": "2026-11-27T12:00:00Z",
+  "degradation": [
+    "occluded"
+  ],
+  "health": {
+    "cell_ready": true,
+    "precapture": {
+      "checked_utc": "2026-11-27T11:59:58Z",
+      "failed": [],
+      "format_version": 1,
+      "passed": true
+    }
+  },
+  "input_source": "sim_truth",
+  "observation": {
+    "bundle": null,
+    "colour": {
+      "confidence": 0.75,
+      "lab_median": [
+        56.0,
+        -38.0,
+        36.0
+      ],
+      "name": "green",
+      "reliable": false
+    },
+    "height_mm": {
+      "bound": 1.5,
+      "value": 69.85
+    },
+    "hole": {
+      "diameter_mm": null,
+      "state": "unknown"
+    },
+    "kind": "cylinder",
+    "orientation": "upright",
+    "sufficiency": {
+      "blurred": false,
+      "depth_insufficient": false,
+      "feature_not_visible": false,
+      "lens_unverified": false,
+      "occluded": true,
+      "stale": false
+    },
+    "width_mm": {
+      "bound": 1.5,
+      "value": 49.2
+    }
+  },
+  "reobservation_count": 1,
+  "request_id": "req-sim-twin",
+  "schema_version": "disposition_decision.v1",
+  "source": "sim",
+  "twin": {
+    "part_pose": {
+      "position_m": [
+        0.23,
+        0.0,
+        -0.37
+      ],
+      "quat_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "path_feasibility": {
+      "left_tray": true,
+      "rework_tray": true,
+      "right_tray": false
+    }
+  }
+}

@@ -16,6 +16,7 @@ class TaskType(str, Enum):
 class Destination(str, Enum):
     left_tray = "left_tray"
     right_tray = "right_tray"
+    rework_tray = "rework_tray"  # disposition "rework" (#81)
     handover_zone = "handover_zone"
     point_only = "point_only"
 

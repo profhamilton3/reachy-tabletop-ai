@@ -1,0 +1,46 @@
+# PROPOSED development / held-out split (#81), FOR THE AUTHORS TO CONFIRM. Not frozen.
+# The unit is a combination (design x presentation x view x twin x cell health), not a part. The exact list is
+# gate 1 of #80: it blocks prompt and threshold tuning, not building. Held-out entries follow the draft 3 and
+# Siva suggestions.
+version: split_v0
+frozen: false
+status: PROPOSED
+
+development:
+  - id: dev_every_design_upright
+    description: "Every design upright, clear view, consistent with the twin."
+    designs: [PART110, PART111, PART120, PART121, PART210, PART211, PART220, PART221]
+    presentation: upright
+    view: clear
+    twin: consistent
+  - id: dev_lab_pool_pieces
+    description: "All lab pool pieces."
+    parts: lab_pool
+    development_only: true
+  - id: dev_terrance_parts
+    description: "Terrance's own parts (development-only by agreement)."
+    parts: terrance_own
+    development_only: true
+
+held_out:
+  - id: ho_holed_block_lying
+    description: "A block with a hole presented lying down."
+    designs: [PART111, PART121]
+    presentation: lying
+  - id: ho_tall_cylinder_partial_occlusion
+    description: "A tall cylinder under partial occlusion."
+    designs: [PART220, PART221]
+    view: partial_occlusion
+  - id: ho_twin_inconsistent
+    description: "A part inconsistent with the twin's expected design."
+    twin: inconsistent
+  - id: ho_short_part_defocused
+    description: "Defocused observation of a short part."
+    designs: [PART110, PART111, PART210, PART211]
+    view: defocused
+  - id: ho_cell_motor_power_outage
+    description: "Cell health: injected motor-power outage."
+    cell_health: injected_motor_power_outage
+  - id: ho_cell_stale_clock
+    description: "Cell health: stale clock."
+    cell_health: stale_clock

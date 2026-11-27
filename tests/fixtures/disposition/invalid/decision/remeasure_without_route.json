@@ -1,0 +1,25 @@
+{
+  "adjudication": null,
+  "code_sha": "abcdef1",
+  "confidence": null,
+  "configuration": "E",
+  "destination": "none",
+  "disposition": "remeasure",
+  "model_id": null,
+  "policy": {
+    "prompt_sha256": null,
+    "rules_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "spec_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "split_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "reasons": [
+    {
+      "rule_id": "R4",
+      "text": "hand-built fixture"
+    }
+  ],
+  "refusal": null,
+  "remeasure_route": null,
+  "request_id": "req-part221",
+  "schema_version": "disposition_decision.v1"
+}

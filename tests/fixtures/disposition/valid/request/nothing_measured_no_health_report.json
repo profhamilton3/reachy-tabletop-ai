@@ -1,0 +1,41 @@
+{
+  "case": {
+    "case_id": "case-unmeasured",
+    "expected_design_id": null,
+    "instance_id": "unknown",
+    "lot": "fixture-lot",
+    "split": "development"
+  },
+  "created_utc": "2026-11-27T12:00:00Z",
+  "degradation": [],
+  "health": {
+    "cell_ready": false,
+    "precapture": null
+  },
+  "input_source": "sim_truth",
+  "observation": {
+    "bundle": null,
+    "colour": null,
+    "height_mm": null,
+    "hole": {
+      "diameter_mm": null,
+      "state": "unknown"
+    },
+    "kind": "unknown",
+    "orientation": "upright",
+    "sufficiency": {
+      "blurred": false,
+      "depth_insufficient": false,
+      "feature_not_visible": false,
+      "lens_unverified": false,
+      "occluded": false,
+      "stale": false
+    },
+    "width_mm": null
+  },
+  "reobservation_count": 0,
+  "request_id": "req-unmeasured",
+  "schema_version": "disposition_decision.v1",
+  "source": "sim",
+  "twin": null
+}

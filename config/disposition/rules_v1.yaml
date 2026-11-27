@@ -1,0 +1,45 @@
+# Disposition rules v1 (#81). Configuration E applies them in the order listed under `configurations`; the
+# first rule that fires wins. A and B are the ablation baselines: they skip Stage 0 (cell health), so their
+# decisions describe the rule table only and say nothing about whether the cell is ready.
+# Thresholds come from spec_v1.yaml. Colour is not used by any rule.
+version: rules_v1
+
+rules:
+  - id: R1
+    kind: stage0_cell_ready
+    text: "Stage 0: cell_ready false means the refusal cell_not_ready."
+  - id: R2
+    kind: sufficiency
+    text: "A sufficiency flag hides a deciding feature: remeasure/reobserve, then remeasure/refer."
+  - id: R3
+    kind: height_bounds
+    text: "The height bound straddles the height class boundary: remeasure/reobserve, then remeasure/refer."
+  - id: R4
+    kind: classify
+    text: "Classify the family (shape and height class), then the hole state: the spec's disposition."
+  - id: R5
+    kind: unmatched
+    text: "Anything unmatched: the refusal spec_unknown."
+
+# R2 and R3 share this limit; once it is reached the route is refer.
+max_reobservations: 2
+
+# PROVISIONAL: which deciding features each sufficiency flag hides. The deciding features are shape, height and
+# hole; the hole is deciding only when the spec's disposition for the observed family depends on it (a tall
+# cylinder: yes; a short cylinder or a block: no). #81 gives one example (feature_not_visible on the top face
+# of a tall cylinder), so feature_not_visible is read as "the top face, where the hole shows, is not visible".
+# Every other flag is taken to hide everything, which can only make the policy abstain more.
+sufficiency:
+  provisional: true
+  hides:
+    blurred: [shape, height, hole]
+    occluded: [shape, height, hole]
+    stale: [shape, height, hole]
+    lens_unverified: [shape, height, hole]
+    depth_insufficient: [shape, height, hole]
+    feature_not_visible: [hole]
+
+configurations:
+  A: [R4, R5]               # the fixed rule table
+  B: [R2, R4, R5]           # A plus re-observation, without the bound check
+  E: [R1, R2, R3, R4, R5]   # deterministic and uncertainty-aware
