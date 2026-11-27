@@ -43,10 +43,12 @@ def decision(req, answer="accept", configuration="E", confidence=None, rules="2"
         model_id="model-test" if ai else None, code_sha="abcdef1", adjudication=None)
 
 
-def adjudication(notes="re-measured with calipers", rating=4):
+def adjudication(notes="re-measured with calipers", rating=4, **changes):
     values = {name: None for name in c.APPENDIX_A_FIELDS}
-    values.update(object_id_and_lot="PART221-A, lot 1", human_adjudication_notes=notes)
-    return c.Adjudication(operator_rating=rating, adjudicator="adjudicator-test", **values)
+    values.update(object_id_and_lot="PART221-A, lot 1", actual_location_final_disposition="left tray, accepted",
+                  human_adjudication_notes=notes, operator_rating=rating, adjudicator="adjudicator-test")
+    values.update(changes)
+    return c.Adjudication(**values)
 
 
 @pytest.fixture
@@ -222,8 +224,35 @@ def test_an_operator_override_needs_an_adjudication_with_a_reason(store, given):
     with pytest.raises(s.DecisionStoreError, match="override"):
         store.add_outcome(decision_id, "operator", reference_disposition="reject", adjudication=given)
     assert store.outcomes(decision_id) == []
-    # agreeing is no override, so no notes are needed, but an answer still needs the adjudication record
-    store.add_outcome(decision_id, "operator", reference_disposition="accept", adjudication=adjudication(notes=None))
+
+
+@pytest.mark.parametrize("field, blank", [
+    ("adjudicator", "   \n"),  # a null adjudicator is already refused by the contract
+    ("actual_location_final_disposition", None), ("actual_location_final_disposition", "   \n"),
+    ("human_adjudication_notes", None), ("human_adjudication_notes", "   \n")])
+def test_an_operator_answer_needs_the_required_adjudication_fields_even_when_it_agrees(store, field, blank):
+    decision_id = add(store, "case-1", "accept")
+    with pytest.raises(s.DecisionStoreError, match=field):
+        store.add_outcome(decision_id, "operator", reference_disposition="accept",
+                          adjudication=adjudication(**{field: blank}))
+    assert store.outcomes(decision_id) == []
+
+
+def test_the_other_appendix_a_fields_may_stay_empty(store):
+    assert s.REQUIRED_ADJUDICATION_FIELDS == (
+        "adjudicator", "actual_location_final_disposition", "human_adjudication_notes")
+    least = adjudication(rating=None, **{name: None for name in c.APPENDIX_A_FIELDS
+                                         if name not in s.REQUIRED_ADJUDICATION_FIELDS})
+    decision_id = add(store, "case-1", "accept")
+    store.add_outcome(decision_id, "operator", reference_disposition="accept", adjudication=least)
+    assert [o.adjudication for o in store.outcomes(decision_id)] == [least]
+
+
+def test_an_outcome_that_states_no_answer_needs_no_required_fields(store):
+    decision_id = add(store, "case-1", "accept")
+    rating_only = adjudication(notes=None, actual_location_final_disposition=None)
+    store.add_outcome(decision_id, "operator", adjudication=rating_only)
+    assert [(o.reference, o.adjudication) for o in store.outcomes(decision_id)] == [(None, rating_only)]
 
 
 @pytest.mark.parametrize("answer", [{"reference_disposition": "accept"}, {"reference_refusal": "cell_not_ready"}])
@@ -259,11 +288,37 @@ def test_sim_truth_on_a_robot_case_is_refused(store):
     store.add_outcome(decision_id, "operator", reference_disposition="accept", adjudication=adjudication())
 
 
-def test_a_case_with_any_robot_request_takes_no_sim_truth(store):
+@pytest.mark.parametrize("first, second", [("sim", "robot"), ("robot", "sim")])
+def test_a_cases_source_is_fixed_by_its_first_request(path, first, second):
+    make = {"sim": lambda count: request("case-1", count=count),
+            "robot": lambda count: robot_request("case-1", count=count)}
+    with s.DecisionStore.open(path) as opened:
+        req = make[first](0)
+        opened.record(req, decision(req))
+    with s.DecisionStore.open(path) as opened:  # fixed on disk, not only in this process
+        other = make[second](1)
+        with pytest.raises(s.DecisionStoreError, match=f"case case-1 is a {first} case"):
+            opened.record(other, decision(other))
+        assert [r["source"] for r in opened._query("SELECT source FROM requests")] == [first]
+        assert len(opened._query("SELECT * FROM decisions")) == 1
+        again = make[first](1)  # the same source is still welcome
+        opened.record(again, decision(again))
+
+
+def test_a_sim_truth_answer_never_gains_a_robot_request(store):
+    decision_id = add(store, "case-1", reference="accept")
+    real = robot_request("case-1", count=1)
+    with pytest.raises(s.DecisionStoreError, match="is a sim case"):
+        store.record(real, decision(real))
+    assert [o.source for o in store.outcomes(decision_id)] == ["sim_truth"]
+
+
+def test_a_mixed_case_written_by_earlier_code_takes_no_sim_truth(store):
     sim = request("case-1")
     sim_id = store.record(sim, decision(sim, "remeasure:reobserve"))
-    real = robot_request("case-1", count=1)
-    store.record(real, decision(real))
+    # record() now refuses this, so the row is written directly, as the earlier code left it
+    (row,) = store._query("SELECT * FROM requests")
+    store._insert("requests", {**row, "request_id": "old-robot-request", "source": "robot"})
     with pytest.raises(s.DecisionStoreError, match="source is sim"):
         store.add_outcome(sim_id, "sim_truth", reference_disposition="accept")
     assert store.outcomes(sim_id) == []
