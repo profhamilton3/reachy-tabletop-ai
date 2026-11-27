@@ -391,6 +391,8 @@ Two rules for the record, and nothing more:
 | P4 | tabletop-ai | `SceneMemoryStore` (§4) | Survives restart; rig mismatch → inactive; rig-check fail → epoch bump; disagreeing sighting never edits an entry |
 | P5 | both | Detector retrain or sim-look fix, per §5's table | Graded by #205, with held-out layouts; new bounds rows with n ≥ OD-2's minimum |
 
+**Owner decision (Terrance, 2026-11-27): the P4 hold is lifted for the sim (#85).** P4 may be built and exercised on sim scenes; robot-side scene memory still waits for the robot head sweep (the torso-frame conversion and the first robot board pose).
+
 Robot transfer (#182 stage 5, EPIC 9 Phase 4) is out of this plan. It needs the robot's torso-frame conversion: `stereo_depth` produces `xyz_torso_m` only for the sim source today.
 
 **Prerequisite for any robot use, including the demo:** the robot torso-frame conversion in `stereo_depth`. Until it exists, no perceived position may feed a robot move.
