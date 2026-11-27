@@ -16,7 +16,7 @@ dependencies = [
     "fastapi>=0.111",
     "uvicorn>=0.30",
     "h5py>=3.11",
-    "anthropic>=0.28",
+    "anthropic>=1.0",  # reasoner/ai.py (#83) sends output_config
     "Pillow>=10.3",
     "PyYAML>=6.0",  # config/disposition/ policy files (#81)
 ]

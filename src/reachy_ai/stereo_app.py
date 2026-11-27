@@ -14,6 +14,8 @@ The Focus check's route (#77) sends raw lens commands (focus, zoom, homing, auto
 the operator's confirm: dry-run unless --allow-zoom-commands; it moves no joint.
 Starting any procedure first runs the read-only pre-capture health check (health/precapture.py) in the SDK process;
 a failed check refuses the procedure (the Sound check and Robot inventory only record it).
+The decision panel's routes (/api/disposition, #83) record part dispositions in the DecisionStore and move nothing; the
+AI reasoner behind configurations C, D and F is off unless REACHY_AI_REASONER=1 and ANTHROPIC_API_KEY is set.
 """
 
 import asyncio
@@ -32,7 +34,7 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from reachy_ai.audio import speech
 from reachy_ai.audio.audio_client import AudioClient
 from reachy_ai.camera_zoom import EYES, calibration_id, focus_by_eye, lens_readings, normalize_zoom, zoom_status
-from reachy_ai.config import HEAD_PRESETS
+from reachy_ai.config import DECISION_STORE_PATH, HEAD_PRESETS
 from reachy_ai.games.t3_viewer import install_routes as install_t3_routes
 from reachy_ai.health import precapture
 from reachy_ai.pair_bundle import BundleTooLarge, build_bundle, json_bytes, viewer_version
@@ -65,9 +67,12 @@ from reachy_ai.perception.procedures import (
     slim_gripper,
 )
 from reachy_ai.perception.stereo_depth import DepthUnavailable, PairDepth
+from reachy_ai.reasoner import ai as reasoner_ai
+from reachy_ai.reasoner import panel as disposition_panel
 from reachy_ai.stereo import CommandBusy, StereoService, StereoSettings
 
 LOG = logging.getLogger(__name__)
+_FROM_ENVIRONMENT = object()  # create_app(reasoner=...): build the AI reasoner from the environment (default: off)
 
 class _ServiceZoom:
     """`ZoomSetter`-shaped front for the SDK process: dry-run unless the viewer allows zoom commands."""
@@ -171,7 +176,8 @@ class _ServiceGripper:
 
 
 def create_app(settings: StereoSettings, service: StereoService | None = None, detector_model=None, detector=None,
-               sim_lens="distorted", stereo_calibration=None, depth_analyzer=None, audio_client=None):
+               sim_lens="distorted", stereo_calibration=None, depth_analyzer=None, audio_client=None,
+               reasoner=_FROM_ENVIRONMENT, decision_store_path=None, policy_dir=None):
     camera = service or StereoService(settings)
     audio = audio_client or AudioClient()
     analyzer = detector or PairDetector(detector_model or DEFAULT_MODEL)
@@ -705,4 +711,9 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
     install_t3_routes(app, camera=camera, settings=settings, zoom_context=zoom_context, depth=depth,
                       capture_record=capture_record, analyze_pair=analyze_pair, make_pair_bundle=make_pair_bundle,
                       history_dir=settings.t3_history_dir, speak=lambda text: speech.speak(text, client=audio))
+    disposition_panel.install_routes(
+        app, settings=settings, health_report=health_report, make_pair_bundle=make_pair_bundle,
+        reasoner=reasoner_ai.build_reasoner() if reasoner is _FROM_ENVIRONMENT else reasoner,
+        store_path=decision_store_path or DECISION_STORE_PATH,
+        **({} if policy_dir is None else {"policy_dir": policy_dir}))
     return app
