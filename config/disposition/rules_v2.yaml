@@ -1,11 +1,19 @@
-# Disposition rules v2 (#81 comment: owner decisions, 2026-11-27). The default rules file. rules_v1.yaml is kept
+# Disposition rules v2 (#81 comments: owner decisions, 2026-11-27). The default rules file. rules_v1.yaml is kept
 # unchanged so that earlier decisions stay traceable.
 #
-# What changes: configuration E only. It gains R6 to R8 and the gate R9. A and B are exactly as in v1: they are
-# ablation baselines, skip Stage 0 (cell health) by design, and read no orientation, width, expected design or
-# twin. R1 to R5 are unchanged. Ids are names, not positions: E applies its rules in the order listed under
+# What changes: configuration E only. It gains R6 to R8, R10 and the gate R9. A and B are exactly as in v1: they
+# are ablation baselines, skip Stage 0 (cell health) by design, and read no width, orientation, expected design
+# or twin. R1 to R5 are unchanged. Ids are names, not positions: E applies its rules in the order listed under
 # `configurations`, and the first rule that fires wins. A gate then checks the decision that rule reached.
 # Thresholds come from spec_v1.yaml. Colour is not used by any rule.
+#
+# The 15 mm minimum and the nominal hole size are both kept, on purpose, and answer different questions:
+#   - presence (spec hole_min_diameter_mm, used by R4 and R8): is an opening seen? A reported opening narrower
+#     than this does not count as a hole (nor as no hole: the hole state is then unknown).
+#   - size (R7, hole_diameter_mm +- hole_diameter_tolerance_mm): does the measured diameter fit the design?
+# With the present tolerances R7 already refuses or re-looks at any diameter the presence rule would discount,
+# so in E the two overlap. A and B have only the presence rule, and the tolerance may change when the
+# specification arrives, so neither replaces the other.
 version: rules_v2
 
 rules:
@@ -25,22 +33,36 @@ rules:
     kind: unmatched
     text: "Anything unmatched: the refusal spec_unknown."
   # A general measurement rule: the spec's heights assume an upright part. Not tuned to any held-out case.
+  # An unknown orientation is also a missing measurement, which R10 reports first.
   - id: R6
     kind: orientation
     text: "Orientation lying, rotated or unknown: remeasure/reobserve, then remeasure/refer."
+  # value +- bound against nominal +- tolerance, the same reasoning as R3. A limit itself is inside. One size
+  # wholly outside decides, whatever the others do. A diameter is judged whenever one was measured.
   - id: R7
     kind: nominal_size
-    text: "A measured width, height or present hole outside the spec's nominal sizes: the refusal spec_unknown (refer)."
+    text: >-
+      Width, height or hole diameter against the spec's nominal sizes: an interval wholly outside is the refusal
+      spec_unknown (refer); one straddling a limit is remeasure/reobserve, then remeasure/refer.
+  # An expected design the spec does not list is spec_unknown (owner, 2026-11-27). With none stated, nothing is
+  # compared, and an unknown feature is not an inconsistency.
   - id: R8
     kind: expected_design
     text: "The observation is inconsistent with expected_design_id: remeasure/reobserve, then remeasure/refer."
   - id: R9
     kind: twin_feasibility
     text: >-
-      Gate: the twin block says the destination is infeasible: the refusal beyond_capability. With no twin block
-      the check is skipped, and the decision records that.
+      Gate on the destination: the twin block says it is infeasible: the refusal beyond_capability. A twin block
+      with no entry for it: the refusal insufficient_evidence. No twin block (robot, decision only): the check
+      is skipped, and the decision records that.
+  # For every disposition, not only accept. A hole diameter is needed only when a hole is seen.
+  - id: R10
+    kind: missing_measurement
+    text: >-
+      A missing width, height, orientation, or diameter of a seen hole: remeasure/reobserve, then
+      remeasure/refer, naming what is missing.
 
-# R2, R3, R6 and R8 share this limit; once it is reached the route is refer.
+# R2, R3, R6, R7, R8 and R10 share this limit; once it is reached the route is refer.
 max_reobservations: 2
 
 # PROVISIONAL (accepted as provisional by the owner, 2026-11-27): which deciding features each sufficiency flag
@@ -58,9 +80,9 @@ sufficiency:
     feature_not_visible: [hole]
 
 configurations:
-  A: [R4, R5]                           # the fixed rule table
-  B: [R2, R4, R5]                       # A plus re-observation, without the bound check
-  E: [R1, R2, R6, R3, R7, R8, R4, R5]   # deterministic and uncertainty-aware
+  A: [R4, R5]                                # the fixed rule table
+  B: [R2, R4, R5]                            # A plus re-observation, without the bound check
+  E: [R1, R10, R2, R6, R3, R7, R8, R4, R5]   # deterministic and uncertainty-aware
 
 gates:
   E: [R9]

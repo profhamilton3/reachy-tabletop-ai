@@ -14,8 +14,8 @@ observation.orientation, observation.width_mm, case.expected_design_id and twin.
 none of them. No configuration reads observation.colour or twin.part_pose. `load_policy(rules_file=RULES_V1_FILE)`
 loads the earlier rules.
 
-A decision's first reason is the rule that decided it. Further reasons record a check that was skipped, or, after
-the beyond_capability gate, the disposition that could not be carried out.
+A decision's first reason is the rule or gate that decided it. A further reason records a check that was skipped,
+or, after a gate's refusal, the disposition that could not be carried out.
 """
 from __future__ import annotations
 
@@ -37,8 +37,8 @@ HEIGHT_CLASSES = ("short", "tall")
 DECIDING_FEATURES = ("shape", "height", "hole")
 #: A gate checks the decision the rules reached; the other kinds are rules, and the first that fires wins.
 GATE_KINDS = ("twin_feasibility",)
-RULE_KINDS = ("stage0_cell_ready", "sufficiency", "orientation", "height_bounds", "nominal_size", "expected_design",
-              "classify", "unmatched") + GATE_KINDS
+RULE_KINDS = ("stage0_cell_ready", "missing_measurement", "sufficiency", "orientation", "height_bounds",
+              "nominal_size", "expected_design", "classify", "unmatched") + GATE_KINDS
 TOLERANCES = ("height_class_boundary_mm", "hole_min_diameter_mm", "width_tolerance_mm", "height_tolerance_mm",
               "hole_diameter_tolerance_mm")
 
@@ -344,12 +344,6 @@ class _Outcome:
     text: str
 
 
-@dataclass(frozen=True)
-class _Skipped:
-    """A rule that did not fire because it had nothing to check. The decision records it."""
-    text: str
-
-
 def _effective_hole(spec: Spec, hole: c.Hole) -> str:
     """The hole state under the spec's tolerance. "present" needs a measured opening at least the minimum wide;
     a "present" with a smaller or unmeasured opening is unknown, never absent and never present."""
@@ -393,6 +387,18 @@ def _stage0(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outcome
     return _Outcome(None, "cell_not_ready", None, f"cell_ready is false; {why}.")
 
 
+def _missing_measurement(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outcome | None:
+    observation = request.observation
+    absent = (("width", observation.width_mm is None),
+              ("height", observation.height_mm is None),
+              ("hole diameter", observation.hole.state == "present" and observation.hole.diameter_mm is None),
+              ("orientation", observation.orientation == "unknown"))
+    names = [name for name, is_missing in absent if is_missing]
+    if not names:
+        return None
+    return _remeasure(policy, request, f"Missing measurement(s): {', '.join(names)}.", can_reobserve)
+
+
 def _sufficiency(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outcome | None:
     deciding = {"shape", "height"}
     if _hole_is_deciding(policy.spec, request.observation):
@@ -420,13 +426,18 @@ def _height_bounds(policy: Policy, request: c.Request, can_reobserve: bool) -> _
     return _remeasure(policy, request, why, can_reobserve)
 
 
-def _within(value: float, nominals: set, tolerance: float) -> bool:
-    """Whether `value` is within `tolerance` of any nominal; a limit itself is inside."""
-    return any(abs(value - nominal) <= tolerance + 1e-9 for nominal in nominals)
+def _against(measured: c.Measurement, nominals: set, tolerance: float) -> str:
+    """Where measured value +- bound lies against nominal +- tolerance: "inside" one such band, "outside" all of
+    them, or "straddles" a limit. A limit itself is inside."""
+    low, high, slack = measured.value - measured.bound, measured.value + measured.bound, tolerance + 1e-9
+    if any(nominal - slack <= low and high <= nominal + slack for nominal in nominals):
+        return "inside"
+    if all(high < nominal - slack or low > nominal + slack for nominal in nominals):
+        return "outside"
+    return "straddles"
 
 
-def _nominal_size(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outcome | _Skipped | None:
-    """The measured value is compared, not value +- bound. A size that was not measured is not "outside"."""
+def _nominal_size(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outcome | None:
     spec, observation = policy.spec, request.observation
     hole = observation.hole.diameter_mm  # the contract allows one only for a present hole
     checks = (
@@ -435,15 +446,21 @@ def _nominal_size(policy: Policy, request: c.Request, can_reobserve: bool) -> _O
         ("hole diameter", hole, {d.hole_diameter_mm for d in spec.designs if d.hole_diameter_mm is not None},
          spec.hole_diameter_tolerance_mm),
     )
-    outside = [f"{name} {measured.value:g} mm (nominal {' or '.join(format(n, 'g') for n in sorted(nominals))} "
-               f"+- {tolerance:g} mm)"
-               for name, measured, nominals, tolerance in checks
-               if measured is not None and not _within(measured.value, nominals, tolerance)]
-    if outside:
+    found: dict[str, list[str]] = {"outside": [], "straddles": []}
+    for name, measured, nominals, tolerance in checks:
+        if measured is None:  # a size this configuration needs and lacks is the missing-measurement rule's
+            continue
+        place = _against(measured, nominals, tolerance)
+        if place != "inside":
+            found[place].append(
+                f"{name} {measured.value:g} +- {measured.bound:g} mm (nominal "
+                f"{' or '.join(format(n, 'g') for n in sorted(nominals))} +- {tolerance:g} mm)")
+    if found["outside"]:
         return _Outcome(None, "spec_unknown", None,
-                        f"Outside the nominal sizes of {spec.version}: {'; '.join(outside)}. Refer.")
-    if observation.width_mm is None:
-        return _Skipped("Width was not measured: the nominal width check was skipped.")
+                        f"Wholly outside the nominal sizes of {spec.version}: {'; '.join(found['outside'])}. Refer.")
+    if found["straddles"]:
+        why = f"Straddles a nominal size limit of {spec.version}: {'; '.join(found['straddles'])}."
+        return _remeasure(policy, request, why, can_reobserve)
     return None
 
 
@@ -505,6 +522,7 @@ def _unmatched(policy: Policy, request: c.Request, can_reobserve: bool) -> _Outc
 
 _APPLY = {
     "stage0_cell_ready": _stage0,
+    "missing_measurement": _missing_measurement,
     "sufficiency": _sufficiency,
     "orientation": _orientation,
     "height_bounds": _height_bounds,
@@ -518,16 +536,16 @@ _APPLY = {
 _DESTINATION = {"accept": "left_tray", "reject": "right_tray", "rework": "rework_tray"}
 
 
-def _twin_feasibility(request: c.Request, destination: str) -> tuple[bool, str]:
-    """(infeasible?, why). Only a stated False is infeasible; with nothing stated the check is skipped."""
+def _twin_feasibility(request: c.Request, destination: str) -> tuple[str | None, str]:
+    """(the refusal if the part cannot be sent there, else None; why, or "" with nothing to record)."""
     if request.twin is None:
-        return False, f"The twin block is null: the feasibility check for {destination} was skipped."
+        return None, f"The twin block is null: the feasibility check for {destination} was skipped."
     feasibility = dict(request.twin.path_feasibility or ())
     if destination not in feasibility:
-        return False, f"The twin block states no feasibility for {destination}: the check was skipped."
+        return "insufficient_evidence", f"twin feasibility missing for {destination}"
     if feasibility[destination]:
-        return False, ""
-    return True, f"The twin block says {destination} is infeasible."
+        return None, ""
+    return "beyond_capability", f"The twin block says {destination} is infeasible."
 
 
 _GATES = {"twin_feasibility": _twin_feasibility}
@@ -541,12 +559,9 @@ def decide(request: c.Request, policy: Policy, configuration: str, code_sha: str
     disposition of remeasure goes straight to refer."""
     sequence = policy.rules.sequence(configuration)
     can_reobserve = any(rule.kind == "sufficiency" for rule in sequence)
-    notes: list[c.Reason] = []
     for rule in sequence:
         outcome = _APPLY[rule.kind](policy, request, can_reobserve)
-        if isinstance(outcome, _Skipped):
-            notes.append(c.Reason(rule_id=rule.id, text=outcome.text))
-        elif outcome is not None:
+        if outcome is not None:
             break
     else:  # unreachable with a loaded policy: every sequence ends in the unmatched rule
         raise PolicyError(f"configuration {configuration}: no rule fired")
@@ -555,16 +570,17 @@ def decide(request: c.Request, policy: Policy, configuration: str, code_sha: str
         destination = _DESTINATION.get(outcome.disposition)
         if destination is None:  # a remeasure or a refusal goes nowhere: nothing to check
             continue
-        infeasible, why = _GATES[gate.kind](request, destination)
-        if infeasible:
-            why += f" The {outcome.disposition} that {reasons[0].rule_id} reached cannot be carried out. Refer."
-            outcome = _Outcome(None, "beyond_capability", None, why)
+        refusal, why = _GATES[gate.kind](request, destination)
+        if refusal is not None:  # the gate decides; the disposition it stopped stays as the next reason
+            if refusal == "beyond_capability":  # the other refusal's reason is the owner's wording, as given
+                why += f" The {outcome.disposition} that {reasons[0].rule_id} reached cannot be carried out. Refer."
+            outcome = _Outcome(None, refusal, None, why)
             reasons.insert(0, c.Reason(rule_id=gate.id, text=why))
         elif why:
-            notes.append(c.Reason(rule_id=gate.id, text=why))
+            reasons.append(c.Reason(rule_id=gate.id, text=why))
     return c.Decision(
         request_id=request.request_id, configuration=configuration, disposition=outcome.disposition,
         refusal=outcome.refusal, remeasure_route=outcome.route,
         destination=_DESTINATION.get(outcome.disposition, "none"),
-        reasons=tuple(reasons + notes), confidence=None, policy=policy.hashes(),
+        reasons=tuple(reasons), confidence=None, policy=policy.hashes(),
         model_id=None, code_sha=code_sha, adjudication=None)

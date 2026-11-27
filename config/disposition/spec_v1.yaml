@@ -89,3 +89,6 @@ authority:
     wrong_rework_or_remeasure_routing: 2
     unnecessary_referral: 1
     correct_decision_or_justified_abstention: 0
+    # Its own category, not a false accept (owner, 2026-11-27): in any configuration, accept, reject, rework or
+    # remeasure/reobserve (re-looking moves the head) while cell_ready is false. Charged once per case.
+    acted_when_not_ready: 10
