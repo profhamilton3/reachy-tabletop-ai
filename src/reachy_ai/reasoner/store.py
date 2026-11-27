@@ -17,6 +17,13 @@ are logged rows. The reports and the CSV export include held-out results: they a
 A case_id is one presentation of a part: its re-observations share it, and a repeated trial needs a new one.
 The latest recorded decision of a case under one policy version is that case's final decision.
 
+Scoring (owner decisions on #81, 2026-11-27):
+- a pending case, awaiting another look or a correct answer, counts as not decided autonomously: it stays in
+  coverage's denominator and is listed separately;
+- an accept while the request's cell_ready was false is an error, whatever the reference says and even before
+  there is one. This scores the decision; it does not infer a correct answer, which comes only from sim truth or
+  a human adjudication (an outcome row).
+
 No motion, SDK or network.
 """
 from __future__ import annotations
@@ -191,12 +198,20 @@ def _label(disposition: str | None, refusal: str | None, route: str | None = Non
     return disposition if route is None else f"{disposition}:{route}"
 
 
+def _accepted_while_not_ready(row: Mapping[str, Any]) -> bool:
+    return row["disposition"] == "accept" and not row["cell_ready"]
+
+
 def cost_key(disposition: str | None, refusal: str | None, reference_disposition: str | None,
-             reference_refusal: str | None) -> str:
+             reference_refusal: str | None, *, cell_ready: bool = True) -> str:
     """Which row of the scoring-cost table a final decision falls in, against the reference answer.
+
+    An accept while the cell was not ready is a false_accept, even if the reference says accept.
 
     An abstention is a refusal or a remeasure. It is justified when the reference answer is also an abstention
     (a refusal, or a part the spec says to remeasure); the two need not name the same reason."""
+    if disposition == "accept" and not cell_ready:
+        return "false_accept"
     if refusal is not None or disposition == "remeasure":
         justified = reference_refusal is not None or reference_disposition == "remeasure"
         return CORRECT if justified else "unnecessary_referral"
@@ -220,9 +235,15 @@ def _ratio(numerator: float, denominator: int) -> float | None:
     return None if denominator == 0 else numerator / denominator
 
 
-def _selective(committed: list, graded: int) -> dict:
-    """Coverage and risk over `committed`, a list of (confidence, cost_key, cost)."""
-    return {"committed": len(committed), "coverage": _ratio(len(committed), graded),
+def _pending(awaiting_look: list[str], awaiting_reference: list[str]) -> dict:
+    return {"pending": len(awaiting_look) + len(awaiting_reference),
+            "pending_cases": {"awaiting_look": sorted(awaiting_look),
+                              "awaiting_reference": sorted(awaiting_reference)}}
+
+
+def _selective(committed: list, cases: int) -> dict:
+    """Coverage of all `cases`, and risk over `committed`, a list of (confidence, cost_key, cost)."""
+    return {"committed": len(committed), "coverage": _ratio(len(committed), cases),
             "selective_error_rate": _ratio(sum(1 for _, key, _ in committed if key != CORRECT), len(committed)),
             "selective_cost": _ratio(sum(cost for _, _, cost in committed), len(committed))}
 
@@ -473,8 +494,9 @@ class DecisionStore:
     def cases_for_tuning(self, splits: tuple[str, ...] = ("development",)) -> list[TuningCase]:
         """The cases that may feed a policy change: development only.
 
-        Asking for held-out ones raises, whether or not a policy is frozen. #82 requires that while none is;
-        it states nothing for the frozen state, so the guard stays closed there too."""
+        Asking for held-out ones raises, whether or not a policy is frozen (owner, 2026-11-27, #81). Using them
+        for a next version needs an explicit, logged unfreeze after the trials. unfreeze_for_next_version() logs
+        that, but this accessor does not open afterwards: no method here releases held-out cases for tuning."""
         splits = (splits,) if isinstance(splits, str) else tuple(splits)
         unknown = [s for s in splits if s not in c.SPLITS]
         if unknown:
@@ -505,9 +527,12 @@ class DecisionStore:
 
     def _joined(self) -> list[dict]:
         """Each decision with its request's columns, in decision order. Both tables have a recorded_utc, so the
-        decision's is selected under its own name."""
-        return self._query("SELECT r.*, d.*, d.recorded_utc AS decision_recorded_utc FROM decisions d "
+        decision's is selected under its own name. cell_ready is read from the stored request."""
+        rows = self._query("SELECT r.*, d.*, d.recorded_utc AS decision_recorded_utc FROM decisions d "
                            "JOIN requests r USING (request_id) ORDER BY d.decision_id")
+        for row in rows:
+            row["cell_ready"] = json.loads(row["request_json"])["health"]["cell_ready"]
+        return rows
 
     def _references(self, reference_source: str | None) -> tuple[dict, set]:
         """decision_id -> (reference_disposition, reference_refusal) from the latest outcome that states one,
@@ -539,25 +564,30 @@ class DecisionStore:
     def confusion_table(self, *, reference_source: str | None = None) -> list[dict]:
         """One entry per policy version and split: counts[reference answer][final decision].
 
-        `pending` cases still await a re-observation and `ungraded` ones have no reference; neither is counted."""
+        `pending` cases still await a re-observation or a reference; they are listed in `pending_cases` and are
+        not in `counts`. `accept_while_cell_not_ready` counts those errors among the final decisions: `counts`
+        alone cannot show one whose reference is accept, or which has no reference yet."""
         references, conflicts = self._references(reference_source)
         report = []
         for group, finals, decisions in self._final_by_group():
             counts: dict[str, dict[str, int]] = {}
-            pending = ungraded = graded = 0
+            awaiting_look: list[str] = []
+            awaiting_reference: list[str] = []
+            graded = 0
             for row in finals:
                 if row["remeasure_route"] == "reobserve":
-                    pending += 1
+                    awaiting_look.append(row["case_id"])
                     continue
                 if row["decision_id"] not in references:
-                    ungraded += 1
+                    awaiting_reference.append(row["case_id"])
                     continue
                 graded += 1
                 answer = _label(row["disposition"], row["refusal"], row["remeasure_route"])
                 line = counts.setdefault(_label(*references[row["decision_id"]]), {})
                 line[answer] = line.get(answer, 0) + 1
-            report.append({**group, "decisions": decisions, "cases": len(finals), "pending": pending,
-                           "ungraded": ungraded, "graded": graded,
+            report.append({**group, "decisions": decisions, "cases": len(finals), "graded": graded,
+                           **_pending(awaiting_look, awaiting_reference),
+                           "accept_while_cell_not_ready": sum(1 for r in finals if _accepted_while_not_ready(r)),
                            "reference_conflicts": sum(1 for r in finals if r["decision_id"] in conflicts),
                            "counts": counts})
         return report
@@ -565,10 +595,13 @@ class DecisionStore:
     def risk_coverage(self, costs: Mapping[str, Any], *, reference_source: str | None = None) -> list[dict]:
         """Selective risk against coverage, per policy version and split.
 
-        Over each case's final decision that has a reference: coverage is the share that committed to accept,
-        rework or reject; the selective risk is the error rate, and the mean cost, over those. `mean_cost` is
-        over all graded cases, so it also charges unnecessary referrals. `costs` is the spec's
-        authority.scoring_costs. A figure with nothing to divide by is None.
+        Over each case's final decision. A case is `graded` when it has a reference, or when it is an accept
+        while the cell was not ready (an error with or without one); every other case is `pending`, awaiting a
+        re-observation or a reference. Coverage is the share of ALL cases that are graded and committed to
+        accept, rework or reject, so a pending case counts as not decided autonomously. The selective risk is the
+        error rate, and the mean cost, over those committed cases. `mean_cost` is over the graded cases, so it
+        also charges unnecessary referrals. `costs` is the spec's authority.scoring_costs. A figure with nothing
+        to divide by is None.
 
         `curve` lowers a confidence threshold over the committed decisions. It is empty unless every committed
         decision has a confidence (A, B and E have none, so each is one point)."""
@@ -576,29 +609,32 @@ class DecisionStore:
         references, conflicts = self._references(reference_source)
         report = []
         for group, finals, decisions in self._final_by_group():
-            pending = ungraded = 0
+            awaiting_look: list[str] = []
+            awaiting_reference: list[str] = []
             scored = []  # (committed?, confidence, cost key, cost)
             for row in finals:
                 if row["remeasure_route"] == "reobserve":
-                    pending += 1
-                elif row["decision_id"] not in references:
-                    ungraded += 1
+                    awaiting_look.append(row["case_id"])
+                elif row["decision_id"] not in references and not _accepted_while_not_ready(row):
+                    awaiting_reference.append(row["case_id"])
                 else:
-                    key = cost_key(row["disposition"], row["refusal"], *references[row["decision_id"]])
+                    reference = references.get(row["decision_id"], (None, None))
+                    key = cost_key(row["disposition"], row["refusal"], *reference, cell_ready=row["cell_ready"])
                     scored.append((row["disposition"] in COMMITTED, row["confidence"], key, table[key]))
             committed = [(confidence, key, cost) for is_committed, confidence, key, cost in scored if is_committed]
             curve = []
             if committed and all(confidence is not None for confidence, _, _ in committed):
                 for threshold in sorted({confidence for confidence, _, _ in committed}, reverse=True):
                     above = [item for item in committed if item[0] >= threshold]
-                    curve.append({"threshold": threshold, **_selective(above, len(scored))})
+                    curve.append({"threshold": threshold, **_selective(above, len(finals))})
             by_cost_key: dict[str, int] = {}
             for _, _, key, _ in scored:
                 by_cost_key[key] = by_cost_key.get(key, 0) + 1
-            report.append({**group, "decisions": decisions, "cases": len(finals), "pending": pending,
-                           "ungraded": ungraded, "graded": len(scored), "abstained": len(scored) - len(committed),
+            report.append({**group, "decisions": decisions, "cases": len(finals), "graded": len(scored),
+                           **_pending(awaiting_look, awaiting_reference), "abstained": len(scored) - len(committed),
+                           "accept_while_cell_not_ready": sum(1 for r in finals if _accepted_while_not_ready(r)),
                            "reference_conflicts": sum(1 for r in finals if r["decision_id"] in conflicts),
-                           **_selective(committed, len(scored)),
+                           **_selective(committed, len(finals)),
                            "mean_cost": _ratio(sum(item[3] for item in scored), len(scored)),
                            "by_cost_key": by_cost_key, "curve": curve})
         return report

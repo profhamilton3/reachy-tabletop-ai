@@ -1,0 +1,66 @@
+# Disposition rules v2 (#81 comment: owner decisions, 2026-11-27). The default rules file. rules_v1.yaml is kept
+# unchanged so that earlier decisions stay traceable.
+#
+# What changes: configuration E only. It gains R6 to R8 and the gate R9. A and B are exactly as in v1: they are
+# ablation baselines, skip Stage 0 (cell health) by design, and read no orientation, width, expected design or
+# twin. R1 to R5 are unchanged. Ids are names, not positions: E applies its rules in the order listed under
+# `configurations`, and the first rule that fires wins. A gate then checks the decision that rule reached.
+# Thresholds come from spec_v1.yaml. Colour is not used by any rule.
+version: rules_v2
+
+rules:
+  - id: R1
+    kind: stage0_cell_ready
+    text: "Stage 0: cell_ready false means the refusal cell_not_ready."
+  - id: R2
+    kind: sufficiency
+    text: "A sufficiency flag hides a deciding feature: remeasure/reobserve, then remeasure/refer."
+  - id: R3
+    kind: height_bounds
+    text: "The height bound straddles the height class boundary: remeasure/reobserve, then remeasure/refer."
+  - id: R4
+    kind: classify
+    text: "Classify the family (shape and height class), then the hole state: the spec's disposition."
+  - id: R5
+    kind: unmatched
+    text: "Anything unmatched: the refusal spec_unknown."
+  # A general measurement rule: the spec's heights assume an upright part. Not tuned to any held-out case.
+  - id: R6
+    kind: orientation
+    text: "Orientation lying, rotated or unknown: remeasure/reobserve, then remeasure/refer."
+  - id: R7
+    kind: nominal_size
+    text: "A measured width, height or present hole outside the spec's nominal sizes: the refusal spec_unknown (refer)."
+  - id: R8
+    kind: expected_design
+    text: "The observation is inconsistent with expected_design_id: remeasure/reobserve, then remeasure/refer."
+  - id: R9
+    kind: twin_feasibility
+    text: >-
+      Gate: the twin block says the destination is infeasible: the refusal beyond_capability. With no twin block
+      the check is skipped, and the decision records that.
+
+# R2, R3, R6 and R8 share this limit; once it is reached the route is refer.
+max_reobservations: 2
+
+# PROVISIONAL (accepted as provisional by the owner, 2026-11-27): which deciding features each sufficiency flag
+# hides. feature_not_visible means the top face, where the hole shows, is not visible; every other flag hides
+# everything. The deciding features are shape, height and hole; the hole is deciding only when the spec's
+# disposition for the observed family depends on it (a tall cylinder: yes; a short cylinder or a block: no).
+sufficiency:
+  provisional: true
+  hides:
+    blurred: [shape, height, hole]
+    occluded: [shape, height, hole]
+    stale: [shape, height, hole]
+    lens_unverified: [shape, height, hole]
+    depth_insufficient: [shape, height, hole]
+    feature_not_visible: [hole]
+
+configurations:
+  A: [R4, R5]                           # the fixed rule table
+  B: [R2, R4, R5]                       # A plus re-observation, without the bound check
+  E: [R1, R2, R6, R3, R7, R8, R4, R5]   # deterministic and uncertainty-aware
+
+gates:
+  E: [R9]

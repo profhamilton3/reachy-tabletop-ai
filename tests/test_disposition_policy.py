@@ -1,10 +1,11 @@
-"""#81: the policy files and configurations A, B and E. Offline; no robot, no sim, no model."""
+"""#81: the policy files and configurations A, B and E (E under rules_v2). Offline; no robot, no sim, no model."""
 import dataclasses
 import hashlib
 import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 
 from reachy_ai.health import precapture
 from reachy_ai.reasoner import contract as c
@@ -43,6 +44,18 @@ def height(value, bound=1.5):
 
 def hole(state, diameter=None):
     return c.Hole(state=state, diameter_mm=None if diameter is None else height(diameter, 1.0))
+
+
+def expecting(request, design):
+    return dataclasses.replace(request, case=dataclasses.replace(request.case, expected_design_id=design))
+
+
+def with_twin(request, feasibility):
+    return dataclasses.replace(request, twin=c.Twin(part_pose=None, path_feasibility=feasibility))
+
+
+def rule_ids(decision):
+    return [reason.rule_id for reason in decision.reasons]
 
 
 def decide(request, configuration="E", policy=POLICY):
@@ -84,14 +97,40 @@ def test_provisional_values_and_the_tbd_authority_stay_marked():
         "wrong_rework_or_remeasure_routing": 2, "unnecessary_referral": 1,
         "correct_decision_or_justified_abstention": 0}
     text = (p.POLICY_DIR / p.SPEC_FILE).read_text()
-    assert text.count("provisional: true") >= 4  # spec, two tolerances, authority (and the scoring costs)
+    assert text.count("provisional: true") >= 7  # spec, five tolerances, authority (and the scoring costs)
 
 
-def test_the_rules_are_the_five_of_the_issue_and_a_b_e_are_as_stated():
-    assert [r.id for r in POLICY.rules.sequence("E")] == ["R1", "R2", "R3", "R4", "R5"]
+def test_the_nominal_size_tolerances_are_the_owners_and_each_is_marked_provisional():
+    spec = POLICY.spec
+    assert (spec.width_tolerance_mm, spec.height_tolerance_mm, spec.hole_diameter_tolerance_mm) == (3.0, 5.0, 4.0)
+    tolerances = yaml.safe_load((p.POLICY_DIR / p.SPEC_FILE).read_text())["tolerances"]
+    assert set(tolerances) == set(p.TOLERANCES)
+    assert all(entry["provisional"] is True for entry in tolerances.values())
+
+
+#: rules_v1.yaml as merged in #89. It is kept for traceability and must not change.
+RULES_V1_SHA256 = "d30778c78eb40d8f581bae1d83468354f9f24877ba3363fa5613d05048871d0d"
+V1 = p.load_policy(rules_file=p.RULES_V1_FILE)
+
+
+def test_v2_is_the_default_and_v1_is_unchanged():
+    assert (p.RULES_FILE, POLICY.rules.version, V1.rules.version) == ("rules_v2.yaml", "rules_v2", "rules_v1")
+    assert V1.rules.sha256 == RULES_V1_SHA256
+
+
+def test_e_gains_three_rules_and_a_gate_and_a_b_are_as_stated():
+    assert [r.id for r in POLICY.rules.sequence("E")] == ["R1", "R2", "R6", "R3", "R7", "R8", "R4", "R5"]
+    assert [r.id for r in POLICY.rules.gates_for("E")] == ["R9"]
     assert [r.id for r in POLICY.rules.sequence("A")] == ["R4", "R5"]
     assert [r.id for r in POLICY.rules.sequence("B")] == ["R2", "R4", "R5"]
+    assert POLICY.rules.gates_for("A") == POLICY.rules.gates_for("B") == ()
     assert POLICY.rules.max_reobservations == 2
+
+
+def test_v2_leaves_the_first_five_rules_and_the_shared_settings_as_they_were():
+    assert {i: POLICY.rules.rules[i] for i in V1.rules.rules} == V1.rules.rules
+    assert (POLICY.rules.max_reobservations, POLICY.rules.hides) == (V1.rules.max_reobservations, V1.rules.hides)
+    assert [r.id for r in V1.rules.sequence("E")] == ["R1", "R2", "R3", "R4", "R5"] and V1.rules.gates == {}
 
 
 def test_the_split_is_proposed_and_not_frozen():
@@ -135,7 +174,14 @@ def edited(tmp_path, name, old, new):
     (p.SPEC_FILE, "version: spec_v1", "version: [", "spec_v1.yaml"),
     (p.RULES_FILE, "kind: classify", "kind: guess", "unknown rule kind"),
     (p.RULES_FILE, "A: [R4, R5]", "A: [R4]", "must end with the unmatched rule"),
-    (p.RULES_FILE, "A: [R4, R5]", "A: [R9, R5]", "not listed"),
+    (p.RULES_FILE, "A: [R4, R5]", "A: [R99, R5]", "not listed"),
+    (p.RULES_FILE, "A: [R4, R5]", "A: [R9, R4, R5]", "a gate belongs under gates"),
+    (p.RULES_FILE, "E: [R9]", "E: [R6]", "only a gate may be listed"),
+    (p.RULES_FILE, "E: [R9]", "E: [R99]", "not listed"),
+    (p.RULES_FILE, "E: [R9]", "E: []", "non-empty list"),
+    (p.RULES_FILE, "E: [R9]", "F: [R9]", "unknown key"),
+    (p.SPEC_FILE, "  width_tolerance_mm:", "  width_tolerance:", "unknown key"),
+    (p.SPEC_FILE, "value: 3.0", "value: 0", "positive number"),
     (p.RULES_FILE, "    blurred: [shape, height, hole]\n", "", "missing key"),
     (p.RULES_FILE, "feature_not_visible: [hole]", "feature_not_visible: []", "expected some of"),
     (p.SPLIT_FILE, "frozen: false", "frozen: true", "proposed split cannot be frozen"),
@@ -230,7 +276,8 @@ def test_the_bound_check_wins_over_the_table():
 
 
 def test_reordering_the_rules_file_changes_which_rule_wins(tmp_path):
-    reordered = p.load_policy(edited(tmp_path, p.RULES_FILE, "E: [R1, R2, R3, R4, R5]", "E: [R1, R3, R2, R4, R5]"))
+    reordered = p.load_policy(edited(tmp_path, p.RULES_FILE, "E: [R1, R2, R6, R3, R7, R8, R4, R5]",
+                                     "E: [R1, R3, R2, R6, R7, R8, R4, R5]"))
     request = flagged(with_observation(spec_request(), height_mm=height(47.0, 5.0)), "blurred")
     decision = decide(request, policy=reordered)
     assert decision.reasons[0].rule_id == "R3"
@@ -288,13 +335,25 @@ def test_after_two_reobservations_a_straddling_height_is_referred():
     (hole("present", 25.4), "accept"), (hole("present", 15.0), "accept"), (hole("absent"), "rework"),
     (hole("present", 14.9), "spec_unknown"), (hole("present"), "spec_unknown"), (hole("unknown"), "spec_unknown")])
 def test_a_hole_is_present_only_with_a_measured_opening_of_15_mm_or_more(opening, expected):
-    for configuration in ("A", "B", "E"):
+    for configuration in ("A", "B"):
         assert outcome(with_observation(spec_request(), hole=opening), configuration)[0] == expected
 
 
+@pytest.mark.parametrize("opening, expected", [
+    (hole("present", 25.4), "accept"), (hole("present", 15.0), "spec_unknown"), (hole("absent"), "rework"),
+    (hole("present", 14.9), "spec_unknown"), (hole("present"), "spec_unknown"), (hole("unknown"), "spec_unknown")])
+def test_in_e_a_measured_hole_must_also_be_near_nominal(opening, expected):
+    """No expected design here, so only the observation decides."""
+    assert outcome(with_observation(expecting(spec_request(), None), hole=opening))[0] == expected
+
+
 def test_a_short_cylinder_is_rejected_whatever_the_hole():
+    base = expecting(spec_request("PART210"), None)
     for opening in (hole("present", 25.4), hole("present", 5.0), hole("absent"), hole("unknown")):
-        assert outcome(with_observation(spec_request("PART210"), hole=opening))[0] == "reject"
+        request = with_observation(base, hole=opening)
+        assert outcome(request, "A")[0] == outcome(request, "B")[0] == "reject"
+        wrong_size = opening.diameter_mm is not None and opening.diameter_mm.value == 5.0
+        assert outcome(request, "E")[0] == ("spec_unknown" if wrong_size else "reject")
 
 
 @pytest.mark.parametrize("changes", [{"kind": "unknown"}, {"height_mm": None}])
@@ -309,6 +368,191 @@ def test_nothing_measured_is_a_refusal_in_every_configuration():
     assert [outcome(request, name)[0] for name in "ABE"] == ["spec_unknown", "spec_unknown", "cell_not_ready"]
 
 
+# ---------------------------------------------------------------- rule 6: orientation (E)
+
+def lying_short_cylinder():
+    """A short cylinder on its side: its 49.2 mm width reads as a tall height, and no top-face hole shows."""
+    return with_observation(expecting(spec_request("PART210"), None), orientation="lying", height_mm=height(49.2),
+                            width_mm=height(49.2), hole=hole("absent"))
+
+
+def test_a_lying_short_cylinder_is_remeasured_not_reworked():
+    request = lying_short_cylinder()
+    assert outcome(request, "A")[0] == outcome(request, "B")[0] == "rework"  # the baselines are fooled
+    assert outcome(request) == ("remeasure", "reobserve", "R6")
+    assert decide(request).destination == "none"
+
+
+@pytest.mark.parametrize("orientation", ["lying", "rotated", "unknown"])
+@pytest.mark.parametrize("design", sorted(SPEC_TABLE))
+def test_a_part_not_upright_reobserves_twice_then_refers(orientation, design):
+    request = with_observation(spec_request(design), orientation=orientation)
+    routes = [decide(dataclasses.replace(request, reobservation_count=n)) for n in range(3)]
+    assert [(d.disposition, d.remeasure_route, d.reasons[0].rule_id) for d in routes] == [
+        ("remeasure", "reobserve", "R6"), ("remeasure", "reobserve", "R6"), ("remeasure", "refer", "R6")]
+
+
+def test_orientation_is_checked_before_the_height_and_the_size():
+    request = with_observation(spec_request(), orientation="lying", height_mm=height(47.6, 1.0))
+    assert outcome(request)[2] == "R6"
+    assert outcome(with_observation(request, width_mm=height(200.0)))[2] == "R6"
+    assert outcome(flagged(request, "blurred"))[2] == "R2"  # evidence quality comes first
+
+
+# ---------------------------------------------------------------- rule 7: nominal size (E)
+
+def test_an_oversize_cylinder_with_a_hole_is_spec_unknown():
+    request = with_observation(spec_request(), height_mm=height(120.0), width_mm=height(80.0))
+    assert outcome(request, "A")[0] == outcome(request, "B")[0] == "accept"
+    decision = decide(request)
+    assert (decision.refusal, decision.destination, decision.reasons[0].rule_id) == ("spec_unknown", "none", "R7")
+    assert "width 80 mm" in decision.reasons[0].text and "height 120 mm" in decision.reasons[0].text
+    assert "Refer." in decision.reasons[0].text
+
+
+@pytest.mark.parametrize("design, changes, inside", [
+    ("PART221", {"width_mm": 52.2}, True), ("PART221", {"width_mm": 52.3}, False),
+    ("PART221", {"width_mm": 46.2}, True), ("PART221", {"width_mm": 46.1}, False),
+    ("PART221", {"height_mm": 74.85}, True), ("PART221", {"height_mm": 74.95}, False),
+    ("PART221", {"height_mm": 64.85}, True), ("PART221", {"height_mm": 64.75}, False),
+    ("PART210", {"height_mm": 30.4}, True), ("PART210", {"height_mm": 30.5}, False),
+    ("PART210", {"height_mm": 20.4}, True), ("PART210", {"height_mm": 20.3}, False),
+    ("PART221", {"hole": 29.4}, True), ("PART221", {"hole": 29.5}, False),
+    ("PART221", {"hole": 21.4}, True), ("PART221", {"hole": 21.3}, False),
+])
+def test_the_nominal_limits_are_inside_and_anything_past_them_is_outside(design, changes, inside):
+    values = {name: hole("present", v) if name == "hole" else height(v) for name, v in changes.items()}
+    decision = decide(with_observation(spec_request(design), **values))
+    assert (decision.reasons[0].rule_id != "R7") is inside
+    assert (decision.refusal == "spec_unknown") is not inside
+
+
+def test_the_measured_value_is_compared_not_the_bound():
+    assert outcome(with_observation(spec_request(), width_mm=height(49.2, 20.0)))[0] == "accept"
+    assert outcome(with_observation(spec_request(), width_mm=height(52.3, 20.0)))[2] == "R7"
+
+
+def test_an_oversize_block_is_spec_unknown_not_remeasure():
+    assert outcome(with_observation(spec_request("PART121"), width_mm=height(70.0)))[:1] == ("spec_unknown",)
+
+
+def test_a_straddling_height_is_reobserved_before_it_is_called_outside():
+    assert outcome(with_observation(spec_request(), height_mm=height(47.6, 1.0))) == ("remeasure", "reobserve", "R3")
+    assert outcome(with_observation(spec_request(), height_mm=height(40.0, 1.0)))[2] == "R7"
+
+
+def test_an_unmeasured_width_is_not_outside_and_the_skip_is_recorded():
+    decision = decide(with_observation(spec_request(), width_mm=None))
+    assert (decision.disposition, rule_ids(decision)) == ("accept", ["R4", "R7", "R9"])
+    assert "Width was not measured" in decision.reasons[1].text
+
+
+# ---------------------------------------------------------------- rule 8: the expected design (E)
+
+def test_a_design_mismatch_reobserves_twice_then_refers():
+    request = expecting(spec_request("PART221"), "PART220")  # a hole was seen; the expected part has none
+    decisions = [decide(dataclasses.replace(request, reobservation_count=n)) for n in range(4)]
+    assert [(d.disposition, d.remeasure_route, d.reasons[0].rule_id) for d in decisions] == [
+        ("remeasure", "reobserve", "R8"), ("remeasure", "reobserve", "R8"),
+        ("remeasure", "refer", "R8"), ("remeasure", "refer", "R8")]
+    assert "expected design PART220: hole present, expected absent" in decisions[0].reasons[0].text
+    assert outcome(request, "A")[0] == outcome(request, "B")[0] == "accept"
+
+
+@pytest.mark.parametrize("design, expected, phrase", [
+    ("PART221", "PART121", "kind cylinder, expected block"),
+    ("PART221", "PART211", "height class tall, expected short"),
+    ("PART220", "PART221", "hole absent, expected present"),
+])
+def test_each_known_feature_can_disagree_with_the_expected_design(design, expected, phrase):
+    decision = decide(expecting(spec_request(design), expected))
+    assert (decision.remeasure_route, decision.reasons[0].rule_id) == ("reobserve", "R8")
+    assert phrase in decision.reasons[0].text
+
+
+def test_an_unknown_feature_is_not_an_inconsistency():
+    request = with_observation(expecting(spec_request("PART210"), "PART211"), hole=hole("unknown"))
+    assert outcome(request) == ("reject", None, "R4")
+    unknown = with_observation(spec_request(), kind="unknown")
+    assert outcome(unknown) == ("spec_unknown", None, "R5")
+
+
+def test_with_no_expected_design_nothing_is_compared():
+    assert outcome(expecting(spec_request(), None)) == ("accept", None, "R4")
+
+
+def test_an_expected_design_the_spec_does_not_list_is_spec_unknown():
+    decision = decide(expecting(spec_request(), "PART999"))
+    assert (decision.refusal, decision.reasons[0].rule_id) == ("spec_unknown", "R8")
+    assert "PART999 is not in spec_v1" in decision.reasons[0].text
+
+
+# ---------------------------------------------------------------- gate 9: twin feasibility (E)
+
+@pytest.mark.parametrize("design, disposition, bin_name", [
+    ("PART221", "accept", "left_tray"), ("PART210", "reject", "right_tray"), ("PART220", "rework", "rework_tray")])
+def test_an_infeasible_destination_is_beyond_capability(design, disposition, bin_name):
+    request = with_twin(spec_request(design), {bin_name: False})
+    decision = decide(request)
+    assert (decision.disposition, decision.refusal, decision.remeasure_route, decision.destination) == (
+        None, "beyond_capability", None, "none")
+    assert rule_ids(decision) == ["R9", "R4"]  # what decided, then the disposition it could not carry out
+    assert bin_name in decision.reasons[0].text and f"The {disposition} that R4 reached" in decision.reasons[0].text
+    assert design in decision.reasons[1].text
+    assert decide(request, "A").disposition == decide(request, "B").disposition == disposition
+    assert c.loads_decision(c.dumps(decision)) == decision
+
+
+def test_a_feasible_destination_passes_and_only_that_destination_counts():
+    request = with_twin(spec_request(), {"left_tray": True, "right_tray": False, "rework_tray": False})
+    decision = decide(request)
+    assert (decision.disposition, decision.destination, rule_ids(decision)) == ("accept", "left_tray", ["R4"])
+
+
+def test_a_null_twin_skips_the_feasibility_check_and_records_it():
+    request = load("robot_perceived_with_colour")
+    assert request.source == "robot" and request.twin is None
+    decision = decide(request)
+    assert (decision.disposition, decision.destination, rule_ids(decision)) == ("accept", "left_tray", ["R4", "R9"])
+    assert decision.reasons[1].text == "The twin block is null: the feasibility check for left_tray was skipped."
+    assert rule_ids(decide(request, "A")) == rule_ids(decide(request, "B")) == ["R4"]
+
+
+@pytest.mark.parametrize("feasibility", [None, {"right_tray": False}, {}])
+def test_a_twin_that_says_nothing_about_the_destination_is_skipped_and_recorded(feasibility):
+    decision = decide(with_twin(spec_request(), feasibility))
+    assert decision.disposition == "accept" and rule_ids(decision) == ["R4", "R9"]
+    assert "states no feasibility for left_tray" in decision.reasons[1].text
+
+
+@pytest.mark.parametrize("request_", [
+    spec_request("PART110"),                               # remeasure
+    with_observation(spec_request(), kind="unknown"),      # a refusal
+    not_ready(spec_request()),                             # Stage 0
+])
+def test_with_no_destination_there_is_no_feasibility_check(request_):
+    everything_infeasible = with_twin(request_, {"left_tray": False, "right_tray": False, "rework_tray": False})
+    assert decide(everything_infeasible) == decide(request_)
+    assert "R9" not in rule_ids(decide(request_))
+
+
+def test_the_old_rules_still_decide_as_they_did():
+    assert decide(lying_short_cylinder(), policy=V1).disposition == "rework"
+    assert rule_ids(decide(load("robot_perceived_with_colour"), policy=V1)) == ["R4"]
+
+
+@pytest.mark.parametrize("configuration", ["A", "B"])
+def test_a_and_b_decide_under_v2_exactly_as_under_v1(configuration):
+    requests = [c.loads_request(path.read_text()) for path in sorted(FIXTURES.glob("*.json"))]
+    requests += [lying_short_cylinder(), with_twin(spec_request(), {"left_tray": False}),
+                 expecting(spec_request(), "PART220"), not_ready(spec_request()),
+                 with_observation(spec_request(), width_mm=height(200.0), height_mm=height(47.0, 5.0))]
+    for request in requests:
+        new, old = decide(request, configuration), decide(request, configuration, policy=V1)
+        assert new.policy.rules_sha256 != old.policy.rules_sha256
+        assert dataclasses.replace(new, policy=old.policy) == old
+
+
 # ---------------------------------------------------------------- colour, purity, scope
 
 @pytest.mark.parametrize("design", sorted(SPEC_TABLE))
@@ -320,16 +564,20 @@ def test_colour_never_changes_a_disposition(design):
         assert decide(coloured) == decide(plain)
 
 
-def test_inputs_no_rule_reads_are_pinned_here():
-    """#81 gives no rule for orientation, width, the expected design or the twin. This records that gap: when a
-    rule is added, in a new rules version, this test changes with it."""
+def test_a_and_b_still_read_no_orientation_width_expected_design_or_twin():
     base = spec_request()
-    assert decide(with_observation(base, orientation="lying")) == decide(base)
-    assert decide(with_observation(base, width_mm=height(200.0))) == decide(base)
-    assert decide(dataclasses.replace(base, case=dataclasses.replace(base.case, expected_design_id="PART110"))
-                  ) == decide(base)
-    twin = c.Twin(part_pose=None, path_feasibility={"left_tray": False})
-    assert decide(dataclasses.replace(base, twin=twin)) == decide(base)
+    for configuration in ("A", "B"):
+        plain = decide(base, configuration)
+        for changed in (with_observation(base, orientation="lying"), with_observation(base, width_mm=height(200.0)),
+                        expecting(base, "PART110"), with_twin(base, {"left_tray": False})):
+            assert decide(changed, configuration) == plain
+
+
+def test_no_rule_reads_the_part_pose():
+    base = with_twin(spec_request(), {"left_tray": True})
+    pose = c.PartPose(position_m=(0.4, -0.2, -0.3), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
+    posed = dataclasses.replace(base, twin=dataclasses.replace(base.twin, part_pose=pose))
+    assert decide(posed) == decide(base)
 
 
 def test_decide_is_pure(monkeypatch):
