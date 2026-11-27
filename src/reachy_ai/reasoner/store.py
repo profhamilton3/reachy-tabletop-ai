@@ -15,10 +15,12 @@ development one. `freeze()` and `unfreeze_for_next_version()` record which polic
 are logged rows. The reports and the CSV export include held-out results: they are for the paper, not for tuning.
 
 A case_id is one presentation of a part: its re-observations share it, and a repeated trial needs a new one.
+Its source, sim or robot, is fixed by its first request: record() refuses a later request from the other one.
 The latest recorded decision of a case under one policy version is that case's final decision.
 
 Correct answers (owner, 2026-11-27) come only from sim truth, for a case whose source is sim, or from an
-operator with an adjudication record. add_outcome() refuses anything else, and nothing is inferred.
+operator with an adjudication record that fills REQUIRED_ADJUDICATION_FIELDS. add_outcome() refuses anything else,
+and nothing is inferred.
 
 Scoring (owner decisions on #81, 2026-11-27):
 - a pending case, awaiting another look or a correct answer, counts as not decided autonomously: it stays in
@@ -49,6 +51,8 @@ SCHEMA_VERSION = 1
 BUSY_TIMEOUT_S = 10.0
 
 OUTCOME_SOURCES = ("sim_truth", "operator")
+#: What an operator's correct answer must fill with more than blanks. The other Appendix A fields may stay empty.
+REQUIRED_ADJUDICATION_FIELDS = ("adjudicator", "actual_location_final_disposition", "human_adjudication_notes")
 #: A final decision in one of these commits to an answer; a refusal or a referral abstains.
 COMMITTED = ("accept", "rework", "reject")
 #: The scoring_costs keys of spec_v1.yaml's authority block.
@@ -377,6 +381,11 @@ class DecisionStore:
                 if other:
                     raise LeakageError(f"case {case.case_id} is already {other[0]['split']}; "
                                        f"it cannot also be {case.split}")
+                other = self._query("SELECT source FROM requests WHERE case_id=? AND source!=? LIMIT 1",
+                                    (case.case_id, request.source))
+                if other:
+                    raise DecisionStoreError(f"case {case.case_id} is a {other[0]['source']} case, fixed by its "
+                                             f"first request: a {request.source} request needs another case_id")
                 bundle = request.observation.bundle
                 self._insert("requests", {
                     "request_id": request.request_id, "case_id": case.case_id, "split": case.split,
@@ -423,10 +432,10 @@ class DecisionStore:
         """Append an outcome of a decision; returns the outcome_id. A correction is another call.
 
         The reference is the right answer for the case: a disposition, or the refusal that was right. An
-        operator's reference needs an adjudication record, even when it agrees with the decision; one that
-        differs is an override, whose adjudication must also give a reason (spec_v1 authority). A sim_truth
-        reference is accepted only when every request of the case came from the sim. The operator rating travels
-        in the adjudication."""
+        operator's reference needs an adjudication record that fills REQUIRED_ADJUDICATION_FIELDS, even when it
+        agrees with the decision; one that differs is an override, and its notes are the reason (spec_v1
+        authority). A sim_truth reference is accepted only when every request of the case came from the sim. The
+        operator rating travels in the adjudication."""
         if source not in OUTCOME_SOURCES:
             raise DecisionStoreError(f"outcome source {source!r} is not one of {', '.join(OUTCOME_SOURCES)}")
         if reference_disposition is not None and reference_refusal is not None:
@@ -454,6 +463,12 @@ class DecisionStore:
             if source == "operator" and reference is not None and adjudication is None:
                 raise DecisionStoreError("an operator answer needs an adjudication record (the Appendix A fields "
                                          "and the adjudicator), even when it agrees with the decision")
+            if source == "operator" and reference is not None:
+                blank = [name for name in REQUIRED_ADJUDICATION_FIELDS
+                         if not (getattr(adjudication, name) or "").strip()]
+                if blank:
+                    raise DecisionStoreError(f"an operator answer needs these adjudication fields filled: "
+                                             f"{', '.join(blank)}")
             if source == "sim_truth" and reference is not None:
                 real = self._query(
                     "SELECT other.case_id, other.source FROM decisions d JOIN requests r USING (request_id) "
