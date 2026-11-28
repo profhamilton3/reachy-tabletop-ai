@@ -416,6 +416,25 @@ def test_viewer_runs_the_reference_then_a_part_then_decides_on_the_measured_look
         assert held == data
         again = client.post("/api/disposition/decide", json=body)  # the same look is not a new observation
         assert again.status_code == 409 and "already one of case" in again.json()["detail"]
+
+        # an older look never passes for the present one: another pair, a new run or a discarded run drops it
+        other = {**body, "case": {**case, "case_id": "case-part-2"}}
+
+        def assert_not_served():
+            assert client.get("/api/stereo/part").json()["analysis"] is None
+            assert client.get("/api/stereo/part/analysis/bundle.zip").status_code == 404
+            refused = client.post("/api/disposition/decide", json=other)
+            assert refused.status_code == 409 and "Analyse a Part presentation run" in refused.json()["detail"]
+
+        show(service, "black_221", "IN", 90)
+        assert client.post(base + "/steps/zoom_in/capture").status_code == 200
+        assert_not_served()
+        assert client.post("/api/stereo/part/analysis").status_code == 200
+        assert client.get("/api/stereo/part").json()["analysis"] is not None
+        client.post(base, json={"procedure": "part_presentation"})
+        assert_not_served()
+        client.delete(base)
+        assert_not_served()
     assert service.head_requests_seen == [] and all(level in ("OUT", "IN") for level in service.zoom_requests)
 
 

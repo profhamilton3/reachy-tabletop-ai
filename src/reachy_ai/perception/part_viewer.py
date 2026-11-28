@@ -30,13 +30,26 @@ ANALYSIS_NOTE = ("Measured from the pictures only: the ground truth you recorded
 def install_part_routes(app, *, current_run, run_lock, versions, profile_zoom):
     """Mount the routes. `current_run()` gives the capture run (or raises 409), `versions()` the bundle's version
     block, and `profile_zoom()` the zoom level the lens calibration is valid at. `app.state.part_latest()` gives the
-    decision panel the last analysis: (PartResult, bundle name, bundle bytes), or None."""
+    decision panel the current run's analysis: (PartResult, bundle name, bundle bytes), or None."""
     held = {"reference": None, "analysis": None}
     busy = threading.Lock()
-    app.state.part_latest = lambda: held["analysis"]
+
+    def latest():
+        """The analysis, only while it is of the CURRENT run as it stands. Once another run is started, the run is
+        discarded or another pair is captured, it is not served: an older look must not pass for the present one."""
+        if held["analysis"] is None:
+            return None
+        result, name, data, analysed_run, pairs = held["analysis"]
+        try:
+            run = current_run()
+        except HTTPException:
+            return None
+        return (result, name, data) if run is analysed_run and run.pair_count() == pairs else None
+
+    app.state.part_latest = latest
 
     def view() -> dict:
-        reference, analysis = held["reference"], held["analysis"]
+        reference, analysis = held["reference"], latest()
         return {
             "designs": list(PART_DESIGN_CHOICES), "orientations": list(PART_ORIENTATIONS),
             "labels": list(PART_LABELS), "spots": list(PART_SPOTS), "default_spot": PART_DEFAULT_SPOT,
@@ -127,20 +140,22 @@ def install_part_routes(app, *, current_run, run_lock, versions, profile_zoom):
             if run.ground_truth is not None and run.ground_truth["design_id"] == PART_EMPTY:
                 raise HTTPException(409, "This run is recorded as the empty board: there is no part to analyse")
             held["analysis"] = None
+            pairs = run.pair_count()
             loaded, data = built_run("part.zip")
             name = f"reachy-capture-part_presentation-{loaded.sha256[:8]}.zip"
             try:
                 result = pp.analyse(loaded, held["reference"], bundle_path=name, profile_zoom=profile_zoom())
             except pp.PartRefused as exc:
                 raise HTTPException(409, str(exc)) from exc
-            held["analysis"] = (result, name, data)
+            held["analysis"] = (result, name, data, run, pairs)
         return view()
 
     @app.get("/api/stereo/part/analysis/bundle.zip")
     def analysed_bundle():
         """Exactly the bytes the observation's SHA-256 names."""
-        if held["analysis"] is None:
-            raise HTTPException(404, "Nothing has been analysed")
-        _, name, data = held["analysis"]
+        analysis = latest()
+        if analysis is None:
+            raise HTTPException(404, "The current run has not been analysed")
+        _, name, data = analysis
         return Response(data, media_type="application/zip", headers={
             "Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="{name}"'})
