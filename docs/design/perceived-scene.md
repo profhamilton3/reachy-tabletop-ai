@@ -315,6 +315,7 @@ ADR-0010 §7 refuses two or more objects for a measured reason: **objects intera
 
 Entries have a state: `candidate` → `confirmed` → `superseded` | `invalidated`.
 
+- **One measurement counts once** (#96). A head-sweep fit is known by its source keys: (the sweep bundle's manifest SHA-256, a head pose that contributed), one per pose. A fit that shares a key with one already seen is not counted, whatever its numbers, so re-fitting a bundle with changed code cannot confirm it again. Where a fit has no source (no manifest, or none given), or the earlier one had none, the fits' own values are compared instead. The keys are in the `fit_sources` table (schema version 2).
 - **Agree:** an observation confirms an entry when |Δ| ≤ b_entry + b_obs on every axis. The count goes up, `last_confirmed_at` moves, and the estimate becomes the count-weighted mean.
 - **The bound does not shrink with n.** It stays at least the single-observation bound. Repeated sightings share the same systematic error (the #186 along-ray bias is the example), so averaging hides it rather than removing it.
 - **Disagree:** a disagreeing observation never edits the entry. It opens or confirms a competing `candidate`. The competitor supersedes the original only after K confirmations while the original gets none over the same span (OD-6). Then `superseded_by` is set and both rows stay.
@@ -335,7 +336,7 @@ On the robot, #185's 17-view camera check spread 6 / 4 / 9 mm in x / y / z. Robo
 **The rig check:** compare a new head-sweep `BoardPose` with the confirmed `board_pose` entry, and in the sim with the twin's grid.
 - **Pass:** it confirms the entry.
 - **Fail** (beyond the threshold, OD-7: 10 mm default): the store bumps `rig_epoch`, every entry under the old epoch goes `inactive: rig moved`, and the operator is told. The board moved 8.5 cm in August and about 0.24 m by October (#185), so this is a real event, not a hypothetical.
-- **Yaw** (owner, 2026-11-27, **provisional**): a board turned more than 2° about the torso z axis from either reference fails in the same way as a centre move. The builder does not measure the board's orientation yet (its poses carry the identity quaternion), so this cannot fail on a builder-made scene until it does.
+- **Yaw** (owner, 2026-11-27, **provisional**): a board turned more than 2° about the torso z axis from either reference fails in the same way as a centre move. The builder measures the yaw (#96): the heading in the torso frame of the board axis that runs across the grid's rows, from a rigid fit to the far and middle rows (the near row is often clipped by the chest and turns the fit), averaged over the poses. The pose's quaternion carries that yaw; roll and pitch are taken as level. Its bound (0.3° floor, plus the spread over poses, plus twice the fit's standard error) is given by `head_sweep_fit`, written in the scene's warnings and recorded with the rig check; `perceived_scene.v1` has no field for it. The check judges the measured yaw against the 2°, not the bound. On sim renders of the grid turned by −3°, 0°, 1° and 3° the fit read 0.19 to 0.22° low at every angle. Nothing is known yet about the robot's.
 
 The rig check replaces the dropped rail and table-edge detector. The rig is already in the measured scene, so a matching board pose stands in for "rig matches twin".
 

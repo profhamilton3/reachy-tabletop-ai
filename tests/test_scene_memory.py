@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import threading
 import uuid
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -222,7 +223,8 @@ def test_a_file_that_is_not_a_database_is_refused_and_left_alone(path):
 @pytest.mark.parametrize("statements, phrase", [
     (["CREATE TABLE trials (id TEXT)"], "schema version 0"),
     (["CREATE TABLE trials (id TEXT)", "PRAGMA user_version = 1"], "not a scene memory"),
-    (["PRAGMA user_version = 2"], "schema version 2"),
+    (["PRAGMA user_version = 3"], "schema version 3"),
+    (["PRAGMA user_version = 2"], "not a scene memory"),
     (["PRAGMA user_version = 99"], "schema version 99"),
 ])
 def test_another_database_or_version_is_refused_and_not_written(tmp_path, statements, phrase):
@@ -756,3 +758,152 @@ def test_builder_scenes_of_sivapool_are_checked_counted_and_remembered(tmp_path)
         assert counted == 4, [r.board.note for r in records]
         for entry in memory.entries():
             assert np.linalg.norm(np.array(entry.position_m) - GRID) < 0.010
+
+
+# ---------------------------------------------------------------- #96: one source counts once
+
+SHA_A, SHA_B = "a" * 64, "b" * 64
+POSE_NAMES = ("board_view", "sweep_yaw_right_5", "sweep_yaw_left_5", "sweep_roll_right_5", "sweep_roll_left_5")
+
+
+def keys(sha, names=POSE_NAMES):
+    return tuple((sha, name) for name in names)
+
+
+def add_sourced(memory, pose, sources, **kwargs):
+    on = dataclasses.replace(rig(), rig_epoch=memory.rig.rig_epoch)
+    return memory.add_scene(scene(pose, on=on, **kwargs), board_sources=sources)
+
+
+def counted(memory):
+    return sum(e.total_count for e in memory.entries())
+
+
+def test_a_refit_of_the_same_bundle_counts_once_whatever_its_numbers(memory):
+    add_sourced(memory, board(), keys(SHA_A))
+    refit = add_sourced(memory, board(dx=0.0004, nth=7), keys(SHA_A), code="1234567")  # changed fitting code
+    assert refit.board.verdict == "not_counted" and "same source" in refit.board.note
+    assert (counted(memory), refit.rig_check) == (1, None)
+    other = add_sourced(memory, board(dx=0.0004, nth=7), keys(SHA_B))  # another bundle with those very numbers
+    assert other.board.verdict == "agree" and counted(memory) == 2
+
+
+def test_sharing_any_pose_of_a_bundle_is_the_same_measurement(memory):
+    add_sourced(memory, board(), keys(SHA_A))
+    fewer = sc.BoardPose(GRID, (1.0, 0.0, 0.0, 0.0), (BOUND,) * 3, "head_sweep_fit", 2, 1.1, 0.5)
+    assert add_sourced(memory, fewer, keys(SHA_A, POSE_NAMES[3:])).board.verdict == "not_counted"
+    assert counted(memory) == 1
+
+
+def test_the_fit_values_are_compared_only_where_a_source_is_missing(memory):
+    add(memory, board())                                            # no source
+    assert add(memory, board()).board.verdict == "not_counted"      # the same values, no source
+    assert add_sourced(memory, board(), keys(SHA_A)).board.verdict == "not_counted"   # the earlier one unsourced
+    assert add_sourced(memory, board(nth=1), keys(SHA_B)).board.verdict == "agree"    # new values, new source
+    assert add(memory, board(nth=1)).board.verdict == "not_counted"  # an unsourced repeat of a sourced fit
+    # an unsourced observation with these very numbers is on record, so a new source cannot claim them either
+    assert add_sourced(memory, board(nth=1), keys("c" * 64)).board.verdict == "not_counted"
+    assert counted(memory) == 2
+
+
+def test_a_source_survives_a_restart_and_cannot_be_edited(path):
+    with m.SceneMemoryStore.open(path, rig(), create=True) as first:
+        add_sourced(first, board(), keys(SHA_A))
+    with m.SceneMemoryStore.open(path, rig()) as again:
+        assert add_sourced(again, board(nth=3), keys(SHA_A)).board.verdict == "not_counted"
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            again._conn.execute("DELETE FROM fit_sources")
+
+
+@pytest.mark.parametrize("sources, why", [
+    (keys("A" * 64), "SHA-256"), ((("a" * 64, " "),) * 5, "name"), (keys(SHA_A, POSE_NAMES[:4]), "each of"),
+    ((("a" * 64, "board_view"),) * 5, "each of")])
+def test_bad_sources_are_refused_and_nothing_is_stored(memory, sources, why):
+    with pytest.raises(m.SceneMemoryError, match=why):
+        add_sourced(memory, board(), sources)
+    assert memory.observations() == [] and files(memory) == []
+
+
+def test_only_a_head_sweep_fit_has_sources(memory):
+    with pytest.raises(m.SceneMemoryError, match="head_sweep_fit"):
+        add_sourced(memory, board(source="single_pair_fit"), keys(SHA_A, POSE_NAMES[:1]))
+
+
+def test_a_version_1_store_is_upgraded_and_keeps_what_it_holds(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, isolation_level=None)  # a store as #95 made it: the version 1 tables alone
+    for statement in m._SCHEMA:
+        conn.execute(statement)
+    conn.execute("PRAGMA user_version = 1")
+    conn.close()
+    with m.SceneMemoryStore.open(path, rig()) as upgraded:
+        assert upgraded._conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        add_sourced(upgraded, board(), keys(SHA_A))
+    with m.SceneMemoryStore.open(path, rig()) as again:
+        assert len(again.entries()) == 1
+        assert again._query("SELECT COUNT(*) AS n FROM fit_sources")[0]["n"] == 5
+
+
+# ---------------------------------------------------------------- #96: the builder measures yaw on sim renders
+
+TURNED = ROOT / "tests" / "fixtures" / "sim_board_yaw"
+TURNED_POSES = ("board_view", "sweep_yaw_right_5", "sweep_yaw_left_5")
+#: The full sweep and its three pairs: four bundles. They share images, so they are not independent evidence of
+#: anything: they exercise the counting.
+SUBSETS = (TURNED_POSES, TURNED_POSES[:2], TURNED_POSES[1:], (TURNED_POSES[0], TURNED_POSES[2]))
+
+
+def turned_fit(tmp_path, yaw, poses):
+    from tests.test_scene_builder import sweep_zip
+
+    target = tmp_path / ("yaw%s-%s.zip" % (yaw, "-".join(p.replace("sweep_", "") for p in poses)))
+    target.write_bytes(sweep_zip([("head_" + n, TURNED / ("yaw_%s" % yaw) / n) for n in poses]))
+    return builder.head_sweep_fit(target), target
+
+
+def heading(quat):
+    return math.degrees(2.0 * math.atan2(quat[3], quat[0]))
+
+
+def test_the_builder_measures_the_boards_yaw_with_a_bound(tmp_path):
+    flat, _ = turned_fit(tmp_path, 0, TURNED_POSES)
+    three, target = turned_fit(tmp_path, 3, TURNED_POSES)
+    for fit, truth in ((flat, 0.0), (three, 3.0)):
+        assert abs(fit.yaw_deg - truth) <= fit.yaw_bound_deg <= 1.5
+        assert heading(fit.pose.quat_wxyz) == pytest.approx(fit.yaw_deg) and fit.pose.quat_wxyz[1:3] == (0.0, 0.0)
+        assert "board yaw %+.2f deg, bound +-%.2f deg" % (fit.yaw_deg, fit.yaw_bound_deg) in fit.warnings
+    assert three.yaw_deg - flat.yaw_deg == pytest.approx(3.0, abs=0.3)
+    assert np.linalg.norm(np.array(three.pose.position_m) - flat.pose.position_m) < 0.003  # turned in place
+    with zipfile.ZipFile(target) as archive:
+        expected = hashlib.sha256(archive.read("manifest.json")).hexdigest()
+    assert three.sources == tuple((expected, name) for name in TURNED_POSES)
+    assert dataclasses.replace(three, manifest_sha256=None).sources == ()  # no manifest: the value fallback
+
+
+def test_a_sim_board_turned_3_degrees_bumps_the_rig_epoch(tmp_path):
+    from tests.test_scene_builder import make_bundle
+
+    options = builder.RigOptions(rig_layout_id=LAYOUT, scene_name=LAYOUT, scene_sha256="7" * 64,
+                                 scene_revision="initial")
+    pair = builder.load_pair_bundle(make_bundle(tmp_path))
+    current = builder.build_rig(pair, options)
+    path = tmp_path / "memory.sqlite"
+
+    def feed(memory, fit):
+        built = builder.build_scene(pair, board=fit.pose, board_warnings=fit.warnings, code=("abcdef1", False),
+                                    options=dataclasses.replace(options, rig_epoch=memory.rig.rig_epoch))
+        return memory.add_scene(built, board_sources=fit.sources, board_yaw_bound_deg=fit.yaw_bound_deg)
+
+    with m.SceneMemoryStore.open(path, current, create=True) as memory:
+        records = [feed(memory, turned_fit(tmp_path, 0, poses)[0]) for poses in SUBSETS]
+        assert memory.board_pose() is not None and memory.rig.rig_epoch == 0, [r.board.note for r in records]
+        assert [r.rig_check.verdict for r in records] == ["no_reference"] * 4
+        repeat = feed(memory, turned_fit(tmp_path, 0, TURNED_POSES)[0])
+        assert repeat.board.verdict == "not_counted" and memory.board_pose().total_count == 4
+        moved = feed(memory, turned_fit(tmp_path, 3, TURNED_POSES)[0])
+        check = moved.rig_check
+        assert (check.verdict, check.epoch_after, moved.rig.rig_epoch) == ("fail", 1, 1)
+        assert check.distance_m < m.RIG_MOVED_THRESHOLD_M and check.yaw_deg == pytest.approx(3.0, abs=0.3)
+        assert memory.board_pose() is None and all(e.inactive == "inactive: rig moved" for e in memory.inactive())
+        payload = [o for o in memory.observations("rig_check") if o["payload"]["verdict"] == "fail"][0]["payload"]
+        assert 0.3 <= payload["board_yaw_bound_deg"] <= 1.5

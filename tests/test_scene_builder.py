@@ -4,6 +4,7 @@ Fixtures: tests/fixtures/perception_grade/ (copied from reachy-1-2-sim, see PROV
 camera_context, so each test builds a COPY of it in tmp_path with one added; the committed files are never edited.
 """
 import json
+import math
 import shutil
 import sys
 from pathlib import Path
@@ -384,8 +385,10 @@ def test_a_head_sweep_gives_a_board_pose_near_the_scene_grid(tmp_path):
     assert board.source == "head_sweep_fit" and board.poses_used == 5
     assert np.linalg.norm(np.array(board.position_m) - GRID_CENTRE) < 0.010
     assert 0.0 < board.spread_mm < 10.0 and board.fit_rms_mm >= 0.0
-    assert board.quat_wxyz == (1.0, 0.0, 0.0, 0.0) and all(b > 0 for b in board.bounds_m)
-    assert any("axis-aligned" in n for n in notes)
+    w, x, y, z = board.quat_wxyz  # the measured yaw alone (#96): the board is assumed level
+    assert x == y == 0.0 and abs(math.degrees(2 * math.atan2(z, w))) < 1.0
+    assert all(b > 0 for b in board.bounds_m)
+    assert any("board yaw is measured" in n for n in notes) and any(n.startswith("board yaw ") for n in notes)
 
 
 def test_a_one_pose_sweep_is_a_single_pair_fit_and_a_robot_sweep_is_refused_for_a_sim_pair(tmp_path):
