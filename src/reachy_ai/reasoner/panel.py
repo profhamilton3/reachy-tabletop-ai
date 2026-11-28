@@ -198,7 +198,7 @@ def install_routes(app, *, settings, health_report, make_pair_bundle, reasoner, 
     """Mount /api/disposition/* on the viewer app. `health_report()` gives a pre-capture report dict,
     `make_pair_bundle(pair_id)` a held pair's zip, and `reasoner` is ai.AIReasoner or None (off)."""
     policy_dir = Path(policy_dir)
-    lock = threading.Lock()  # one decision at a time: the re-observation count and the one AI call depend on it
+    lock = threading.Lock()  # one decision at a time: the re-observation count and the AI call limits need it
     held = app.state.disposition = {
         "learning": False, "selected": {kind: default for kind, (_, default) in POLICY_FILES.items()},
         "awaiting_rating": OrderedDict(), "bundles": OrderedDict()}
@@ -228,7 +228,8 @@ def install_routes(app, *, settings, health_report, make_pair_bundle, reasoner, 
             "source": settings.source,
             "ai": {"enabled": reasoner is not None, "model": None if reasoner is None else reasoner.model,
                    "note": ai.off_reason() if reasoner is None else
-                   "One API call per case and configuration. A second one is refused."},
+                   "One API call per observation and configuration, at most 3 per case (the first look and 2 "
+                   "re-observations)."},
             "configurations": [{"id": key, "label": label, "ai": key in ai.AI_CONFIGURATIONS,
                                 "available": reasoner is not None or key not in ai.AI_CONFIGURATIONS}
                                for key, label in CONFIGURATION_LABELS.items()],

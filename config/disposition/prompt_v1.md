@@ -35,8 +35,8 @@ Dispositions:
 
 - `accept`, `reject`, `rework`: the specification gives this disposition for the part, and the evidence is good enough
   to say so.
-- `remeasure`: a person should measure the part, because the specification says so or because a better measurement
-  would settle it. You get no second look.
+- `remeasure`: the part should be measured again, because the specification says so or because a better measurement
+  would settle it. The system, not you, decides whether another look is taken or a person measures it.
 
 Refusals, when you will not give a disposition:
 

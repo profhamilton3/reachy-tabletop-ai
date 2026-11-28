@@ -29,8 +29,8 @@ A user gives Reachy a natural-language instruction such as *"Put the recyclable 
 # 1. Install Python 3.10 environment
 python3.10 -m venv .venv && source .venv/bin/activate
 
-# 2. Install dependencies
-pip install -e ".[dev]"
+# 2. Install dependencies ("ai" adds the Anthropic SDK: the AI reasoner needs it, and so do a few of the tests)
+pip install -e ".[dev,ai]"
 
 # 3. Run offline smoke test (no robot required)
 python scripts/run_perception_offline.py --image tests/fixtures/images/table_01.png
@@ -41,6 +41,10 @@ python scripts/run_demo_dry.py
 # 5. Run unit tests
 pytest tests/
 ```
+
+The AI reasoner (viewer decision panel, configurations C, D and F) is off by default. `scripts/reasoner_smoke.py`
+runs one or two development cases against the real API when `ANTHROPIC_API_KEY` is set; each case is one paid call,
+recorded in the decision store. CI never runs it.
 
 ## Robot connection (physical Reachy)
 

@@ -3,14 +3,22 @@
 C is the AI alone. D is the AI with the twin's feasibility block. F is D with configuration E run first, and E is a
 refusal-only veto: it can turn F's answer into a refusal, and into nothing else.
 
-EVENT-LEVEL ONLY: ONE CALL PER CASE
-One API call for one case under one configuration, for ever, whatever came back: never per frame and never retried
-(CLAUDE.md; #80 gate 6). `decide_once()` enforces it against the DecisionStore and is the way to call from an
-application. A repeated trial needs a new case_id. So a second AI look at the same presentation is impossible, and an
-AI `remeasure` always has the route "refer".
+EVENT-LEVEL ONLY: ONE CALL PER OBSERVATION, AT MOST 3 PER CASE
+One API call for one observation (request) under one configuration, whatever came back: never per frame and never
+retried (CLAUDE.md; #80 gate 6). A re-observation is a new request with reobservation_count + 1. A case has at most
+the first look and the rules' max_reobservations (2: three calls) under one configuration, the limit E has (owner,
+2026-11-27). So an AI `remeasure` has the route "reobserve" while reobservation_count is below that limit, and
+"refer" after it. The cap counts decisions, not the requests' own counts, and includes the decisions below that made
+no call, so it can only be stricter than three calls. A repeated trial needs a new case_id. `decide_once()` enforces
+both limits against the DecisionStore and is the way to call from an application.
+
+NOTHING MEASURED, NO CALL
+With no measured height, width, hole state or orientation, C, D and F refuse insufficient_evidence without calling
+the provider: the AI never decides from the expected design or the kind alone.
 
 OFF BY DEFAULT, on the pattern of reachy-1-2-sim web/panel_language.py
-With REACHY_AI_REASONER unset there is no reasoner and nothing leaves the machine. The key is read from
+With REACHY_AI_REASONER unset there is no reasoner and nothing leaves the machine. The anthropic package is optional
+(pip install -e .[ai]) and imported only for a call; without it the reasoner is off and says so. The key is read from
 ANTHROPIC_API_KEY at call time and held in a local: it is never logged, stored, returned or put in a decision. A
 failure is logged as its class and HTTP status only, never its message or body, which can carry a host or a header.
 
@@ -27,10 +35,12 @@ feasibility. Never the case, instance, lot, request or bundle names (an instance
 the input source or the injected degradation names.
 
 F, precisely
-E runs first. If E refuses, F is that refusal and no call is made. Otherwise the AI is asked. If E did not commit to
-a disposition (it asked for a remeasure) and the AI would accept, reject or rework, F is the refusal
-insufficient_evidence. E's own disposition never replaces the AI's, and a disagreement between two committed
-dispositions is not a veto. In D and F, E's twin gate (R9) then checks the AI's destination.
+E runs first. If E refuses, F is that refusal and no call is made. Otherwise the AI is asked (unless nothing was
+measured). If E asked for a remeasure, F is E's remeasure decision, with its route and reasons, and the AI's answer
+is recorded as a further reason, whatever it was: F never commits when E does not. A call that gives no usable answer
+is still reasoner_invalid. When E commits, F is the AI's answer: E's own disposition never replaces it, and a
+disagreement between two committed dispositions is not a veto. In D and F, E's twin gate (R9) checks the AI's
+destination.
 
 The prompt is config/disposition/prompt_v*.md followed by the specification's designs and tolerances. It has not been
 tuned against any case, and must not be until the split is frozen (#80 gate 1).
@@ -41,6 +51,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -65,6 +76,7 @@ EFFORT = "medium"
 #: Thinking spends this budget before any text, so a tight cap gives an empty reply, not a short one.
 MAX_TOKENS = 16000
 DEFAULT_TIMEOUT_S = 90.0
+SDK_MISSING = "the anthropic package is not installed: pip install -e .[ai]"
 
 #: What the model may answer. reasoner_invalid is this module's refusal, never the model's.
 REFUSAL_ANSWERS = tuple(r for r in c.REFUSALS if r != "reasoner_invalid")
@@ -93,7 +105,7 @@ class ReasonerError(RuntimeError):
 
 
 class AlreadyCalled(ReasonerError):
-    """This case has had its one call under this configuration."""
+    """No further call: this observation has had its one call under this configuration, or the case has had its cap."""
 
 
 class ProviderError(RuntimeError):
@@ -222,7 +234,10 @@ class AnthropicProvider(Provider):
         key = os.environ.get(KEY_ENV, "")  # a local only: never an attribute, which a repr or traceback could show
         if not key:
             raise ProviderError("no API key in the environment")
-        import anthropic
+        try:
+            import anthropic
+        except ImportError:
+            raise ProviderError(SDK_MISSING) from None
 
         with anthropic.Anthropic(api_key=key, max_retries=0, timeout=self.timeout_s) as client:
             response = client.messages.create(
@@ -247,34 +262,36 @@ class AIReasoner:
     def __init__(self, provider: Provider) -> None:
         self.provider = provider
         self.lock = threading.RLock()
-        self._called: set[tuple[str, str]] = set()  # covers a call whose decision could not then be stored
+        # (case_id, configuration) -> request_ids. Covers a call whose decision could not then be stored.
+        self._called: dict[tuple[str, str], set[str]] = {}
 
     @property
     def model(self) -> str:
         return self.provider.model
 
     def decide(self, request: c.Request, policy: p.Policy, prompt: Prompt, configuration: str,
-               code_sha: str) -> c.Decision:
-        """One decision, with at most one API call. A second call for the case and configuration raises
-        AlreadyCalled. Applications use decide_once(), which also checks the store."""
+               code_sha: str, recorded: frozenset[str] = frozenset()) -> c.Decision:
+        """One decision, with at most one API call. AlreadyCalled for a second decision on the request under this
+        configuration, or for one past the case's cap. `recorded` holds the request_ids of the case's decisions
+        under the configuration that are already stored. Applications use decide_once(), which supplies them."""
         if configuration not in AI_CONFIGURATIONS:
             raise ReasonerError(f"configuration {configuration!r} is not an AI configuration "
                                 f"({', '.join(AI_CONFIGURATIONS)})")
         claim = (request.case.case_id, configuration)
         with self.lock:
-            if claim in self._called:
-                raise AlreadyCalled(_already(*claim))
+            _check_unspent(request, configuration, self._called.get(claim, set()) | recorded,
+                           1 + policy.rules.max_reobservations)
             veto = p.decide(request, policy, "E", code_sha) if configuration == "F" else None
             # built before the claim: an error up to here has spent nothing
             system = system_prompt(prompt, policy.spec)
             user = json.dumps(model_input(request, configuration), sort_keys=True, allow_nan=False)
             hashes = dataclasses.replace(policy.hashes(), prompt_sha256=prompt.sha256)
-            self._called.add(claim)
+            self._called.setdefault(claim, set()).add(request.request_id)
 
-        def decision(disposition, refusal, reasons, confidence=None):
+        def decision(disposition, refusal, reasons, confidence=None, route=None):
             return c.Decision(
                 request_id=request.request_id, configuration=configuration, disposition=disposition,
-                refusal=refusal, remeasure_route="refer" if disposition == "remeasure" else None,
+                refusal=refusal, remeasure_route=route,
                 destination=p.destination_for(disposition), reasons=tuple(reasons), confidence=confidence,
                 policy=hashes, model_id=self.model, code_sha=code_sha, adjudication=None)
 
@@ -282,6 +299,10 @@ class AIReasoner:
             first = veto.reasons[0]
             why = f"E veto ({veto.refusal}), so the AI reasoner was not called: {first.text}"
             return decision(None, veto.refusal, [c.Reason(first.rule_id, why)])
+        if _nothing_measured(request.observation):
+            why = ("There are no observation measurements: height, width, hole state and orientation are all "
+                   "unmeasured, so the AI reasoner was not called. Refer.")
+            return decision(None, "insufficient_evidence", [c.Reason(AI_RULE_ID, why)])
 
         try:
             reply = self.provider.complete(system, user)
@@ -303,15 +324,14 @@ class AIReasoner:
             return decision(None, "reasoner_invalid",
                             [c.Reason(AI_RULE_ID, f"The AI reasoner's reply cannot be used ({exc}). Refer."), kept])
 
+        if veto is not None and veto.disposition == "remeasure":
+            proposed = c.Reason(AI_RULE_ID, f"The AI reasoner proposed {answer} (confidence {confidence:.2f}). E asks "
+                                            "to remeasure, so E's decision stands.")
+            return decision("remeasure", None, [*veto.reasons, proposed, kept], route=veto.remeasure_route)
+
         said = c.Reason(AI_RULE_ID, f"The AI reasoner answered {answer} (confidence {confidence:.2f}).")
         if answer in REFUSAL_ANSWERS:
             return decision(None, answer, [said, kept], confidence)
-
-        if answer in COMMITTING and veto is not None and veto.disposition not in COMMITTING:
-            first = veto.reasons[0]
-            why = (f"E veto (insufficient_evidence): E does not commit on this evidence, so the AI's {answer} "
-                   f"cannot be carried out. {first.text}")
-            return decision(None, "insufficient_evidence", [c.Reason(first.rule_id, why), said, kept])
 
         gate_notes = []
         if configuration != "C":
@@ -322,14 +342,32 @@ class AIReasoner:
                 return decision(None, refusal, [c.Reason(gate_id, why), said, kept])
             if why:
                 gate_notes.append(c.Reason(gate_id, why))
+        route = None
         if answer == "remeasure":
-            said = c.Reason(AI_RULE_ID, said.text + " A second AI look would be a second call: refer.")
-        return decision(answer, None, [said, *gate_notes, kept], confidence)
+            limit, done = policy.rules.max_reobservations, request.reobservation_count
+            route = "reobserve" if done < limit else "refer"
+            more = (f"Re-observation {done + 1} of {limit}." if done < limit else
+                    f"Already re-observed {done} times (limit {limit}): refer for human measurement.")
+            said = c.Reason(AI_RULE_ID, f"{said.text} {more}")
+        return decision(answer, None, [said, *gate_notes, kept], confidence, route)
 
 
-def _already(case_id: str, configuration: str) -> str:
-    return (f"case {case_id} has had its one AI decision under configuration {configuration}: "
-            "a repeated trial needs a new case_id")
+def _nothing_measured(observation: c.Observation) -> bool:
+    """No height, width, hole state or orientation. The kind alone is not a measurement."""
+    return (observation.height_mm is None and observation.width_mm is None
+            and observation.hole.state == "unknown" and observation.orientation == "unknown")
+
+
+def _check_unspent(request: c.Request, configuration: str, spent: set[str], cap: int) -> None:
+    case_id = request.case.case_id
+    if request.request_id in spent:
+        raise AlreadyCalled(f"request {request.request_id} of case {case_id} has had its one AI decision under "
+                            f"configuration {configuration}: another look is a new request with "
+                            "reobservation_count + 1")
+    if len(spent) >= cap:
+        raise AlreadyCalled(f"case {case_id} has had its {cap} AI decision{'s' if cap > 1 else ''} under "
+                            f"configuration {configuration} (the first look and {cap - 1} re-observations): "
+                            "a repeated trial needs a new case_id")
 
 
 def decide_once(reasoner: AIReasoner, store: DecisionStore, request: c.Request, policy: p.Policy, prompt: Prompt,
@@ -339,9 +377,8 @@ def decide_once(reasoner: AIReasoner, store: DecisionStore, request: c.Request, 
     so a call is not spent on a reply that cannot be kept. `extra_reasons` are appended before recording."""
     with reasoner.lock:
         store.check_request(request)
-        if store.has_decision(request.case.case_id, configuration):
-            raise AlreadyCalled(_already(request.case.case_id, configuration))
-        decision = reasoner.decide(request, policy, prompt, configuration, code_sha)
+        recorded = store.decided_requests(request.case.case_id, configuration)
+        decision = reasoner.decide(request, policy, prompt, configuration, code_sha, recorded)
         if extra_reasons:
             decision = dataclasses.replace(decision, reasons=decision.reasons + tuple(extra_reasons))
         return store.record(request, decision), decision
@@ -351,12 +388,24 @@ def enabled() -> bool:
     return os.environ.get(ENABLE_ENV, "0").lower() in ("1", "true", "yes", "on")
 
 
+def sdk_installed() -> bool:
+    """True if the anthropic package can be imported. It is looked for, not imported."""
+    try:
+        return importlib.util.find_spec("anthropic") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def build_reasoner() -> AIReasoner | None:
-    """The reasoner for this process, or None: the default. Off unless switched on, and off without a key."""
+    """The reasoner for this process, or None: the default. Off unless switched on, and off without a key or
+    without the optional anthropic package."""
     if not enabled():
         return None
     if not os.environ.get(KEY_ENV, ""):
         LOG.warning("%s is on but %s is not set; the AI reasoner stays off", ENABLE_ENV, KEY_ENV)
+        return None
+    if not sdk_installed():
+        LOG.warning("%s is on but %s; the AI reasoner stays off", ENABLE_ENV, SDK_MISSING)
         return None
     return AIReasoner(AnthropicProvider())
 
@@ -365,5 +414,9 @@ def off_reason() -> str:
     """Why build_reasoner() gives None, for the operator."""
     if not enabled():
         return f"The AI reasoner is off. Set {ENABLE_ENV}=1 and {KEY_ENV} before starting the viewer."
-    return f"The AI reasoner is off: {KEY_ENV} is not set."
+    if not os.environ.get(KEY_ENV, ""):
+        return f"The AI reasoner is off: {KEY_ENV} is not set."
+    if not sdk_installed():
+        return f"The AI reasoner is off: {SDK_MISSING}."
+    return "The AI reasoner is off."
 

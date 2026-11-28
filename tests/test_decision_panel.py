@@ -241,18 +241,42 @@ def test_an_ai_decision_keeps_the_raw_reply_and_does_not_show_the_models_words(v
     assert "MODEL-PROSE" in row["decision_json"]
 
 
-def test_one_ai_call_per_case_and_other_configurations_share_the_presentation(viewer):
+def test_one_ai_call_per_observation_and_other_configurations_share_the_presentation(viewer):
     first = decide(viewer, "C").json()
     again = decide(viewer, "C", request_id=first["request"]["request_id"])
-    assert again.status_code == 409 and "new case_id" in again.json()["detail"]
-    relook = decide(viewer, "C")  # a new request of the same case
-    assert relook.status_code == 409 and len(viewer.stub.calls) == 1
+    assert again.status_code == 409 and "has had its one AI decision" in again.json()["detail"]
+    assert len(viewer.stub.calls) == 1
     checks = viewer.service.health_checks
     second = decide(viewer, "D", request_id=first["request"]["request_id"]).json()
     assert second["request"]["request_id"] == first["request"]["request_id"] and len(viewer.stub.calls) == 2
     assert viewer.service.health_checks == checks  # the stored request is used unchanged
     assert len(stored(viewer, "SELECT * FROM requests")) == 1
     assert decide(viewer, "E", request_id="req-unknown").status_code == 409
+
+
+def test_the_ai_gets_the_first_look_and_two_re_observations(viewer):
+    viewer.stub.answer = "remeasure"
+    bodies = [decide(viewer, "C").json() for _ in range(3)]
+    assert [b["request"]["reobservation_count"] for b in bodies] == [0, 1, 2]
+    assert [b["decision"]["remeasure_route"] for b in bodies] == ["reobserve", "reobserve", "refer"]
+    assert [call["reobservation_count"] for call in viewer.stub.calls] == [0, 1, 2]
+    fourth = decide(viewer, "C")
+    assert fourth.status_code == 409 and "new case_id" in fourth.json()["detail"]
+    assert len(viewer.stub.calls) == 3 and len(stored(viewer, "SELECT * FROM requests")) == 3
+    assert "at most 3 per case" in viewer.get("/api/disposition/state").json()["ai"]["note"]
+
+
+@pytest.mark.parametrize("source", ["sim", "robot"])
+def test_the_ai_is_not_called_for_a_captured_pair_with_nothing_measured(make_viewer, source):
+    viewer = make_viewer(source=source)
+    pair = viewer.post("/api/stereo/pairs").json()
+    for configuration in ai.AI_CONFIGURATIONS:
+        body = decide(viewer, configuration, case_data=case(f"pair-{configuration}"),
+                      input_data={"mode": "pair", "pair_id": pair["pair_id"]}).json()
+        assert body["decision"]["refusal"] == "insufficient_evidence", body
+        assert "no observation measurements" in body["decision"]["reasons"][0]["text"]
+        assert body["decision"]["raw_reply_kept"] is False
+    assert viewer.stub.calls == []
 
 
 def test_a_new_look_at_a_case_is_counted_and_keeps_the_case(viewer):

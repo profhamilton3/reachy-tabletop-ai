@@ -712,6 +712,6 @@ def test_the_reasoner_imports_no_motion_sdk_or_network_module():
     for path in (ROOT / "src" / "reachy_ai" / "reasoner").glob("*.py"):
         imports = [line for line in path.read_text().splitlines() if line.lstrip().startswith(("import ", "from "))]
         if path.name == "ai.py":  # the AI reasoner (#83): the Anthropic SDK, imported only inside the provider call
-            assert [line for line in imports if "anthropic" in line] == ["        import anthropic"]
-            imports.remove("        import anthropic")
+            assert [line for line in imports if "anthropic" in line] == ["            import anthropic"]
+            imports.remove("            import anthropic")
         assert not [line for line in imports for name in banned if name in line], path.name

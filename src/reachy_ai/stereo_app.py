@@ -15,7 +15,8 @@ the operator's confirm: dry-run unless --allow-zoom-commands; it moves no joint.
 Starting any procedure first runs the read-only pre-capture health check (health/precapture.py) in the SDK process;
 a failed check refuses the procedure (the Sound check and Robot inventory only record it).
 The decision panel's routes (/api/disposition, #83) record part dispositions in the DecisionStore and move nothing; the
-AI reasoner behind configurations C, D and F is off unless REACHY_AI_REASONER=1 and ANTHROPIC_API_KEY is set.
+AI reasoner behind configurations C, D and F is off unless REACHY_AI_REASONER=1, ANTHROPIC_API_KEY is set and the
+optional anthropic package is installed (pip install -e .[ai]).
 """
 
 import asyncio

@@ -432,7 +432,7 @@ class DecisionStore:
 
     def check_request(self, request: c.Request) -> None:
         """Raise what record() would raise for this request. Writes nothing. For a caller that is about to spend
-        something it cannot take back, such as the AI reasoner's one call per case."""
+        something it cannot take back, such as one of the AI reasoner's calls."""
         self._stored(request)
 
     def case_requests(self, case_id: str) -> list[c.Request]:
@@ -446,9 +446,11 @@ class DecisionStore:
             raise DecisionStoreError(f"no request {request_id}")
         return c.Request.from_dict(json.loads(rows[0]["request_json"]))
 
-    def has_decision(self, case_id: str, configuration: str) -> bool:
-        return bool(self._query("SELECT 1 FROM decisions d JOIN requests r USING (request_id) "
-                                "WHERE r.case_id=? AND d.configuration=? LIMIT 1", (case_id, configuration)))
+    def decided_requests(self, case_id: str, configuration: str) -> frozenset[str]:
+        """The request_ids of the case that have a decision under the configuration."""
+        return frozenset(row["request_id"] for row in self._query(
+            "SELECT d.request_id FROM decisions d JOIN requests r USING (request_id) "
+            "WHERE r.case_id=? AND d.configuration=?", (case_id, configuration)))
 
     def get(self, decision_id: int) -> tuple[c.Request, c.Decision]:
         rows = self._query("SELECT r.request_json, d.decision_json FROM decisions d JOIN requests r "

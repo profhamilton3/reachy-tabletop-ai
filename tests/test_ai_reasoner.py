@@ -4,7 +4,10 @@ import hashlib
 import inspect
 import json
 import logging
+import os
 import socket
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -70,6 +73,14 @@ def with_twin(req, **feasible):
     return dataclasses.replace(req, twin=c.Twin(part_pose=None, path_feasibility=tuple(feasible.items())))
 
 
+UNMEASURED = {"height_mm": None, "width_mm": None, "hole": c.Hole("unknown", None), "orientation": "unknown"}
+CAP = 1 + POLICY.rules.max_reobservations  # the first look and the re-observations
+
+
+def decision_of(d):
+    return d.disposition, d.refusal, d.remeasure_route
+
+
 def not_ready(req):
     return dataclasses.replace(req, health=c.Health(cell_ready=False, precapture=None))
 
@@ -101,7 +112,7 @@ def test_every_allowed_answer_makes_a_valid_decision(configuration, answer):
         assert (decision.disposition, decision.refusal) == (answer, None)
     else:
         assert (decision.disposition, decision.refusal) == (None, answer)
-    assert decision.remeasure_route == ("refer" if answer == "remeasure" else None)  # no second AI look
+    assert decision.remeasure_route == ("reobserve" if answer == "remeasure" else None)  # the first look
     assert decision.destination == {"accept": "left_tray", "reject": "right_tray",
                                     "rework": "rework_tray"}.get(answer, "none")
     assert (decision.configuration, decision.model_id, decision.confidence) == (configuration, "model-stub", 0.8)
@@ -247,7 +258,7 @@ def test_the_prompt_hash_is_of_the_file_as_it_is_read(tmp_path):
         ai.load_prompt(tmp_path, "prompt_v9.md")
 
 
-# ---------------------------------------------------------------- one call per case
+# ---------------------------------------------------------------- one call per observation, capped per case
 
 @pytest.fixture
 def store(tmp_path):
@@ -255,33 +266,75 @@ def store(tmp_path):
         yield opened
 
 
+@pytest.mark.parametrize("configuration", ai.AI_CONFIGURATIONS)
+@pytest.mark.parametrize("count, route", [(0, "reobserve"), (1, "reobserve"), (2, "refer"), (3, "refer")])
+def test_an_ai_remeasure_is_reobserve_until_the_limit_then_refer(configuration, count, route):
+    decision = run(request(count=count), configuration, Stub(reply("remeasure")))
+    assert decision_of(decision) == ("remeasure", None, route)
+    said = decision.reasons[0].text
+    assert (f"Re-observation {count + 1} of 2" in said) if route == "reobserve" else ("refer" in said)
+
+
 @pytest.mark.parametrize("stub", [Stub(), Stub("nonsense"), Stub(error=TimeoutError())],
                          ids=["answered", "invalid", "failed"])
-def test_one_call_per_case_and_configuration_whatever_came_back(stub):
+def test_one_call_per_observation_whatever_came_back(stub):
     stub.calls = []
     reasoner = ai.AIReasoner(stub)
     reasoner.decide(request(), POLICY, PROMPT, "C", SHA)
-    for again in (request(), request(count=1)):  # the same look, and a later one of the same case
-        with pytest.raises(ai.AlreadyCalled, match="a repeated trial needs a new case_id"):
-            reasoner.decide(again, POLICY, PROMPT, "C", SHA)
+    with pytest.raises(ai.AlreadyCalled, match="req-case-1-0 .* reobservation_count \\+ 1"):
+        reasoner.decide(request(), POLICY, PROMPT, "C", SHA)
     assert len(stub.calls) == 1
+    reasoner.decide(request(count=1), POLICY, PROMPT, "C", SHA)        # a new look at the same case
     reasoner.decide(request(), POLICY, PROMPT, "D", SHA)               # another configuration of the ablation
     reasoner.decide(request(case_id="case-2"), POLICY, PROMPT, "C", SHA)  # another case
-    assert len(stub.calls) == 3
+    assert len(stub.calls) == 4
 
 
-def test_the_one_call_survives_a_restart_and_records_what_the_issue_asks_for(tmp_path):
-    path, first = tmp_path / "decisions.sqlite", Stub()
+@pytest.mark.parametrize("configuration", ai.AI_CONFIGURATIONS)
+def test_at_most_three_calls_per_case_the_first_look_and_two_re_observations(configuration):
+    assert CAP == 3
+    stub = Stub(reply("remeasure"))
+    reasoner = ai.AIReasoner(stub)
+    routes = [reasoner.decide(request(count=n), POLICY, PROMPT, configuration, SHA).remeasure_route
+              for n in range(CAP)]
+    assert routes == ["reobserve", "reobserve", "refer"]
+    fourth = request(count=3)
+    # the cap counts calls: a new request that claims to be a first look is refused too
+    understated = dataclasses.replace(request(count=0), request_id="req-case-1-again")
+    for again in (fourth, understated):
+        with pytest.raises(ai.AlreadyCalled, match="has had its 3 AI decisions"):
+            reasoner.decide(again, POLICY, PROMPT, configuration, SHA)
+    assert len(stub.calls) == CAP
+
+
+def test_the_cap_is_es_re_observation_limit():
+    rules = dataclasses.replace(POLICY.rules, max_reobservations=0)
+    policy = dataclasses.replace(POLICY, rules=rules)
+    reasoner = ai.AIReasoner(Stub(reply("remeasure")))
+    assert reasoner.decide(request(), policy, PROMPT, "C", SHA).remeasure_route == "refer"
+    with pytest.raises(ai.AlreadyCalled, match="has had its 1 AI decision"):
+        reasoner.decide(request(count=1), policy, PROMPT, "C", SHA)
+
+
+def test_both_limits_survive_a_restart_and_record_what_the_issue_asks_for(tmp_path):
+    path, stubs, made = tmp_path / "decisions.sqlite", [], []
+    for count in range(CAP):  # a new process for each look
+        stubs.append(Stub(reply("remeasure")))
+        with s.DecisionStore.open(path) as store:
+            made.append(ai.decide_once(ai.AIReasoner(stubs[-1]), store, request(count=count), POLICY, PROMPT,
+                                       "C", SHA))
     with s.DecisionStore.open(path) as store:
-        decision_id, made = ai.decide_once(ai.AIReasoner(first), store, request(), POLICY, PROMPT, "C", SHA)
-    with s.DecisionStore.open(path) as store:
-        second = Stub()
-        with pytest.raises(ai.AlreadyCalled):
-            ai.decide_once(ai.AIReasoner(second), store, request(count=1), POLICY, PROMPT, "C", SHA)
-        assert second.calls == [] and store.get(decision_id)[1] == made
-        (row,) = store._query("SELECT * FROM decisions")
-        assert (row["model_id"], row["prompt_sha256"]) == ("model-stub", PROMPT.sha256)
-        assert json.loads(row["decision_json"])["reasons"][-1]["text"] == first.text
+        last = Stub()
+        for again, why in ((request(count=1), "has had its one AI decision"), (request(count=3), "its 3 AI")):
+            with pytest.raises(ai.AlreadyCalled, match=why):
+                ai.decide_once(ai.AIReasoner(last), store, again, POLICY, PROMPT, "C", SHA)
+        assert last.calls == [] and [len(stub.calls) for stub in stubs] == [1, 1, 1]
+        decision_id, first = made[0]
+        assert store.get(decision_id)[1] == first
+        rows = store._query("SELECT * FROM decisions ORDER BY decision_id")
+        assert len(rows) == CAP
+        assert (rows[0]["model_id"], rows[0]["prompt_sha256"]) == ("model-stub", PROMPT.sha256)
+        assert json.loads(rows[0]["decision_json"])["reasons"][-1]["text"] == stubs[0].text
 
 
 @pytest.mark.parametrize("change, error", [
@@ -309,7 +362,41 @@ def test_a_call_whose_record_failed_is_still_spent(store, monkeypatch):
     assert len(stub.calls) == 1
 
 
-def test_two_threads_on_one_case_make_one_call(tmp_path):
+def test_the_cap_adds_the_stored_calls_to_those_whose_record_failed(store, monkeypatch):
+    for count in range(2):  # recorded by an earlier process
+        ai.decide_once(ai.AIReasoner(Stub()), store, request(count=count), POLICY, PROMPT, "C", SHA)
+    stub = Stub()
+    reasoner = ai.AIReasoner(stub)
+    monkeypatch.setattr(store, "record", lambda *a: (_ for _ in ()).throw(s.DecisionStoreError("disk full")))
+    with pytest.raises(s.DecisionStoreError, match="disk full"):
+        ai.decide_once(reasoner, store, request(count=2), POLICY, PROMPT, "C", SHA)
+    with pytest.raises(ai.AlreadyCalled, match="its 3 AI"):
+        ai.decide_once(reasoner, store, request(count=3), POLICY, PROMPT, "C", SHA)
+    assert len(stub.calls) == 1
+
+
+def test_threads_on_different_looks_of_one_case_stop_at_the_cap(tmp_path):
+    stub, refused = Stub(), []
+    reasoner = ai.AIReasoner(stub)
+    start = threading.Barrier(5)
+
+    def work(count):
+        start.wait()
+        with s.DecisionStore.open(tmp_path / "decisions.sqlite") as store:
+            try:
+                ai.decide_once(reasoner, store, request(count=count), POLICY, PROMPT, "C", SHA)
+            except ai.AlreadyCalled:
+                refused.append(True)
+
+    threads = [threading.Thread(target=work, args=(n,)) for n in range(5)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert (len(stub.calls), len(refused)) == (CAP, 5 - CAP)
+
+
+def test_two_threads_on_one_observation_make_one_call(tmp_path):
     stub, refused = Stub(), []
     reasoner = ai.AIReasoner(stub)
     start = threading.Barrier(4)
@@ -353,20 +440,33 @@ def test_when_e_refuses_f_is_that_refusal_and_no_call_is_made(req, refusal, rule
         "model-stub", PROMPT.sha256, None)
 
 
+@pytest.mark.parametrize("count, route", [(0, "reobserve"), (2, "refer")])
+@pytest.mark.parametrize("answer", ai.ANSWERS)
+def test_when_e_says_remeasure_f_is_es_remeasure_with_the_ais_proposal_recorded(answer, count, route):
+    req = blurred(request(count=count))
+    e = p.decide(req, POLICY, "E", SHA)
+    assert decision_of(e) == ("remeasure", None, route)
+    stub = Stub(reply(answer))
+    f = run(req, "F", stub)
+    assert decision_of(f) == decision_of(e) and f.destination == "none" and f.confidence is None
+    assert f.reasons[:len(e.reasons)] == e.reasons  # E's reasons, the deciding one first
+    proposed, kept = f.reasons[len(e.reasons):]
+    assert proposed.rule_id == ai.AI_RULE_ID and f"proposed {answer} (confidence 0.80)" in proposed.text
+    assert kept == c.Reason(ai.RAW_REPLY_RULE_ID, stub.text) and len(stub.calls) == 1
+    assert (f.model_id, f.policy.prompt_sha256) == ("model-stub", PROMPT.sha256)
+    assert c.loads_decision(c.dumps(f)) == f
+
+
 @pytest.mark.parametrize("answer", COMMITTING)
-def test_when_e_does_not_commit_f_refuses_what_the_ai_would_do(answer):
-    req = blurred(request())
-    assert p.decide(req, POLICY, "E", SHA).disposition == "remeasure"
-    assert run(req, "D", Stub(reply(answer))).disposition == answer
-    decision = run(req, "F", Stub(reply(answer)))
-    assert (decision.disposition, decision.refusal, decision.confidence) == (None, "insufficient_evidence", None)
-    assert rules_of(decision) == ["R2", "AI", ai.RAW_REPLY_RULE_ID] and "E veto" in decision.reasons[0].text
+def test_d_commits_where_e_asks_to_remeasure_and_f_does_not(answer):
+    assert run(blurred(request()), "D", Stub(reply(answer))).disposition == answer
+    assert run(blurred(request()), "F", Stub(reply(answer))).disposition == "remeasure"
 
 
-@pytest.mark.parametrize("answer", ["remeasure", "insufficient_evidence", "spec_unknown"])
-def test_when_e_does_not_commit_an_ai_abstention_stands(answer):
-    d, f = (run(blurred(request()), name, Stub(reply(answer))) for name in ("D", "F"))
-    assert (f.disposition, f.refusal, f.remeasure_route) == (d.disposition, d.refusal, d.remeasure_route)
+@pytest.mark.parametrize("stub", [Stub("nonsense"), Stub(error=TimeoutError())], ids=["invalid", "failed"])
+def test_when_e_says_remeasure_and_the_ai_proposes_nothing_usable_f_is_reasoner_invalid(stub):
+    decision = run(blurred(request()), "F", stub)
+    assert decision_of(decision) == (None, "reasoner_invalid", None)
 
 
 def test_a_disagreement_between_committed_dispositions_is_not_a_veto():
@@ -379,12 +479,60 @@ REQUESTS += [blurred(request()), not_ready(request()), with_twin(request(), righ
 
 
 @pytest.mark.parametrize("answer", list(ai.ANSWERS) + ["nonsense"])
-def test_across_every_fixture_f_is_either_d_or_a_refusal(answer):
+def test_across_every_fixture_f_is_d_a_refusal_or_es_remeasure_and_never_commits_alone(answer):
     text = reply(answer)
     for req in REQUESTS:
+        e = p.decide(req, POLICY, "E", SHA)
         d, f = (run(req, name, Stub(text)) for name in ("D", "F"))
-        same = (f.disposition, f.refusal, f.remeasure_route) == (d.disposition, d.refusal, d.remeasure_route)
-        assert same or (f.disposition is None and f.refusal is not None), req.request_id
+        refused = f.disposition is None and f.refusal is not None
+        es_remeasure = e.disposition == "remeasure" and decision_of(f) == decision_of(e)
+        assert decision_of(f) == decision_of(d) or refused or es_remeasure, req.request_id
+        if e.disposition not in COMMITTING:
+            assert f.disposition not in COMMITTING, req.request_id
+
+
+# ---------------------------------------------------------------- nothing measured: no call
+
+@pytest.mark.parametrize("configuration", ai.AI_CONFIGURATIONS)
+def test_with_nothing_measured_the_ai_is_not_called(configuration):
+    req = with_twin(request(**UNMEASURED), **ALL_PATHS)
+    assert req.case.expected_design_id == "PART221" and req.observation.kind == "cylinder"  # tempting, not enough
+    stub = Stub(reply("accept"))
+    decision = run(req, configuration, stub)
+    assert stub.calls == []
+    assert decision_of(decision) == (None, "insufficient_evidence", None) and decision.destination == "none"
+    assert rules_of(decision) == [ai.AI_RULE_ID] and "no observation measurements" in decision.reasons[0].text
+    assert (decision.model_id, decision.policy.prompt_sha256, decision.confidence) == (
+        "model-stub", PROMPT.sha256, None)
+    assert c.loads_decision(c.dumps(decision)) == decision
+
+
+@pytest.mark.parametrize("measured", [
+    {"height_mm": c.Measurement(69.85, 0.5)}, {"width_mm": c.Measurement(49.2, 0.5)},
+    {"hole": c.Hole("absent", None)}, {"hole": c.Hole("present", None)}, {"orientation": "upright"},
+], ids=["height", "width", "no hole", "a hole", "orientation"])
+@pytest.mark.parametrize("configuration", ai.AI_CONFIGURATIONS)
+def test_any_one_measurement_is_enough_to_ask_the_ai(configuration, measured):
+    stub = Stub(reply("remeasure"))
+    run(request(**{**UNMEASURED, **measured}), configuration, stub)
+    assert len(stub.calls) == 1
+
+
+def test_es_refusal_comes_before_the_missing_measurements_in_f():
+    req = not_ready(request(**UNMEASURED))
+    assert run(req, "F", Stub()).refusal == "cell_not_ready"
+    for configuration in ("C", "D"):
+        assert run(req, configuration, Stub()).refusal == "insufficient_evidence"
+
+
+def test_a_refusal_for_nothing_measured_uses_up_that_look(store):
+    stub = Stub()
+    reasoner = ai.AIReasoner(stub)
+    for count in range(CAP):
+        ai.decide_once(reasoner, store, request(count=count, **UNMEASURED), POLICY, PROMPT, "C", SHA)
+    with pytest.raises(ai.AlreadyCalled, match="its 3 AI"):
+        ai.decide_once(reasoner, store, request(count=CAP), POLICY, PROMPT, "C", SHA)
+    assert stub.calls == []
 
 
 # ---------------------------------------------------------------- the twin gate in D and F
@@ -488,6 +636,48 @@ def test_without_a_key_the_provider_makes_no_client(monkeypatch):
     monkeypatch.setattr(anthropic, "Anthropic", lambda **kwargs: pytest.fail("a client was made"))
     with pytest.raises(ai.ProviderError, match="no API key"):
         ai.AnthropicProvider().complete("system", "user")
+
+
+# ---------------------------------------------------------------- anthropic is optional
+
+def test_anthropic_is_in_the_ai_extra_and_not_a_dependency():
+    text = (ROOT / "pyproject.toml").read_text()
+    required = text.split("\ndependencies = [", 1)[1].split("\n]", 1)[0]
+    assert "anthropic" not in required
+    extras = text.split("[project.optional-dependencies]", 1)[1].split("\n[", 1)[0]
+    assert 'ai = [\n    "anthropic>=1.0",' in extras
+    assert 'pip install -e ".[dev,ai]"' in (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+
+@pytest.fixture
+def no_sdk(monkeypatch):
+    monkeypatch.setitem(sys.modules, "anthropic", None)  # `import anthropic` raises ImportError
+
+
+def test_without_the_package_the_reasoner_is_off_and_says_what_to_install(no_sdk, monkeypatch, caplog):
+    monkeypatch.setenv(ai.ENABLE_ENV, "1")
+    monkeypatch.setenv(ai.KEY_ENV, SECRET)
+    with caplog.at_level(logging.DEBUG):
+        assert ai.build_reasoner() is None
+    assert "pip install -e .[ai]" in ai.off_reason() and "pip install -e .[ai]" in caplog.text
+    assert SECRET not in caplog.text + ai.off_reason()
+
+
+def test_without_the_package_a_direct_call_is_a_clear_refusal(no_sdk, monkeypatch):
+    monkeypatch.setenv(ai.KEY_ENV, SECRET)
+    decision = run(request(), "C", ai.AnthropicProvider())
+    assert decision.refusal == "reasoner_invalid" and "pip install -e .[ai]" in decision.reasons[0].text
+    assert SECRET not in c.dumps(decision)
+
+
+def test_the_viewer_and_the_reasoner_import_without_the_package():
+    code = ("import sys; sys.modules['anthropic'] = None\n"
+            "import reachy_ai.stereo_app\n"
+            "from reachy_ai.reasoner import ai\n"
+            "assert ai.build_reasoner() is None and 'pip install -e .[ai]' in ai.off_reason(), ai.off_reason()\n")
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "src"), ai.ENABLE_ENV: "1", ai.KEY_ENV: "not-a-key"}
+    done = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
 
 
 def test_the_installed_sdk_takes_the_parameters_the_provider_sends():
