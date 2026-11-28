@@ -22,7 +22,11 @@ FAILS CLOSED
 
 COUNTING, NOT OVERWRITING (board poses; section 4.3)
 Only a head_sweep_fit board pose counts: a single pair, the twin or a taught pose is kept as an observation and
-changes no entry. THE SAME FIT COUNTS ONCE: one head sweep may build many scenes, and must not confirm itself.
+changes no entry. ONE MEASUREMENT COUNTS ONCE: one head sweep may build many scenes, and must not confirm itself.
+It is known by its SOURCE: (the sweep bundle's manifest SHA-256, a head pose that contributed), one key per pose
+(#96). A fit that shares any key with one already seen is not counted, whatever its numbers, so re-fitting a bundle
+with changed code does not count it again. Only where a fit has no source (no manifest, or the caller gave none),
+or the earlier one had none, are the fit's own values compared instead.
 In each rig, one live entry is the primary and any others are its competitors.
 - Agree (|difference| <= entry bound + observation bound on every axis, of the board centre): the entry's count
   goes up and its estimate is the count-weighted mean. Its bound is the largest single-observation bound that
@@ -45,8 +49,8 @@ is inactive, the failing pose starts a candidate in the new epoch, and the calle
 operator. A pass does not by itself edit an entry: counting then follows the rules above. With neither reference
 there is no check ("no_reference").
 
-scene_builder does not measure the board's orientation yet: its poses carry the identity quaternion (BOARD_NOTE).
-So the yaw check cannot fail on a builder-made scene until the builder measures yaw.
+scene_builder measures the yaw from the grid fit (#96) and gives it a bound. The check judges the measured yaw
+against the threshold; the bound is recorded with the check when the caller passes it, and judges nothing.
 """
 from __future__ import annotations
 
@@ -61,13 +65,13 @@ import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from reachy_ai.perception import scene_contract as sc
 
 LOG = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BUSY_TIMEOUT_S = 10.0
 RIG_MOVED_THRESHOLD_M = 0.010  # OD-7, on the board centre; re-check after robot head-sweep bundles
 RIG_TURNED_THRESHOLD_DEG = 2.0  # PROVISIONAL (owner, 2026-11-27), on the board's yaw about the torso z axis
@@ -153,9 +157,42 @@ _SCHEMA = (
     for table in _NEVER_DELETED
 )
 
-_OBJECTS = frozenset(statement.split()[2] for statement in _SCHEMA)
-#: schema version n -> the statements that take a store from n to n + 1. None yet.
-_MIGRATIONS: dict[int, tuple[str, ...]] = {}
+#: schema version n -> the statements that take a store from n to n + 1. _SCHEMA above is version 1.
+_MIGRATIONS: dict[int, tuple[str, ...]] = {
+    1: (  # #96: what each board observation was fitted from
+        """CREATE TABLE fit_sources (
+            source_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            observation_id   INTEGER NOT NULL REFERENCES observations(observation_id),
+            manifest_sha256  TEXT NOT NULL,
+            pose_name        TEXT NOT NULL
+        )""",
+        "CREATE INDEX idx_fit_sources_key ON fit_sources(manifest_sha256, pose_name)",
+        "CREATE INDEX idx_fit_sources_observation ON fit_sources(observation_id)",
+    ) + tuple(
+        f"CREATE TRIGGER fit_sources_no_{verb.lower()} BEFORE {verb} ON fit_sources "
+        "BEGIN SELECT RAISE(ABORT, 'fit_sources rows are immutable'); END"
+        for verb in ("UPDATE", "DELETE")),
+}
+
+
+def _objects(version: int) -> frozenset:
+    """The names a store of schema `version` must hold."""
+    statements = list(_SCHEMA) + [s for v in range(1, version) for s in _MIGRATIONS[v]]
+    return frozenset(statement.split()[2] for statement in statements)
+
+
+@dataclass(frozen=True)
+class FitSource:
+    """One source key of a board fit: the sweep bundle's manifest SHA-256 and a head pose that contributed."""
+    manifest_sha256: str
+    pose_name: str
+
+    def __post_init__(self):
+        if not (isinstance(self.manifest_sha256, str) and len(self.manifest_sha256) == 64
+                and all(c in "0123456789abcdef" for c in self.manifest_sha256)):
+            raise SceneMemoryError("a fit source needs a bundle manifest SHA-256 (64 lower-case hex characters)")
+        if not isinstance(self.pose_name, str) or not self.pose_name.strip():
+            raise SceneMemoryError("a fit source needs the head pose's name")
 
 
 class SceneMemoryError(RuntimeError):
@@ -297,6 +334,9 @@ def _create(path: Path) -> None:
             conn.execute("BEGIN")
             for statement in _SCHEMA:
                 conn.execute(statement)
+            for version in range(1, SCHEMA_VERSION):
+                for statement in _MIGRATIONS[version]:
+                    conn.execute(statement)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.execute("COMMIT")
         finally:
@@ -361,7 +401,7 @@ class SceneMemoryStore:
         if not 1 <= version <= SCHEMA_VERSION:
             raise SceneMemoryError(f"{self.path}: schema version {version}, this code reads 1 to {SCHEMA_VERSION}")
         objects = {r[0] for r in self._conn.execute("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")}
-        missing = sorted(_OBJECTS - objects)
+        missing = sorted(_objects(version) - objects)
         if missing:
             raise SceneMemoryError(f"{self.path}: not a scene memory, it lacks {', '.join(missing)}")
         return version
@@ -553,12 +593,27 @@ class SceneMemoryStore:
             self._update(entry_id, state="invalidated", invalid_reason=reason.strip(), challenges=None, span_count=0)
             self._choose_primary(rows[0]["rig_id"])
 
-    def add_scene(self, scene: sc.PerceivedScene, twin_board: sc.BoardPose | None = None) -> SceneRecord:
+    def add_scene(self, scene: sc.PerceivedScene, twin_board: sc.BoardPose | None = None,
+                  board_sources: Iterable[tuple[str, str]] = (),
+                  board_yaw_bound_deg: float | None = None) -> SceneRecord:
         """Store a scene of the current rig: its document, its observations, the rig check and the board count.
-        All of it happens, or none of it. `twin_board` (source "twin") is the twin's grid, also checked."""
+        All of it happens, or none of it. `twin_board` (source "twin") is the twin's grid, also checked.
+
+        `board_sources` are the board fit's keys, (bundle manifest SHA-256, pose name) per contributing pose
+        (scene_builder.HeadSweepFit.sources); only a head_sweep_fit board has them. `board_yaw_bound_deg` is
+        recorded with the rig check."""
         if not isinstance(scene, sc.PerceivedScene):
             raise SceneMemoryError("add_scene() takes a validated PerceivedScene")
         _check_rig(scene.rig)
+        sources = tuple(FitSource(*source) for source in board_sources)
+        if sources:
+            if scene.board is None or scene.board.source != "head_sweep_fit":
+                raise SceneMemoryError("board_sources belong to a head_sweep_fit board pose")
+            if len(set(sources)) != len(sources) or len(sources) != scene.board.poses_used:
+                raise SceneMemoryError(f"board_sources must name each of the fit's {scene.board.poses_used} poses "
+                                       f"once, got {len(sources)}")
+        if board_yaw_bound_deg is not None and not (math.isfinite(board_yaw_bound_deg) and board_yaw_bound_deg >= 0):
+            raise SceneMemoryError("board_yaw_bound_deg must be a finite number, zero or more")
         if twin_board is not None and (not isinstance(twin_board, sc.BoardPose) or twin_board.source != "twin"):
             raise SceneMemoryError('twin_board must be a BoardPose with source "twin"')
         raw = sc.dumps(scene).encode("utf-8")
@@ -582,7 +637,7 @@ class SceneMemoryStore:
 
                 duplicate = None
                 if scene.board is not None and scene.board.source == "head_sweep_fit":
-                    duplicate = self._same_fit(scene)
+                    duplicate = self._seen_before(scene, sources)
                 check = None
                 if scene.board is not None and scene.board.source == "head_sweep_fit" and duplicate is None:
                     check = self._rig_check(scene.board, twin_board, rig_id, current.rig_epoch)
@@ -598,11 +653,12 @@ class SceneMemoryStore:
                     self._observe(scene, rig_id, "rig_check", {
                         "verdict": check.verdict, "distance_m": check.distance_m,
                         "twin_distance_m": check.twin_distance_m, "yaw_deg": check.yaw_deg,
-                        "twin_yaw_deg": check.twin_yaw_deg, "epoch_before": check.epoch_before,
+                        "twin_yaw_deg": check.twin_yaw_deg, "board_yaw_bound_deg": board_yaw_bound_deg,
+                        "epoch_before": check.epoch_before,
                         "epoch_after": check.epoch_after, "threshold_m": RIG_MOVED_THRESHOLD_M,
                         "yaw_threshold_deg": RIG_TURNED_THRESHOLD_DEG,
                         "message": check.message})
-                board = self._board(scene, rig_id, duplicate)
+                board = self._board(scene, rig_id, duplicate, sources)
                 for seen in scene.objects:
                     self._observe(scene, rig_id, "object_sighting", seen.to_dict())
         except BaseException as exc:
@@ -631,12 +687,24 @@ class SceneMemoryStore:
             "scene_id": scene.scene_id, "rig_id": rig_id, "kind": kind, "payload_json": _canonical(payload),
             "fingerprint": fingerprint, "recorded_utc": _now()})
 
-    def _same_fit(self, scene: sc.PerceivedScene) -> int | None:
-        """The observation that already holds this very board fit, in this rig at any epoch."""
+    def _seen_before(self, scene: sc.PerceivedScene, sources: tuple) -> tuple[int, str] | None:
+        """(the earlier observation that holds this measurement, how it is known), in this rig at any epoch."""
+        scope = _scope_key(scene.rig)
+        for source in sources:
+            rows = self._query(
+                "SELECT o.observation_id FROM fit_sources f JOIN observations o USING (observation_id) "
+                "JOIN rigs r USING (rig_id) WHERE f.manifest_sha256=? AND f.pose_name=? AND r.scope_key=? "
+                "ORDER BY o.observation_id LIMIT 1", (source.manifest_sha256, source.pose_name, scope))
+            if rows:
+                return (rows[0]["observation_id"], f"the same source (bundle {source.manifest_sha256[:12]}, pose "
+                                                   f"{source.pose_name})")
+        # the fit's values, only where this fit or the earlier one has no source
+        unsourced = "" if not sources else (" AND NOT EXISTS (SELECT 1 FROM fit_sources f WHERE "
+                                            "f.observation_id=o.observation_id)")
         rows = self._query(
             "SELECT o.observation_id FROM observations o JOIN rigs r USING (rig_id) WHERE o.kind='board_pose' AND "
-            "o.fingerprint=? AND r.scope_key=? LIMIT 1", (_fingerprint(scene.board), _scope_key(scene.rig)))
-        return rows[0]["observation_id"] if rows else None
+            f"o.fingerprint=? AND r.scope_key=?{unsourced} LIMIT 1", (_fingerprint(scene.board), scope))
+        return (rows[0]["observation_id"], "the same board fit") if rows else None
 
     def _rig_check(self, board: sc.BoardPose, twin: sc.BoardPose | None, rig_id: int, epoch: int) -> RigCheck:
         rows = self._query("SELECT * FROM entries WHERE rig_id=? AND state='confirmed'", (rig_id,))
@@ -665,17 +733,22 @@ class SceneMemoryStore:
                                 f"match: rig_epoch is now {epoch + 1}, and what was remembered before is inactive.",
                         **found)
 
-    def _board(self, scene: sc.PerceivedScene, rig_id: int, duplicate: int | None) -> BoardUpdate:
+    def _board(self, scene: sc.PerceivedScene, rig_id: int, duplicate: tuple | None,
+               sources: tuple = ()) -> BoardUpdate:
         board = scene.board
         if board is None:
             return BoardUpdate("no_board", None, "The scene has no board pose.")
         observation = self._observe(scene, rig_id, "board_pose", board.to_dict(), _fingerprint(board))
+        for source in sources:  # every key this observation carries, counted or not
+            self._insert("fit_sources", {"observation_id": observation, "manifest_sha256": source.manifest_sha256,
+                                         "pose_name": source.pose_name})
         if board.source != "head_sweep_fit":
             return BoardUpdate("not_counted", None,
                                f"A {board.source} board pose is kept as an observation; only a head sweep counts.")
         if duplicate is not None:
+            earlier, how = duplicate
             return BoardUpdate("not_counted", None,
-                               f"The same board fit as observation {duplicate}: one measurement counts once.")
+                               f"Observation {earlier} has {how}: one measurement counts once.")
         live = self._query("SELECT * FROM entries WHERE rig_id=? AND state IN ('candidate', 'confirmed') "
                            "ORDER BY challenges IS NOT NULL, entry_id", (rig_id,))  # the primary first
         for row in live:

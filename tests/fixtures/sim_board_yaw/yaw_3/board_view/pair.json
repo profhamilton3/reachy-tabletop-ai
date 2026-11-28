@@ -1,0 +1,25 @@
+{
+ "pair_id": "yaw3-board_view",
+ "source": "sim",
+ "camera_context": {
+  "analysis_profile": {
+   "source": "sim",
+   "lens": "distorted"
+  },
+  "calibration_id": "sim-offline",
+  "zoom": null
+ },
+ "head_context": {
+  "joints": {
+   "neck_roll": {
+    "present_deg": -0.0
+   },
+   "neck_pitch": {
+    "present_deg": 64.784
+   },
+   "neck_yaw": {
+    "present_deg": -0.0
+   }
+  }
+ }
+}

@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import uuid
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -469,13 +470,65 @@ def _analyser():
     return analyze_capture_bundle
 
 
-IDENTITY_QUAT = (1.0, 0.0, 0.0, 0.0)
-BOARD_NOTE = ("board orientation is assumed axis-aligned with the torso (identity quaternion); only the centre is "
-              "measured, and board bounds are the observed spread, not a coverage claim")
+IDENTITY_QUAT = (1.0, 0.0, 0.0, 0.0)  # the twin's and a taught board's: a fitted board has its measured yaw
+BOARD_NOTE = ("board yaw is measured from the grid fit (the direction across the grid's rows, far and middle rows) "
+              "in the torso frame; roll and pitch are assumed level; the board bounds are the observed spread, not a "
+              "coverage claim")
+#: What the yaw bound never goes below, degrees. On sim renders the fit read a turned grid 0.2 deg low at every angle
+#: tried (-3, 0, 1 and 3 deg; reachy-1-2-sim c46f4e4). Provisional: nothing is known about the robot's.
+YAW_BOUND_FLOOR_DEG = 0.3
+
+
+def yaw_quat(yaw_deg: float) -> Tuple[float, float, float, float]:
+    """A level board turned `yaw_deg` about the torso's +z: [w, x, y, z]."""
+    half = math.radians(yaw_deg) / 2.0
+    return (math.cos(half), 0.0, 0.0, math.sin(half))
+
+
+def _yaw_bound_deg(max_deviation_deg: float, fit_sigma_deg: float) -> float:
+    return YAW_BOUND_FLOOR_DEG + max_deviation_deg + 2.0 * fit_sigma_deg
+
+
+def _yaw_note(yaw_deg: float, bound_deg: float) -> str:
+    return "board yaw %+.2f deg, bound +-%.2f deg" % (yaw_deg, bound_deg)
+
+
+@dataclass(frozen=True)
+class HeadSweepFit:
+    """A head sweep's board pose and what perceived_scene.v1 has no field for: the yaw's bound, and which captured
+    poses the fit came from (the keys SceneMemoryStore counts a sighting by)."""
+    pose: Optional[sc.BoardPose]
+    warnings: Tuple[str, ...]
+    yaw_deg: Optional[float] = None
+    yaw_bound_deg: Optional[float] = None
+    manifest_sha256: Optional[str] = None       # None: the source has no manifest
+    pose_names: Tuple[str, ...] = ()            # the head poses that contributed
+
+    @property
+    def sources(self) -> Tuple[Tuple[str, str], ...]:
+        """(bundle manifest SHA-256, pose name) per contributing pose; () for a source without a manifest."""
+        if self.manifest_sha256 is None:
+            return ()
+        return tuple((self.manifest_sha256, name) for name in self.pose_names)
+
+
+def _manifest_sha256(path: Path) -> Optional[str]:
+    """The SHA-256 of a bundle's own manifest.json bytes, or None if it has none."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return _sha256(archive.read("manifest.json"))
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
 
 
 def board_from_head_sweep(path, expected_source: str = "sim") -> Tuple[Optional[sc.BoardPose], List[str]]:
     """BoardPose from a head-sweep bundle, by analyze_capture_bundle.analyze_head. (pose or None, warnings)."""
+    fit = head_sweep_fit(path, expected_source)
+    return fit.pose, list(fit.warnings)
+
+
+def head_sweep_fit(path, expected_source: str = "sim") -> HeadSweepFit:
+    """board_from_head_sweep with the yaw's bound and the fit's source keys."""
     analyse = _analyser()
     manifest, files, capture = analyse.load(Path(path))
     if capture.get("kind") != "head":
@@ -484,23 +537,28 @@ def board_from_head_sweep(path, expected_source: str = "sim") -> Tuple[Optional[
     if source != expected_source:
         raise SceneRefused("the head sweep is a %s capture but the pair is a %s capture" % (source, expected_source))
     if source != "sim":
-        return None, ["no board pose: the robot torso-frame conversion is not available (design section 7)"]
+        return HeadSweepFit(None, ("no board pose: the robot torso-frame conversion is not available (design "
+                                   "section 7)",))
     depth = PairDepth("sim", lens)
     if depth.geometry.error:
         raise SceneRefused(depth.geometry.error)
     result = analyse.analyze_head(capture, files, depth)
     poses = result["poses"]
     if not poses:
-        return None, ["head sweep: the grid was found at no pose, so there is no board pose"]
+        return HeadSweepFit(None, ("head sweep: the grid was found at no pose, so there is no board pose",))
     centres = np.array([p["centre_torso_m"] for p in poses.values()])
     rms = [r["fit_rms_mm"] for r in result["rows"] if "fit_rms_mm" in r and "centre_torso_m" in r]
     spread = float(result["spread"]["max_deviation_mm"]) if result.get("spread") else 0.0
     fit = float(np.mean(rms)) if rms else 0.0
     half = max(spread, fit) / 1000.0
-    pose = sc.BoardPose(tuple(float(v) for v in centres.mean(axis=0)), IDENTITY_QUAT, (half,) * 3,
+    yaw = float(result["yaw"]["mean_deg"])
+    yaw_bound = _yaw_bound_deg(result["yaw"]["max_deviation_deg"], result["yaw"]["fit_sigma_deg"])
+    pose = sc.BoardPose(tuple(float(v) for v in centres.mean(axis=0)), yaw_quat(yaw), (half,) * 3,
                         "head_sweep_fit" if len(poses) > 1 else "single_pair_fit", len(poses), fit,
                         spread if len(poses) > 1 else 0.0)
-    return pose, [BOARD_NOTE] + list(result.get("findings", []))
+    warnings = (BOARD_NOTE, _yaw_note(yaw, yaw_bound)) + tuple(result.get("findings", []))
+    names = tuple(p.get("preset") or label for label, p in poses.items())
+    return HeadSweepFit(pose, warnings, yaw, yaw_bound, _manifest_sha256(Path(path)), names)
 
 
 def board_from_pair(bundle: PairBundle, neck: Sequence[float]) -> Tuple[Optional[sc.BoardPose], List[str]]:
@@ -520,11 +578,13 @@ def board_from_pair(bundle: PairBundle, neck: Sequence[float]) -> Tuple[Optional
     centre, detail = analyse.board_centre_camera(depth, left, right)
     if centre is None:
         return None, ["no board pose: " + detail.get("reason", "grid not found")]
-    torso = camera_to_torso(centre, {n: {"present_deg": v} for n, v in zip(NECK_JOINTS, neck)})
+    head = {n: {"present_deg": v} for n, v in zip(NECK_JOINTS, neck)}
+    torso = camera_to_torso(centre, head)
     rms = float(detail["fit_rms_mm"])
-    pose = sc.BoardPose(tuple(float(v) for v in torso), IDENTITY_QUAT, (rms / 1000.0,) * 3, "single_pair_fit", 1, rms,
+    yaw = analyse.torso_yaw_deg(detail["x_axis_camera"], head)
+    pose = sc.BoardPose(tuple(float(v) for v in torso), yaw_quat(yaw), (rms / 1000.0,) * 3, "single_pair_fit", 1, rms,
                         0.0)
-    return pose, [BOARD_NOTE]
+    return pose, [BOARD_NOTE, _yaw_note(yaw, _yaw_bound_deg(0.0, detail["yaw_sigma_deg"]))]
 
 
 @dataclass(frozen=True)

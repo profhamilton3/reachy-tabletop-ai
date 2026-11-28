@@ -95,6 +95,8 @@ ZOOM_MATCH_TOL = 0.03
 HEAD_SPREAD_LIMIT_MM = 20.0
 #: Head sweep: neck read-backs closer than this (deg) on every joint count as the same pose.
 SAME_POSE_DEG = 0.5
+#: The board's yaw (#96) uses the far and middle rows alone when they give at least this many corners.
+MIN_YAW_CORNERS = 16
 #: Sound check: the channel count the loopback should show without a channel layout ("plain").
 SOUND_CHANNELS_EXPECTED = 4
 #: Why a processed channel's tone margin is reported but not judged.
@@ -506,7 +508,9 @@ def board_centre_camera(depth, left, right):
 
     Grid corners found in both eyes (derive_stereo_calibration's finder) are triangulated with the
     profile, as check_depth_error.py does; the known board layout is fitted to them rigidly.
-    Returns (xyz or None, detail)."""
+    Returns (xyz or None, detail). The detail also holds the board's orientation for its yaw (#96): the
+    direction of +x (toward the far row, across the grid's rows) from a second fit to the far and middle rows
+    alone, because the near row is often clipped by the robot's chest and its corners then turn the fit."""
     g = depth.geometry
     g.prepare(right.shape)
     found = [grid.board_points_detail(left, "left", g, near_row_hidden=True),
@@ -529,12 +533,37 @@ def board_centre_camera(depth, left, right):
               "cells": len(shared) // 4}
     if detail["cells"] < 9:
         detail["cells_note"] = f"{detail['cells']} of 9 cells (near row hidden)"
+    clear = board[:, 0] > -grid.PITCH / 2
+    if clear.sum() < MIN_YAW_CORNERS:
+        clear = np.ones(len(board), bool)
+    turn, offset = kabsch(board[clear], right_cam[clear])
+    residual = np.linalg.norm(board[clear] @ turn.T + offset - right_cam[clear], axis=1)
+    spread = board[clear][:, :2] - board[clear][:, :2].mean(axis=0)
+    detail.update(x_axis_camera=[round(float(v), 6) for v in turn[:, 0]], yaw_corners=int(clear.sum()),
+                  # one standard error of a rotation fitted to n corners at an RMS radius r: rms / (r sqrt n)
+                  yaw_sigma_deg=round(float(np.degrees(np.sqrt((residual ** 2).mean())
+                                                       / (np.sqrt((spread ** 2).sum(axis=1).mean())
+                                                          * np.sqrt(clear.sum())))), 3))
     return centre, detail
+
+
+def torso_yaw_deg(x_axis_camera, pose):
+    """The heading of the board's +x axis about the torso's +z, degrees, from its direction in the camera."""
+    ahead, origin = camera_to_torso(np.array([x_axis_camera, [0.0, 0.0, 0.0]], float), pose)
+    direction = ahead - origin
+    return float(np.degrees(np.arctan2(direction[1], direction[0])))
+
+
+def mean_angle_deg(angles):
+    """The circular mean of angles in degrees, and the largest turn from it."""
+    radians = np.radians(angles)
+    mean = float(np.degrees(np.arctan2(np.sin(radians).mean(), np.cos(radians).mean())))
+    return mean, float(max(abs((a - mean + 180.0) % 360.0 - 180.0) for a in angles))
 
 
 def analyze_head(capture, files, depth):
     """Board centre in the torso frame per head pose, from stereo and the recorded neck angles; its spread."""
-    rows, findings, poses = [], [], {}
+    rows, findings, poses, turns = [], [], {}, {}
     for step in capture["steps"]:
         if not step["captures"]:
             continue
@@ -552,13 +581,22 @@ def analyze_head(capture, files, depth):
                     pose = {name: {"present_deg": value} for name, value in row["neck_deg"].items()}
                     torso = camera_to_torso(centre, pose)
                     row["centre_torso_m"] = torso.round(4).tolist()
+                    row["yaw_deg"] = round(torso_yaw_deg(row["x_axis_camera"], pose), 3)
                     poses.setdefault(step["label"], []).append((torso, row["neck_deg"]))
+                    turns.setdefault(step["label"], []).append(row)
             if "reason" in row:
                 findings.append(f"{step['label']} ({entry['folder']}): {row['reason']}.")
             rows.append(row)
     per_pose = {label: (np.median([t for t, _ in items], axis=0), items[0][1]) for label, items in poses.items()}
     result = {"kind": "head", "rows": rows, "spread_limit_mm": HEAD_SPREAD_LIMIT_MM, "poses": {
-        label: {"centre_torso_m": c.round(4).tolist(), "neck_deg": n} for label, (c, n) in per_pose.items()}}
+        label: {"centre_torso_m": c.round(4).tolist(), "neck_deg": n,
+                "preset": turns[label][0]["preset"],
+                "yaw_deg": round(mean_angle_deg([r["yaw_deg"] for r in turns[label]])[0], 3)}
+        for label, (c, n) in per_pose.items()}}
+    if per_pose:
+        mean, deviation_deg = mean_angle_deg([p["yaw_deg"] for p in result["poses"].values()])
+        result["yaw"] = {"mean_deg": round(mean, 3), "max_deviation_deg": round(deviation_deg, 3),
+                         "fit_sigma_deg": max(r["yaw_sigma_deg"] for found in turns.values() for r in found)}
     if len(per_pose) < 2:
         findings.append("Fewer than two head poses with the board found: the spread cannot be assessed.")
         result.update(spread=None, findings=findings)
