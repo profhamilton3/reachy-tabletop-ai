@@ -343,6 +343,80 @@ def depth_ruler_procedure(distances=DISTANCES_M, captures_per_step=3) -> Procedu
         captures_per_step=captures_per_step)
 
 
+# --- Part presentation (#84): one part at the marked spot, seen at zoom OUT and IN from board_view ----------
+
+PART_ZOOMS = ("OUT", "IN")
+PART_FORMAT_VERSION = 1
+#: What the operator may name: a printed design (docs: PART<S><H><F>), another object, or the empty board (the
+#: reference every part run is compared with).
+PART_EMPTY = "empty"
+PART_DESIGNS = tuple(f"PART{s}{h}{f}" for s in "12" for h in "12" for f in "01")
+PART_DESIGN_CHOICES = (PART_EMPTY, *PART_DESIGNS, "other")
+PART_ORIENTATIONS = ("upright", "lying", "rotated")
+PART_LABELS = ("clear", "blurred", "occluded")
+PART_SPOTS = tuple(f"r{r}c{c}" for r in (1, 2, 3) for c in (1, 2, 3))
+PART_DEFAULT_SPOT = "r2c2"
+
+
+class GroundTruthRequired(ValueError):
+    pass
+
+
+def part_ground_truth(design_id: str, orientation: str | None, top_face_visible: bool | None, observation: str | None,
+                      spot: str = PART_DEFAULT_SPOT, instance: str = "", note: str = "") -> dict:
+    """The operator's labels for one presentation, checked. They are for GRADING: no analyser reads them
+    (perception/part_perception.py never opens ground_truth.json). The empty board has no part to label."""
+    if design_id not in PART_DESIGN_CHOICES:
+        raise ValueError(f"design_id must be one of {', '.join(PART_DESIGN_CHOICES)}")
+    if spot not in PART_SPOTS:
+        raise ValueError(f"spot must be a square, {PART_SPOTS[0]} .. {PART_SPOTS[-1]}")
+    if design_id == PART_EMPTY:
+        if orientation is not None or top_face_visible is not None or observation not in (None, "clear"):
+            raise ValueError("the empty board has no orientation, top face or observation label")
+        observation = "clear"
+    else:
+        if orientation not in PART_ORIENTATIONS:
+            raise ValueError(f"orientation must be one of {', '.join(PART_ORIENTATIONS)}")
+        if not isinstance(top_face_visible, bool):
+            raise ValueError("say whether the part's top face (the face a hole would be in) is visible")
+        if observation not in PART_LABELS:
+            raise ValueError(f"the observation label must be one of {', '.join(PART_LABELS)}")
+    for name, value in (("instance", instance), ("note", note)):
+        if not isinstance(value, str) or len(value) > MAX_NOTE_CHARS:
+            raise ValueError(f"{name} must be at most {MAX_NOTE_CHARS} characters")
+    return {"format_version": PART_FORMAT_VERSION, "design_id": design_id, "instance": instance.strip(),
+            "orientation": orientation, "top_face_visible": top_face_visible, "observation_label": observation,
+            "spot": spot, "note": note.strip()}
+
+
+def part_presentation_procedure(captures_per_step=2) -> Procedure:
+    """The structure of the Zoom FOV check (v5) with a part on the board: the starting zoom read first and restored
+    exactly at the end, a refocus on the board at each level before its captures."""
+    steps = tuple(Step(
+        id=f"zoom_{level.lower()}", label=f"Zoom {level}", zoom=level, focus="sweep",
+        instruction=f"Zoom {level}: tick the confirm box and press 'Set zoom {level}' (the lens moves; dry-run "
+                    f"unless the viewer was started with --allow-zoom-commands), wait for the read-back. Then "
+                    f"refocus on the board: tick its confirm box and press 'Refocus on the board' (a focus sweep, "
+                    f"about two minutes; a changed zoom leaves the lens out of focus). Then press Capture "
+                    f"{captures_per_step} times, touching nothing between them.") for level in PART_ZOOMS)
+    return Procedure(
+        id="part_presentation", name="Part presentation", version="1", kind="part",
+        summary="One part at the marked spot, seen from the board view at zoom OUT and IN. Run it once with the board "
+                "EMPTY first: that run is the reference every part is compared with. The starting zoom and the raw "
+                "zoom and focus are read first and put back exactly at the end.",
+        setup=("Arm at rest on the table, the taped board clear and well lit; the head is moved only by the head "
+               "steps below. No arm or gripper motion.",
+               f"Place ONE part on the marked spot (square {PART_DEFAULT_SPOT}, the board's centre), flat on the "
+               "board, then keep hands and everything else off the board. For the reference run, leave the board "
+               "empty.",
+               "Before the first capture, record what you placed: design id, orientation, whether the top face is "
+               "visible, and the observation label (clear, blurred or occluded). It is saved as ground_truth.json "
+               "for grading; the analysers never read it.",
+               "About 3 minutes per part without the two refocus sweeps; each sweep adds about two minutes on the "
+               "robot."),
+        steps=(zoom_start_step(), *steps, end_step(), zoom_restore_step()), captures_per_step=captures_per_step)
+
+
 #: Head-sweep poses, in order: neutral, the board view, then the sweep around it.
 SWEEP_PRESETS = ("neutral", "board_view", "sweep_yaw_right_5", "sweep_yaw_left_5", "sweep_yaw_right_8",
                  "sweep_yaw_left_8", "sweep_roll_right_5", "sweep_roll_left_5")
@@ -532,8 +606,8 @@ def gripper_range_procedure(speed=GRIPPER_SWEEP_SPEED_DEG_S, torque=GRIPPER_SWEE
 
 
 PROCEDURES = {p.id: p for p in (zoom_fov_procedure(), focus_procedure(), depth_ruler_procedure(),
-                                board_view_approach_procedure(), head_sweep_procedure(), sound_check_procedure(),
-                                robot_inventory_procedure(), gripper_range_procedure())}
+                                board_view_approach_procedure(), head_sweep_procedure(), part_presentation_procedure(),
+                                sound_check_procedure(), robot_inventory_procedure(), gripper_range_procedure())}
 
 
 def get_procedure(procedure_id: str) -> Procedure:
@@ -567,6 +641,7 @@ class CaptureRun:
     probes: dict[str, dict] = field(default_factory=dict)  # Robot inventory: each NUC probe's reply or why not run
     inventory_results: dict[str, list[dict]] = field(default_factory=dict)  # every inventory attempt per step
     inventory_answers: dict | None = None  # Robot inventory: the operator's answers
+    ground_truth: dict | None = None  # Part presentation: the operator's labels, for grading only
     redact_hosts: tuple[str, ...] = ()  # extra names the viewer's redaction pass removes (the robot host)
     gripper_commands: dict[str, list[dict]] = field(default_factory=dict)  # every gripper attempt per step
     gripper_events: list[dict] = field(default_factory=list)  # Stop, not tied to a step
@@ -651,6 +726,9 @@ class CaptureRun:
         """Why a capture on this step must wait, or None. A step that commands a zoom is captured only after
         that command has completed (live or dry-run, not failed): a pair taken earlier shows another zoom."""
         step = self.procedure.step(step_id)
+        if self.procedure.kind == "part" and step.capture and self.ground_truth is None:
+            return ("Record the ground truth first (design id, orientation, top face, observation label; or the "
+                    "empty board): nothing is captured before it is on record.")
         if step.zoom and not any(not r.get("error") for r in self.zoom_commands.get(step_id, [])):
             return (f"Zoom {step.zoom} has not been commanded for this step yet: tick the confirm box and press "
                     f"'Set zoom {step.zoom}' (wait for it to finish) before capturing.")
@@ -1192,6 +1270,18 @@ class CaptureRun:
     def sound_count(self) -> int:
         return sum(len(v) for v in self.sound_results.values())
 
+    def set_ground_truth(self, **labels) -> dict:
+        """Part presentation: what the operator put on the board. It cannot change once a pair is captured, so a
+        bundle's labels always belong to its pictures."""
+        if self.procedure.kind != "part":
+            raise ValueError("only a part presentation records a ground truth")
+        record = part_ground_truth(**labels)
+        if self.pair_count():
+            raise GroundTruthRequired("pairs are already captured under the earlier labels: discard the run to "
+                                      "change them")
+        self.ground_truth = {**record, "entered_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        return self.ground_truth
+
     def record_head_event(self, record: dict) -> None:
         """A Stop or Release, kept in order with the run."""
         self.head_events.append(record)
@@ -1225,6 +1315,7 @@ class CaptureRun:
                     "passed": self.precapture.get("passed"), "checked_utc": self.precapture.get("checked_utc"),
                     "failed": health.failed_lines(self.precapture),
                     "clock_offset_s": (health.clock_offset(self.precapture) or {}).get("offset_s")},
+                "ground_truth": self.ground_truth,
                 "gripper_aborted": self.gripper_aborted, "pairs": self.pair_count(), "max_pairs": MAX_PAIRS_PER_RUN,
                 "can_download": bool(self.pair_count() or self.sound_count() or self.inventory_count()
                                      or self.teach_count() or self.focus_results)}
@@ -1342,6 +1433,11 @@ class CaptureRun:
         summary = {"schema_version": "2", "procedure": self.identity(), "kind": self.procedure.kind,
                    "calibration_id": self.calibration_id(), "steps": steps, "head_events": self.head_events,
                    "precapture_health": self.precapture, "telemetry": self.telemetry()}
+        if self.procedure.kind == "part":
+            # a file of its own, so that the analysers can be shown never to open it
+            files["ground_truth.json"] = json_bytes(self.ground_truth)
+            summary.update(format_version=PART_FORMAT_VERSION, start_zoom=self.start_zoom(),
+                           start_lens=self.lens_start())
         if self.procedure.kind == "zoom":
             summary["start_zoom"] = self.start_zoom()  # None: not read, unreadable or the eyes differed
             summary["start_lens"] = self.lens_start()  # eye -> {zoom_level, zoom, focus}; None if not both read

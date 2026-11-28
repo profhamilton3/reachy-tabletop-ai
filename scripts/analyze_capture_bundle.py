@@ -7,6 +7,7 @@
     python scripts/analyze_capture_bundle.py reachy-capture-robot_inventory.zip
     python scripts/analyze_capture_bundle.py reachy-capture-gripper_range.zip
     python scripts/analyze_capture_bundle.py reachy-capture-focus_check.zip
+    python scripts/analyze_capture_bundle.py reachy-capture-part_presentation.zip --reference EMPTY.zip
 
 The bundle comes from the stereo viewer's "Data capture" dropdown (or the CLI fallbacks) and is checked
 against its SHA-256 manifest first. Which analyser runs follows the procedure kind:
@@ -43,6 +44,9 @@ against its SHA-256 manifest first. Which analyser runs follows the procedure ki
          simulator), the exact restore, and the comparison with Pollen's autofocus. The inventory analyser also
          reports whether the camera service homes and autofocuses at boot and whether a focus node runs; the zoom
          analyser reports the refocus at each level and the exact lens restore of a v5 run.
+  part   (Part presentation, #84; needs --reference, a run of the same procedure with the board EMPTY) the observation
+         block of disposition_decision.v1: kind, height, width, top-face hole, orientation, sufficiency flags and the
+         observed colour, measured by perception/part_perception.py. ground_truth.json is not read.
 """
 
 import argparse
@@ -1179,6 +1183,41 @@ def print_gripper(result):
         f"{a['outcome']} at {a['step'] or 'between steps'}" for a in result["aborts"]))
 
 
+def analyze_part(bundle, reference, profile_zoom=None):
+    """The part analysers (#84) on a returned bundle and its empty-board reference."""
+    from reachy_ai.perception import part_perception
+    try:
+        result = part_perception.analyse(bundle, reference, profile_zoom=profile_zoom)
+    except part_perception.PartRefused as exc:
+        sys.exit(str(exc))
+    return {"kind": "part", **result.to_dict()}
+
+
+def print_part(result):
+    o, d = result["observation"], result["details"]
+
+    def size(m):
+        return "not measured" if m is None else f"{m['value']:.1f} +- {m['bound']:.1f} mm"
+
+    print(f"method {d['method']}; measured at zoom {d['measured_at'] or 'none'}; reference "
+          f"{d['reference_bundle']['name']} ({d['reference_bundle']['sha256'][:12]})")
+    print(f"kind {o['kind']}, orientation {o['orientation']} ({d['shape_reason']})")
+    print(f"height {size(o['height_mm'])}; width {size(o['width_mm'])}")
+    print(f"top-face hole: {o['hole']['state']}"
+          + (f", diameter {size(o['hole']['diameter_mm'])}" if o["hole"]["diameter_mm"] else "")
+          + f" ({d['hole']['reason']}; best circle {d['hole']['support']:.0%})")
+    colour = d.get("colour")
+    if colour is None:
+        print("colour: not measured")
+    else:
+        print(f"colour: {colour['name']} (confidence {colour['confidence']}), CIELAB {colour['lab_median']}, "
+              + ("reliable" if colour["reliable"] else "NOT reliable: " + "; ".join(colour["reasons"])))
+    raised = [k for k, v in o["sufficiency"].items() if v]
+    print("sufficiency:", ", ".join(raised) if raised else "no flag raised")
+    for flag, reasons in d["flag_reasons"].items():
+        print(f"  {flag}: {'; '.join(reasons)}")
+
+
 def level_text(value):
     return "silent" if value is None else f"{value:.1f}"
 
@@ -1226,6 +1265,8 @@ def print_report(manifest, capture, result):
         print_inventory(result)
     elif result["kind"] == "focus":
         print_focus(result)
+    elif result["kind"] == "part":
+        print_part(result)
     elif result["kind"] == "gripper":
         print_gripper(result)
     elif result["kind"] == "head":
@@ -1259,6 +1300,8 @@ def main():
     parser.add_argument("--roi", help="depth: x,y,w,h of the target in the right image (default: centred 120 px)")
     parser.add_argument("--focal-px", type=float, help="depth: override the profile's rectified focal length (px)")
     parser.add_argument("--baseline-m", type=float, help="depth: override the profile's baseline (m)")
+    parser.add_argument("--reference", help="part: the empty-board run of the same procedure")
+    parser.add_argument("--profile-zoom", help="part, robot: the zoom level the lens calibration is valid at")
     parser.add_argument("--json", help="also write the results here")
     args = parser.parse_args()
     manifest, files, capture = load(args.bundle)
@@ -1272,6 +1315,10 @@ def main():
         result = analyze_gripper(capture, files)
     elif capture["kind"] == "focus":
         result = analyze_focus(capture, files)
+    elif capture["kind"] == "part":
+        if not args.reference:
+            sys.exit("A part presentation needs --reference: the same procedure run with the board empty.")
+        result = analyze_part(args.bundle, args.reference, args.profile_zoom)
     else:
         source, sim_lens, where = bundle_geometry(capture, files)
         # --calibration is a robot profile; a sim bundle uses the sim's own geometry.

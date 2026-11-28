@@ -1,0 +1,132 @@
+{
+ "variant": "black",
+ "set": "upright",
+ "case": "up_111_r2c2",
+ "design": "PART111",
+ "object_id": "part111_a",
+ "placement": {
+  "cell": "r2c2",
+  "yaw": 0.0
+ },
+ "rgba": [
+  0.05,
+  0.05,
+  0.05,
+  1.0
+ ],
+ "truth": {
+  "schema_version": "truth.v1",
+  "scene_name": "FWDCenterLabSivaPoolBlack",
+  "scene_file": "FWDCenterLabSivaPoolBlack.yaml",
+  "scene_sha256": "600a800210a41eab980c0fd1e6533e12f3a541c6c90ee863a5c1636c872af7e6",
+  "scene_revision": "offline",
+  "sim_step": 0,
+  "sim_time_s": 0.0,
+  "paused": false,
+  "frame": "scene (pedestal): x forward, y left, z up; metres",
+  "quat_order": "wxyz",
+  "arm_base_in_world": [
+   0.206,
+   0.0,
+   1.15
+  ],
+  "exported_utc": "",
+  "objects": [
+   {
+    "id": "part111_a",
+    "kind": "block",
+    "semantic_class": "block",
+    "shape": "box",
+    "size_m": [
+     0.04921,
+     0.04921,
+     0.0254
+    ],
+    "radius_m": null,
+    "pos_xyz": [
+     0.4317999999906815,
+     5.353470062891579e-10,
+     0.7526774789807961
+    ],
+    "quat_wxyz": [
+     0.9999999999999997,
+     3.202842435269206e-15,
+     1.173572469366394e-16,
+     1.0795701354989983e-12
+    ],
+    "cell": "r2c2"
+   }
+  ],
+  "cells": [
+   {
+    "name": "r1c1",
+    "x": 0.2794,
+    "y": 0.1524,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r1c2",
+    "x": 0.2794,
+    "y": 0.0,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r1c3",
+    "x": 0.2794,
+    "y": -0.1524,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r2c1",
+    "x": 0.4318,
+    "y": 0.1524,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r2c2",
+    "x": 0.4318,
+    "y": 0.0,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r2c3",
+    "x": 0.4318,
+    "y": -0.1524,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r3c1",
+    "x": 0.5842,
+    "y": 0.1524,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r3c2",
+    "x": 0.5842,
+    "y": 0.0,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r3c3",
+    "x": 0.5842,
+    "y": -0.1524,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   }
+  ]
+ },
+ "neck_deg": {
+  "neck_roll": -0.0,
+  "neck_pitch": 64.784,
+  "neck_yaw": -0.0
+ },
+ "mujoco": "3.11.0"
+}

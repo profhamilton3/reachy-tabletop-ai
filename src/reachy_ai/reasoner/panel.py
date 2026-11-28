@@ -7,7 +7,10 @@ server is the DecisionStore. Images are not written: a captured pair's bundle is
 the store keeps its name and SHA-256.
 
 Two inputs, never mixed:
-- a captured pair (input_source "perceived"). There is no part perception yet (#84), so the observation says that
+- a part analysis (input_source "perceived", #84): the observation the part analysers measured from the current
+  "Part presentation" run, with that run's bundle. It is taken as measured, with nothing typed in, and one look
+  serves one request of a case;
+- a captured pair (input_source "perceived"). A single pair is not part perception, so the observation says that
   nothing was measured; the pair is kept as evidence. Numbers a person typed are not "perceived", so none are taken;
 - sim truth (input_source "sim_truth", --source sim only), for development: the operator gives the values, with
   injected degradation flags. A named degradation raises the sufficiency flag of the same name.
@@ -46,8 +49,10 @@ CONFIGURATION_LABELS = {
     "C": "AI reasoner alone", "D": "AI with the twin's feasibility", "F": "D with E as a refusal-only veto"}
 LEARNING_RULE_ID = "LEARNING"
 LEARNING_TEXT = "Recorded in learning mode: the operator is asked to rate this decision."
-PAIR_NOTE = ("There is no part perception yet (#84): a captured pair is kept as evidence, and kind, sizes, hole and "
-             "orientation are recorded as not measured.")
+PAIR_NOTE = ("A single captured pair is not part perception: it is kept as evidence, and kind, sizes, hole and "
+             "orientation are recorded as not measured. For a measured observation use the part analysis (#84).")
+PART_NOTE = ("The observation the part analysers measured from the last analysed Part presentation run, as it is. "
+             "Its bounds come from the simulator and are provisional.")
 NO_MOTION_NOTE = "A decision is a proposal. Nothing here moves the robot; a person carries it out."
 REPORT_NOTE = ("Proposals only, from development cases. No file is changed: a change is a new, reviewed policy file "
                "version.")
@@ -194,9 +199,10 @@ def unmeasured_observation(bundle: c.Bundle) -> c.Observation:
 # ---------------------------------------------------------------- routes
 
 def install_routes(app, *, settings, health_report, make_pair_bundle, reasoner, store_path,
-                   policy_dir: Path | str = p.POLICY_DIR):
+                   policy_dir: Path | str = p.POLICY_DIR, part_latest=None):
     """Mount /api/disposition/* on the viewer app. `health_report()` gives a pre-capture report dict,
-    `make_pair_bundle(pair_id)` a held pair's zip, and `reasoner` is ai.AIReasoner or None (off)."""
+    `make_pair_bundle(pair_id)` a held pair's zip, `part_latest()` the last part analysis as (PartResult, bundle
+    name, bundle bytes) or None, and `reasoner` is ai.AIReasoner or None (off)."""
     policy_dir = Path(policy_dir)
     lock = threading.Lock()  # one decision at a time: the re-observation count and the AI call limits need it
     held = app.state.disposition = {
@@ -242,7 +248,8 @@ def install_routes(app, *, settings, health_report, make_pair_bundle, reasoner, 
             "answers": list(c.DISPOSITIONS) + [f"refusal:{r}" for r in c.REFUSALS],
             "appendix_a_fields": list(c.APPENDIX_A_FIELDS),
             "required_adjudication_fields": list(REQUIRED_ADJUDICATION_FIELDS),
-            "store": str(store_path), "pair_note": PAIR_NOTE, "motion_note": NO_MOTION_NOTE}
+            "store": str(store_path), "pair_note": PAIR_NOTE, "part_note": PART_NOTE,
+            "motion_note": NO_MOTION_NOTE}
 
     @app.get("/api/disposition/state")
     def disposition_state():
@@ -304,13 +311,26 @@ def install_routes(app, *, settings, health_report, make_pair_bundle, reasoner, 
             bundle = (f"reachy-pair-{pair_id[:8]}.zip", data)
             observation = unmeasured_observation(c.Bundle(bundle[0], hashlib.sha256(data).hexdigest()))
             input_source, degradation, twin = "perceived", (), None
+        elif input_in["mode"] == "part":
+            if set(input_in) != {"mode"}:
+                raise HTTPException(422, "A part analysis takes no typed observation. " + PART_NOTE)
+            latest = None if part_latest is None else part_latest()
+            if latest is None:
+                raise HTTPException(409, "Analyse a Part presentation run first (Data capture)")
+            result, name, data = latest
+            observation, bundle = result.observation, (name, data)
+            if any(r.observation.bundle is not None and r.observation.bundle.sha256 == observation.bundle.sha256
+                   for r in earlier):
+                raise HTTPException(409, f"This look is already one of case {case_id}'s observations: capture and "
+                                         "analyse the part again to re-observe it")
+            input_source, degradation, twin = "perceived", (), None
         elif input_in["mode"] == "sim_truth":
             if settings.source != "sim":
                 raise HTTPException(409, "Sim-truth input is for --source sim only")
             observation, degradation, twin = sim_truth_observation(input_in)
             input_source = "sim_truth"
         else:
-            raise HTTPException(422, 'input.mode must be "pair" or "sim_truth"')
+            raise HTTPException(422, 'input.mode must be "part", "pair" or "sim_truth"')
         count = max(r.reobservation_count for r in earlier) + 1 if earlier else 0
         return c.Request(
             request_id=f"req-{uuid.uuid4().hex}",

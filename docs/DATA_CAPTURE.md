@@ -262,6 +262,33 @@ flags a restore that failed, was a dry run, was not run, or had no known startin
 refocus at each level and the exact lens restore of a v5 run ("lens restored exactly: left zoom 270, focus 331;
 ..."). It groups pairs by each capture's own zoom read-back, not by step.
 
+### Part presentation (v1, #84)
+
+One printed part (or another object) at the marked spot, square **r2c2**, seen from `board_view` at zoom OUT and IN.
+The procedure copies the Zoom field-of-view check: the starting zoom, raw zoom and focus are read first and put back
+exactly at the end. Head and lens commands only, through the same confirm ticks and gates. No arm or gripper motion.
+
+1. **Once per session (and after any change of lighting or of the board): the empty-board run.** Run the procedure
+   with nothing on the board, record the ground truth as *empty*, and in the viewer press *Keep this run as the
+   empty-board reference*. It is refused unless the board is found in both eyes at both zooms. Download it too: the
+   offline analyser needs it.
+2. For each part: place it **flat on r2c2**, keep hands and everything else off the board, and press *Record ground
+   truth* (design id, orientation, whether the top face is visible, and the label clear, blurred or occluded).
+   Capture is refused until it is recorded, and it cannot change once a pair is captured.
+3. *Read zoom*, move the head to `board_view`, *Capture*.
+4. For **OUT**, then **IN**: confirm and *Set zoom*, wait; confirm and *Refocus on the board*; *Capture* twice
+   without touching anything.
+5. Head to neutral, then *Restore zoom*.
+6. *Analyze part* (viewer), or *Download capture bundle* and run it offline.
+
+About 3 minutes per part, **plus about two minutes for each of the two refocus sweeps** on the robot.
+
+`ground_truth.json` in the bundle holds your labels. It is for grading only: the analysers never open it. The
+method, what it can and cannot tell, and its measured sim accuracy are in `docs/PART_PERCEPTION.md`.
+
+**On the robot** the pictures can be captured today, but nothing metric can be measured from them yet: there is no
+lens calibration at zoom OUT or IN (#4), and the analyser says so rather than guessing.
+
 ### Depth ruler test (v3)
 
 Arm at rest at the scene zoom (OUT); do not change the zoom.
@@ -372,6 +399,7 @@ python scripts/analyze_capture_bundle.py reachy-capture-depth_ruler.zip --json d
 python scripts/analyze_capture_bundle.py reachy-capture-head_sweep.zip
 python scripts/analyze_capture_bundle.py reachy-capture-robot_inventory.zip
 python scripts/analyze_capture_bundle.py reachy-capture-focus_check.zip
+python scripts/analyze_capture_bundle.py reachy-capture-part_presentation.zip --reference empty-board.zip
 ```
 
 - **focus**: per eye, the starting zoom level and raw zoom and focus; the sweep (range, peak, value applied,

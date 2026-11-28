@@ -1,0 +1,132 @@
+{
+ "variant": "black",
+ "set": "upright",
+ "case": "up_221_r2c2",
+ "design": "PART221",
+ "object_id": "part221_a",
+ "placement": {
+  "cell": "r2c2",
+  "yaw": 0.0
+ },
+ "rgba": [
+  0.05,
+  0.05,
+  0.05,
+  1.0
+ ],
+ "truth": {
+  "schema_version": "truth.v1",
+  "scene_name": "FWDCenterLabSivaPoolBlack",
+  "scene_file": "FWDCenterLabSivaPoolBlack.yaml",
+  "scene_sha256": "600a800210a41eab980c0fd1e6533e12f3a541c6c90ee863a5c1636c872af7e6",
+  "scene_revision": "offline",
+  "sim_step": 0,
+  "sim_time_s": 0.0,
+  "paused": false,
+  "frame": "scene (pedestal): x forward, y left, z up; metres",
+  "quat_order": "wxyz",
+  "arm_base_in_world": [
+   0.206,
+   0.0,
+   1.15
+  ],
+  "exported_utc": "",
+  "objects": [
+   {
+    "id": "part221_a",
+    "kind": "cylinder",
+    "semantic_class": "cylinder",
+    "shape": "cylinder",
+    "size_m": [
+     0.049212,
+     0.049212000000000006,
+     0.06985
+    ],
+    "radius_m": 0.024606,
+    "pos_xyz": [
+     0.4318000001683244,
+     -1.4895697300834615e-10,
+     0.7749193664718357
+    ],
+    "quat_wxyz": [
+     1.0,
+     -1.0665584311654225e-16,
+     -6.34465763108039e-16,
+     2.686733781428379e-09
+    ],
+    "cell": "r2c2"
+   }
+  ],
+  "cells": [
+   {
+    "name": "r1c1",
+    "x": 0.2794,
+    "y": 0.1524,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r1c2",
+    "x": 0.2794,
+    "y": 0.0,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r1c3",
+    "x": 0.2794,
+    "y": -0.1524,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r2c1",
+    "x": 0.4318,
+    "y": 0.1524,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r2c2",
+    "x": 0.4318,
+    "y": 0.0,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r2c3",
+    "x": 0.4318,
+    "y": -0.1524,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r3c1",
+    "x": 0.5842,
+    "y": 0.1524,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r3c2",
+    "x": 0.5842,
+    "y": 0.0,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   },
+   {
+    "name": "r3c3",
+    "x": 0.5842,
+    "y": -0.1524,
+    "top_z": 0.741,
+    "half_extent": 0.0635
+   }
+  ]
+ },
+ "neck_deg": {
+  "neck_roll": -0.0,
+  "neck_pitch": 64.784,
+  "neck_yaw": -0.0
+ },
+ "mujoco": "3.11.0"
+}
