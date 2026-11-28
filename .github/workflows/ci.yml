@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,ai]"  # ai: the SDK's signature is checked; every call in the tests is stubbed
 
       - name: Lint (ruff)
         run: ruff check src/ tests/ scripts/

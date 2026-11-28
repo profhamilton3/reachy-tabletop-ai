@@ -327,11 +327,12 @@ class Policy:
                               split_sha256=self.split.sha256)
 
 
-def load_policy(directory: Path | str = POLICY_DIR, rules_file: str = RULES_FILE) -> Policy:
+def load_policy(directory: Path | str = POLICY_DIR, rules_file: str = RULES_FILE, spec_file: str = SPEC_FILE,
+                split_file: str = SPLIT_FILE) -> Policy:
     directory = Path(directory)
-    spec = _load_spec(directory / SPEC_FILE)
+    spec = _load_spec(directory / spec_file)
     return Policy(spec=spec, rules=_load_rules(directory / rules_file),
-                  split=load_split(directory / SPLIT_FILE, tuple(d.design for d in spec.designs)))
+                  split=load_split(directory / split_file, tuple(d.design for d in spec.designs)))
 
 
 # ---------------------------------------------------------------- the deterministic policy
@@ -549,6 +550,24 @@ def _twin_feasibility(request: c.Request, destination: str) -> tuple[str | None,
 
 
 _GATES = {"twin_feasibility": _twin_feasibility}
+
+
+def check_destination(request: c.Request, policy: Policy, disposition: str) -> tuple[str | None, str | None, str]:
+    """E's twin gate for a disposition reached elsewhere (configurations D and F, reasoner/ai.py): (the gate's
+    rule id, its refusal or None, why or ""). (None, None, "") when there is no destination to check."""
+    destination = _DESTINATION.get(disposition)
+    if destination is None:
+        return None, None, ""
+    for gate in policy.rules.gates_for("E"):
+        refusal, why = _GATES[gate.kind](request, destination)
+        if refusal is not None or why:
+            return gate.id, refusal, why
+    return None, None, ""
+
+
+def destination_for(disposition: str | None) -> str:
+    """The planner mapping: a remeasure or a refusal goes nowhere."""
+    return _DESTINATION.get(disposition, "none")
 
 
 def decide(request: c.Request, policy: Policy, configuration: str, code_sha: str) -> c.Decision:

@@ -39,6 +39,7 @@ import csv
 import io
 import json
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -295,6 +296,19 @@ def _inspect(conn: sqlite3.Connection, path: Path) -> bool:
     return False
 
 
+def _use_wal(conn: sqlite3.Connection) -> None:
+    """SQLite does not wait out another connection when it changes the journal mode, so wait here."""
+    deadline = time.monotonic() + BUSY_TIMEOUT_S
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
 # ---------------------------------------------------------------- the store
 
 class DecisionStore:
@@ -317,8 +331,12 @@ class DecisionStore:
             raise DecisionStoreError(f"{path}: {exc}") from exc
         try:
             try:
-                _inspect(conn, path)  # refuse before anything, even the journal mode, is written
-                conn.execute("PRAGMA journal_mode=WAL")
+                # Refuse before anything, even the journal mode, is written. In one read transaction, so that another
+                # connection creating the schema cannot be seen half way.
+                conn.execute("BEGIN")
+                _inspect(conn, path)
+                conn.execute("COMMIT")
+                _use_wal(conn)
                 conn.execute("PRAGMA foreign_keys=ON")
                 conn.execute("PRAGMA recursive_triggers=ON")  # so REPLACE cannot get round the delete triggers
                 store = cls(conn, path)
@@ -370,22 +388,8 @@ class DecisionStore:
         request_json = _canonical(request.to_dict())
         now = _now()
         with self._write():
-            stored = self._query("SELECT request_json FROM requests WHERE request_id=?", (request.request_id,))
-            if stored:
-                if stored[0]["request_json"] != request_json:
-                    raise DecisionStoreError(f"request {request.request_id} is already stored with other content")
-            else:
+            if not self._stored(request):
                 case = request.case
-                other = self._query("SELECT split FROM requests WHERE case_id=? AND split!=? LIMIT 1",
-                                    (case.case_id, case.split))
-                if other:
-                    raise LeakageError(f"case {case.case_id} is already {other[0]['split']}; "
-                                       f"it cannot also be {case.split}")
-                other = self._query("SELECT source FROM requests WHERE case_id=? AND source!=? LIMIT 1",
-                                    (case.case_id, request.source))
-                if other:
-                    raise DecisionStoreError(f"case {case.case_id} is a {other[0]['source']} case, fixed by its "
-                                             f"first request: a {request.source} request needs another case_id")
                 bundle = request.observation.bundle
                 self._insert("requests", {
                     "request_id": request.request_id, "case_id": case.case_id, "split": case.split,
@@ -406,6 +410,47 @@ class DecisionStore:
                 "split_sha256": policy.split_sha256, "model_id": decision.model_id,
                 "code_sha": decision.code_sha, "decision_json": _canonical(decision.to_dict()),
                 "recorded_utc": now})
+
+    def _stored(self, request: c.Request) -> bool:
+        """True if this request is already stored, False if record() may add it. Anything else raises."""
+        stored = self._query("SELECT request_json FROM requests WHERE request_id=?", (request.request_id,))
+        if stored:
+            if stored[0]["request_json"] != _canonical(request.to_dict()):
+                raise DecisionStoreError(f"request {request.request_id} is already stored with other content")
+            return True
+        case = request.case
+        other = self._query("SELECT split FROM requests WHERE case_id=? AND split!=? LIMIT 1",
+                            (case.case_id, case.split))
+        if other:
+            raise LeakageError(f"case {case.case_id} is already {other[0]['split']}; it cannot also be {case.split}")
+        other = self._query("SELECT source FROM requests WHERE case_id=? AND source!=? LIMIT 1",
+                            (case.case_id, request.source))
+        if other:
+            raise DecisionStoreError(f"case {case.case_id} is a {other[0]['source']} case, fixed by its "
+                                     f"first request: a {request.source} request needs another case_id")
+        return False
+
+    def check_request(self, request: c.Request) -> None:
+        """Raise what record() would raise for this request. Writes nothing. For a caller that is about to spend
+        something it cannot take back, such as one of the AI reasoner's calls."""
+        self._stored(request)
+
+    def case_requests(self, case_id: str) -> list[c.Request]:
+        """The case's requests, oldest first."""
+        return [c.Request.from_dict(json.loads(row["request_json"])) for row in
+                self._query("SELECT request_json FROM requests WHERE case_id=? ORDER BY rowid", (case_id,))]
+
+    def request(self, request_id: str) -> c.Request:
+        rows = self._query("SELECT request_json FROM requests WHERE request_id=?", (request_id,))
+        if not rows:
+            raise DecisionStoreError(f"no request {request_id}")
+        return c.Request.from_dict(json.loads(rows[0]["request_json"]))
+
+    def decided_requests(self, case_id: str, configuration: str) -> frozenset[str]:
+        """The request_ids of the case that have a decision under the configuration."""
+        return frozenset(row["request_id"] for row in self._query(
+            "SELECT d.request_id FROM decisions d JOIN requests r USING (request_id) "
+            "WHERE r.case_id=? AND d.configuration=?", (case_id, configuration)))
 
     def get(self, decision_id: int) -> tuple[c.Request, c.Decision]:
         rows = self._query("SELECT r.request_json, d.decision_json FROM decisions d JOIN requests r "

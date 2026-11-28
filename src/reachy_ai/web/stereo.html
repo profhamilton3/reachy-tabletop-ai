@@ -99,6 +99,15 @@
     .k-x { color: #64b5f6; } .k-o { color: #ffb74d; } .k-e { color: #4a5675; } .k-h { color: #ce93d8; } .k-u { color: #fff176; } .k-c { color: #ffb74d; }
     .t3-result { padding: 12px 14px; border: 1px solid #478f86; border-radius: 6px; background: #102d38; font-size: 14px; line-height: 1.7; }
     .t3-result.bad { border-color: #ef5350; background: #3a1d1d; }
+    #dp-panel { margin-top: 18px; padding: 18px; background: #16213e; border: 1px solid #2b3a63; border-radius: 8px; }
+    .dp-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px 14px; margin: 12px 0; }
+    .dp-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #9aa6c1; }
+    .dp-form label.wide { grid-column: 1 / -1; }
+    .dp-form select, .dp-form input, .dp-form textarea { width: 100%; margin: 0; padding: 8px; font: inherit; font-size: 12px;
+      color: #e0e0e0; background: #101d32; border: 1px solid #43638a; border-radius: 5px; }
+    #dp-panel fieldset { border: 1px solid #2b3a63; border-radius: 6px; margin: 12px 0; padding: 8px 12px; }
+    #dp-panel legend { font-size: 11px; color: #80cbc4; }
+    #dp-result { white-space: pre-wrap; }
     [hidden] { display: none !important; }
     @media (max-width: 760px) { main { padding: 20px 12px; } header { align-items: start; flex-direction: column; }
       .cameras { grid-template-columns: 1fr; } h1 { font-size: 20px; } }
@@ -193,6 +202,65 @@
       </div>
     </div>
   </section>
+  <section id="dp-panel" aria-label="Part disposition">
+    <div class="depth-heading"><h2>DECISION PANEL <span class="subtle">· part disposition · records a proposal, moves nothing</span></h2>
+      <button id="dp-toggle" aria-expanded="false">Open decision panel</button></div>
+    <div id="dp-body" hidden>
+      <p class="subtle" id="dp-ai-note"></p>
+      <div class="t3-actions">
+        <label class="subtle"><input type="checkbox" id="dp-learning"> Learning mode: tag new decisions and ask me to rate each one</label>
+        <button id="dp-report">Propose policy change (report)</button>
+      </div>
+      <p class="subtle" id="dp-awaiting"></p>
+      <div class="dp-form">
+        <label>Configuration<select id="dp-configuration"></select></label>
+        <label>Split (required)<select id="dp-split"></select></label>
+        <label>Instance<input id="dp-instance" type="text" maxlength="80" placeholder="e.g. PART221-A"></label>
+        <label>Lot<input id="dp-lot" type="text" maxlength="80"></label>
+        <label>Expected design<select id="dp-expected"></select></label>
+        <label>Case id (blank: new; same id: a re-observation)<input id="dp-case" type="text" maxlength="80"></label>
+        <label>Input<select id="dp-mode"></select></label>
+      </div>
+      <p class="subtle" id="dp-pair-note"></p>
+      <fieldset id="dp-truth" hidden>
+        <legend>SIM TRUTH (development)</legend>
+        <div class="dp-form">
+          <label>Kind<select id="dp-kind"></select></label>
+          <label>Orientation<select id="dp-orientation"></select></label>
+          <label>Height mm (blank: not measured)<input id="dp-height" type="number" step="0.01" min="0"></label>
+          <label>Height bound ± mm<input id="dp-height-bound" type="number" step="0.01" min="0" value="0"></label>
+          <label>Width mm (blank: not measured)<input id="dp-width" type="number" step="0.01" min="0"></label>
+          <label>Width bound ± mm<input id="dp-width-bound" type="number" step="0.01" min="0" value="0"></label>
+          <label>Hole<select id="dp-hole"></select></label>
+          <label>Hole diameter mm (present only)<input id="dp-hole-mm" type="number" step="0.01" min="0"></label>
+          <label>Hole bound ± mm<input id="dp-hole-bound" type="number" step="0.01" min="0" value="0"></label>
+        </div>
+        <div class="t3-actions"><span class="subtle">Injected degradation:</span><span id="dp-degradations"></span></div>
+        <div class="t3-actions"><label class="subtle"><input type="checkbox" id="dp-twin"> Include a twin block</label></div>
+        <div class="dp-form" id="dp-twin-paths" hidden></div>
+      </fieldset>
+      <div class="t3-actions">
+        <button id="dp-decide">Decide</button>
+        <button id="dp-again" disabled title="The stored request, unchanged: the same presentation and health">Run configuration on the same presentation</button>
+      </div>
+      <p class="subtle" id="dp-notice" role="status" aria-live="polite"></p>
+      <div id="dp-result" class="t3-result" role="status" aria-live="polite" hidden></div>
+      <p><a class="download" id="dp-bundle" hidden>Save the pair bundle (evidence)</a></p>
+      <fieldset id="dp-adjudication" hidden>
+        <legend id="dp-adjudication-title">ADJUDICATION (Appendix A)</legend>
+        <form id="dp-adjudication-form">
+          <div class="dp-form" id="dp-adjudication-fields"></div>
+          <button type="submit">Save adjudication</button>
+        </form>
+      </fieldset>
+      <details><summary>Policy files</summary>
+        <div class="dp-form" id="dp-policy"></div>
+        <button id="dp-policy-apply">Use these versions</button>
+        <pre id="dp-policy-info"></pre>
+      </details>
+      <pre id="dp-report-text" hidden></pre>
+    </div>
+  </section>
   <section id="analysis-panel" hidden aria-label="Captured-pair analysis">
     <h2>RIGHT-EYE ANALYSIS</h2>
     <div id="analysis-summary" class="subtle" role="status" aria-live="polite"></div>
@@ -240,6 +308,7 @@
   let activeAnalysis = null, depthResult = null, depthRequest = null, depthURL = null, measuring = false;
   const failed = {left: false, right: false};
   const retries = {};
+  window.reachyCapturedPair = () => frozen && activePair ? activePair.pair_id : null;  // for the decision panel
 
   function connectStreams() {
     for (const eye of eyes) {
@@ -945,6 +1014,192 @@
       label.innerHTML = `<input type="checkbox" class="t3-quick" value="${tag}"> ${tag} `; return label; })); }
   };
   setInterval(() => { if (!$('t3-body').hidden && !busy) refresh(); }, 3000);
+})();
+</script>
+<script>
+// Decision panel (#83). Talks only to /api/disposition/*. It records proposals; nothing here moves the robot.
+(() => {
+  const $ = id => document.getElementById(id);
+  let st = null, last = null, busy = false, filled = false;
+  const LABELS = {object_id_and_lot: 'Object id and lot', expected_family_spec: 'Expected family / spec',
+    measured_dims_hole: 'Measured dimensions and hole', camera_angle_confidence_occlusion: 'Camera angle, confidence, occlusion',
+    predicted_class_and_disposition: 'Predicted class and disposition', twin_pose_and_path_feasibility: 'Twin pose and path feasibility',
+    action_approved_refused: 'Action approved / refused', actual_location_final_disposition: 'Actual location and final disposition',
+    human_adjudication_notes: 'Human adjudication notes', adjudicator: 'Adjudicator'};
+
+  async function api(path, body, timeout = 20000) {
+    const response = await fetch('/api/disposition/' + path, body === undefined ? {signal: AbortSignal.timeout(timeout)} :
+      {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body), signal: AbortSignal.timeout(timeout)});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw Error(typeof data.detail === 'string' ? data.detail : 'Request failed (' + response.status + ')');
+    return data;
+  }
+  const notice = text => { $('dp-notice').textContent = text || ''; };
+  const option = (value, text = value) => Object.assign(document.createElement('option'), {value, textContent: text});
+  const fill = (id, values, blank) => $(id).replaceChildren(...(blank === undefined ? [] : [option('', blank)]), ...values.map(v => option(v)));
+  function field(name, element, text, wide) {
+    const label = document.createElement('label');
+    if (wide) label.className = 'wide';
+    element.name = name;
+    label.append(text, element);
+    return label;
+  }
+
+  function buildForms() {
+    fill('dp-split', st.splits, 'choose…'); fill('dp-expected', st.designs, 'not stated');
+    $('dp-mode').replaceChildren(option('pair', 'captured pair'), ...(st.source === 'sim' ? [option('sim_truth', 'sim truth (development)')] : []));
+    fill('dp-kind', st.kinds); fill('dp-orientation', st.orientations); fill('dp-hole', st.hole_states);
+    $('dp-degradations').replaceChildren(...st.degradations.map(flag => {
+      const label = document.createElement('label'); label.className = 'subtle';
+      label.append(Object.assign(document.createElement('input'), {type: 'checkbox', className: 'dp-degradation', value: flag}), ' ' + flag + ' ');
+      return label; }));
+    $('dp-twin-paths').replaceChildren(...st.destinations.map(destination => {
+      const select = document.createElement('select'); select.className = 'dp-path';
+      select.append(option('', 'no entry'), option('yes', 'feasible'), option('no', 'infeasible'));
+      return field(destination, select, 'Path to ' + destination); }));
+    const required = new Set(st.required_adjudication_fields);
+    const answer = document.createElement('select'); answer.append(option('', 'not stated'), ...st.answers.map(a => option(a)));
+    const rating = document.createElement('select'); rating.append(option('', 'no rating'), ...st.ratings.map(r => option(String(r))));
+    $('dp-adjudication-fields').replaceChildren(
+      field('answer', answer, 'Correct answer'), field('operator_rating', rating, 'Operator rating, 1 (poor) to 5'),
+      ...['adjudicator', ...st.appendix_a_fields].map(name => {
+        const notes = name === 'human_adjudication_notes';
+        const input = document.createElement(notes ? 'textarea' : 'input');
+        input.maxLength = 4000; input.required = required.has(name);
+        if (required.has(name) && !notes) input.pattern = '.*\\S.*';  // not blank; the server checks every field
+        return field(name, input, (LABELS[name] || name) + (required.has(name) ? ' (required)' : ''), notes); }));
+  }
+
+  function render() {
+    $('dp-ai-note').textContent = st.ai.note + (st.ai.enabled ? ' Model: ' + st.ai.model + '.' : '') + ' ' + st.motion_note;
+    const chosen = $('dp-configuration').value || 'E';
+    $('dp-configuration').replaceChildren(...st.configurations.map(c => Object.assign(
+      option(c.id, `${c.id}: ${c.label}${c.available ? '' : ' (AI off)'}`), {disabled: !c.available})));
+    $('dp-configuration').value = chosen;
+    $('dp-learning').checked = st.learning;
+    $('dp-awaiting').replaceChildren(...st.awaiting_rating.flatMap(item => {
+      const button = Object.assign(document.createElement('button'), {textContent: `Rate decision ${item.decision_id} (${item.case_id})`});
+      button.onclick = () => run(async () => show(await api('decisions/' + item.decision_id)));
+      return [button, ' ']; }));
+    $('dp-truth').hidden = $('dp-mode').value !== 'sim_truth';
+    $('dp-pair-note').textContent = $('dp-mode').value === 'pair' ? st.pair_note : 'input_source is sim_truth: the values are not perceived.';
+    $('dp-decide').disabled = busy;
+    $('dp-again').disabled = busy || !last;
+  }
+
+  function renderPolicy() {   // only after a fresh state, so that an unapplied choice is not overwritten
+    $('dp-policy').replaceChildren(...Object.entries(st.policy).map(([kind, entry]) => {
+      const select = document.createElement('select'); select.dataset.kind = kind;
+      select.append(...entry.available.map(f => option(f.file, f.file + (f.state === 'committed' ? '' : ` (${f.state})`))));
+      select.value = entry.file;
+      return field(kind, select, kind); }));
+    $('dp-policy-info').textContent = Object.entries(st.policy).map(([kind, e]) =>
+      `${kind}: ${e.version} · ${e.sha256 ? e.sha256.slice(0, 12) : 'no hash'} · ${e.state}`).join('\n') +
+      (st.policy_error ? '\nCannot load: ' + st.policy_error : '') + '\nDecision store: ' + st.store;
+  }
+
+  function show(result) {
+    last = result;
+    const d = result.decision, r = result.request;
+    const what = d.refusal ? 'REFUSAL: ' + d.refusal : 'DISPOSITION: ' + d.disposition + (d.remeasure_route ? ' / ' + d.remeasure_route : '');
+    const files = result.policy_files ? Object.values(result.policy_files).map(f => `${f.version} ${f.sha256.slice(0, 12)} (${f.state})`).join(' · ')
+      : Object.entries(d.policy).filter(([, v]) => v).map(([k, v]) => `${k.replace('_sha256', '')} ${v.slice(0, 12)}`).join(' · ');
+    $('dp-result').textContent = [what + ' → ' + d.destination,
+      `Decision ${result.decision_id} · configuration ${d.configuration} · case ${r.case_id} (${r.split}) · re-observations before: ${r.reobservation_count} · input ${r.input_source}`,
+      'Cell ready: ' + (r.cell_ready ? 'yes' : 'no (' + (r.failed_checks.join(', ') || 'no failed check named') + ')'),
+      ...d.reasons.map(reason => `${reason.rule_id}: ${reason.text}`),
+      'Policy: ' + files,
+      d.model_id ? `Model: ${d.model_id} · confidence ${d.confidence ?? 'none'}` + (d.raw_reply_kept ? ' · raw reply kept in the store' : '') : 'No AI model',
+      'Code: ' + d.code_sha.slice(0, 12), result.motion_note,
+      result.rating_requested ? 'Learning mode: please rate this decision below.' : ''].filter(Boolean).join('\n');
+    $('dp-result').hidden = false;
+    $('dp-result').className = 't3-result' + (d.refusal ? ' bad' : '');
+    $('dp-bundle').hidden = !result.bundle_url;
+    if (result.bundle_url) $('dp-bundle').href = result.bundle_url;
+    $('dp-adjudication').hidden = false;
+    $('dp-adjudication-title').textContent = `ADJUDICATION (Appendix A) · decision ${result.decision_id}`;
+    const form = $('dp-adjudication-form');
+    const adjudicator = form.elements.adjudicator.value;
+    form.reset(); form.elements.adjudicator.value = adjudicator; form.dataset.decision = result.decision_id;
+    form.elements.operator_rating.required = result.learning;
+  }
+
+  async function refresh() {
+    st = await api('state');
+    renderPolicy();
+  }
+  async function run(work) {
+    if (busy) return;
+    busy = true; render();
+    try { await work(); } catch (error) { notice(error.message); }
+    busy = false;
+    try { await refresh(); } catch (_) { /* the viewer poll shows connection trouble */ }
+    render();
+  }
+
+  function measurement(id) {
+    const value = $(id).value;
+    return value === '' ? null : {value: Number(value), bound: Number($(id + '-bound').value || 0)};
+  }
+  function requestBody() {
+    if (!$('dp-split').value) throw Error('Choose the split.');
+    const caseData = {case_id: $('dp-case').value, split: $('dp-split').value, instance_id: $('dp-instance').value,
+      lot: $('dp-lot').value, expected_design_id: $('dp-expected').value || null};
+    if ($('dp-mode').value === 'pair') {
+      const pairId = window.reachyCapturedPair();
+      if (!pairId) throw Error('Capture a pair first (the Capture pair button above).');
+      return {case: caseData, input: {mode: 'pair', pair_id: pairId}};
+    }
+    const holeMm = $('dp-hole-mm').value;
+    const paths = Object.fromEntries([...document.querySelectorAll('.dp-path')].filter(s => s.value).map(s => [s.name, s.value === 'yes']));
+    return {case: caseData, input: {mode: 'sim_truth', observation: {kind: $('dp-kind').value, orientation: $('dp-orientation').value,
+        height_mm: measurement('dp-height'), width_mm: measurement('dp-width'),
+        hole: {state: $('dp-hole').value, diameter_mm: holeMm === '' ? null : {value: Number(holeMm), bound: Number($('dp-hole-bound').value || 0)}}},
+      degradation: [...document.querySelectorAll('.dp-degradation:checked')].map(c => c.value),
+      path_feasibility: $('dp-twin').checked ? paths : null}};
+  }
+  async function decide(body) {
+    notice('Deciding…');
+    const result = await api('decide', {configuration: $('dp-configuration').value, ...body}, 120000);
+    $('dp-case').value = '';   // the next Decide is a new case unless the operator enters this id again
+    show(result); notice('Recorded. For a re-observation, enter case id ' + result.request.case_id + ' with the new look.');
+  }
+  $('dp-decide').onclick = () => run(() => decide(requestBody()));
+  $('dp-again').onclick = () => run(() => decide({request_id: last.request.request_id}));
+  $('dp-mode').onchange = () => render();
+  $('dp-twin').onchange = () => { $('dp-twin-paths').hidden = !$('dp-twin').checked; };
+  $('dp-learning').onchange = () => { const on = $('dp-learning').checked; run(async () => { await api('learning', {on}); }); };
+  $('dp-adjudication-form').onsubmit = event => {
+    event.preventDefault();
+    const form = event.target, record = {};
+    for (const name of ['adjudicator', ...st.appendix_a_fields]) record[name] = form.elements[name].value;
+    const rating = form.elements.operator_rating.value;
+    record.operator_rating = rating === '' ? null : Number(rating);
+    const answer = form.elements.answer.value || null;
+    run(async () => {
+      const saved = await api(`decisions/${form.dataset.decision}/adjudication`, {record, answer});
+      notice(`Adjudication saved as outcome ${saved.outcome_id}.`);
+    });
+  };
+  $('dp-policy-apply').onclick = () => {
+    const files = Object.fromEntries([...$('dp-policy').querySelectorAll('select')].map(s => [s.dataset.kind, s.value]));
+    run(async () => { await api('policy', {files}); notice('Policy versions applied to new decisions.'); });
+  };
+  $('dp-report').onclick = () => run(async () => {
+    $('dp-report-text').textContent = JSON.stringify(await api('learning/report'), null, 2);
+    $('dp-report-text').hidden = false;
+  });
+  $('dp-toggle').onclick = async () => {
+    const open = $('dp-body').hidden; $('dp-body').hidden = !open;
+    $('dp-toggle').setAttribute('aria-expanded', String(open));
+    $('dp-toggle').textContent = open ? 'Close decision panel' : 'Open decision panel';
+    if (!open) return;
+    try {
+      await refresh();
+      if (!filled) { buildForms(); filled = true; }
+      render();
+    } catch (error) { notice(error.message); }
+  };
 })();
 </script>
 </body>
