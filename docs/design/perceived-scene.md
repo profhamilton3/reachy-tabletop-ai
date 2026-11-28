@@ -335,6 +335,7 @@ On the robot, #185's 17-view camera check spread 6 / 4 / 9 mm in x / y / z. Robo
 **The rig check:** compare a new head-sweep `BoardPose` with the confirmed `board_pose` entry, and in the sim with the twin's grid.
 - **Pass:** it confirms the entry.
 - **Fail** (beyond the threshold, OD-7: 10 mm default): the store bumps `rig_epoch`, every entry under the old epoch goes `inactive: rig moved`, and the operator is told. The board moved 8.5 cm in August and about 0.24 m by October (#185), so this is a real event, not a hypothetical.
+- **Yaw** (owner, 2026-11-27, **provisional**): a board turned more than 2° about the torso z axis from either reference fails in the same way as a centre move. The builder does not measure the board's orientation yet (its poses carry the identity quaternion), so this cannot fail on a builder-made scene until it does.
 
 The rig check replaces the dropped rail and table-edge detector. The rig is already in the measured scene, so a matching board pose stands in for "rig matches twin".
 
@@ -390,6 +391,8 @@ Two rules for the record, and nothing more:
 | P3 | sim | Phase 2 obstacle precheck (§3.1); multi-object refusal flag present, off | Layout set: 0 perceived-clear / truth-collide; refusal costs reported |
 | P4 | tabletop-ai | `SceneMemoryStore` (§4) | Survives restart; rig mismatch → inactive; rig-check fail → epoch bump; disagreeing sighting never edits an entry |
 | P5 | both | Detector retrain or sim-look fix, per §5's table | Graded by #205, with held-out layouts; new bounds rows with n ≥ OD-2's minimum |
+
+**Owner decision (Terrance, 2026-11-27): the P4 hold is lifted for the sim (#85).** P4 may be built and exercised on sim scenes; robot-side scene memory still waits for the robot head sweep (the torso-frame conversion and the first robot board pose).
 
 Robot transfer (#182 stage 5, EPIC 9 Phase 4) is out of this plan. It needs the robot's torso-frame conversion: `stereo_depth` produces `xyz_torso_m` only for the sim source today.
 
