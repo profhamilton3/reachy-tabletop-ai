@@ -7,6 +7,7 @@ renders of that scene (before the PART parts).
 import dataclasses
 import hashlib
 import logging
+import math
 import sqlite3
 import sys
 import threading
@@ -45,6 +46,12 @@ def board(dx=0.0, dy=0.0, dz=0.0, bound=BOUND, source="head_sweep_fit", nth=0, q
     poses, spread = (5, 1.0) if source == "head_sweep_fit" else (1, 0.0)
     return sc.BoardPose((GRID[0] + dx, GRID[1] + dy, GRID[2] + dz), quat, (bound,) * 3, source, poses,
                         1.0 + nth * 1e-6, spread)
+
+
+def turned(deg, axis="z"):
+    """The quaternion of a board turned `deg` degrees about a torso axis (z: yaw, in place)."""
+    half = math.radians(deg) / 2
+    return (math.cos(half), *(math.sin(half) if name == axis else 0.0 for name in "xyz"))
 
 
 def part(kind="cylinder", size=(0.049212, 0.049212, 0.06985), cell="r2c2", x=0.2258, bounds=(INF, INF, INF),
@@ -590,6 +597,75 @@ def test_the_same_fit_again_does_not_move_the_epoch_again(memory):
     add(memory, moved, twin=board(source="twin"))
     again = add(memory, moved, twin=board(source="twin"))
     assert (again.rig_check, again.board.verdict, memory.rig.rig_epoch) == (None, "not_counted", 1)
+
+
+# ---------------------------------------------------------------- the rig check: the board's yaw
+
+def test_a_board_turned_in_place_by_three_degrees_bumps_the_epoch_like_a_move(memory, caplog):
+    entry_id = confirm(memory, objects=(PART221,))
+    before = raw(memory, entry_id)
+    with caplog.at_level(logging.WARNING):
+        record = add(memory, board(nth=40, quat=turned(3.0)), objects=(PART110,))
+    check = record.rig_check
+    assert (check.verdict, check.epoch_before, check.epoch_after) == ("fail", 0, 1)
+    assert check.distance_m == pytest.approx(0.0) and check.yaw_deg == pytest.approx(3.0)
+    assert "RIG CHECK FAILED" in check.message and "3.0 deg" in check.message and check.message in caplog.text
+    assert record.rig.rig_epoch == memory.rig.rig_epoch == 1
+    assert [(e.entry_id, e.inactive) for e in memory.inactive()] == [(entry_id, "inactive: rig moved")]
+    assert raw(memory, entry_id) == before and memory.board_pose() is None
+    (fresh,) = memory.entries()
+    assert (fresh.state, fresh.effective_count, fresh.rig.rig_epoch, fresh.challenges) == ("candidate", 1, 1, None)
+    assert fresh.quat_wxyz == pytest.approx(turned(3.0))
+    assert [s.object.kind for s in memory.sightings()] == ["cube"]
+    payload = memory.observations("rig_check")[-1]["payload"]
+    assert (payload["verdict"], payload["yaw_threshold_deg"]) == ("fail", 2.0)
+    assert payload["yaw_deg"] == pytest.approx(3.0) and payload["twin_yaw_deg"] is None
+
+
+def test_a_board_turned_in_place_by_one_degree_does_not_bump_the_epoch(memory):
+    entry_id = confirm(memory)
+    record = add(memory, board(nth=40, quat=turned(1.0)))
+    assert (record.rig_check.verdict, record.rig.rig_epoch) == ("pass", 0)
+    assert record.rig_check.yaw_deg == pytest.approx(1.0)
+    assert memory.board_pose().entry_id == entry_id and memory.inactive() == []
+
+
+@pytest.mark.parametrize("deg, verdict", [(2.0, "pass"), (2.01, "fail"), (-1.0, "pass"), (-3.0, "fail"),
+                                          (180.0, "fail")])
+def test_the_rig_check_is_two_degrees_of_yaw_either_way(memory, deg, verdict):
+    assert m.RIG_TURNED_THRESHOLD_DEG == 2.0
+    confirm(memory)
+    record = add(memory, board(nth=60, quat=turned(deg)))
+    assert record.rig_check.verdict == verdict and record.rig.rig_epoch == (1 if verdict == "fail" else 0)
+
+
+@pytest.mark.parametrize("deg, verdict", [(1.0, "pass"), (3.0, "fail")])
+def test_the_twins_grid_is_a_yaw_reference_too(memory, deg, verdict):
+    record = add(memory, board(quat=turned(deg)), twin=board(source="twin"))
+    assert (record.rig_check.verdict, record.rig_check.yaw_deg) == (verdict, None)
+    assert record.rig_check.twin_yaw_deg == pytest.approx(deg)
+
+
+def test_either_reference_can_fail_the_check_on_yaw(memory):
+    confirm(memory)
+    record = add(memory, board(nth=70), twin=board(source="twin", quat=turned(3.0)))
+    assert record.rig_check.verdict == "fail" and record.rig_check.yaw_deg == pytest.approx(0.0)
+    assert memory.rig.rig_epoch == 1
+
+
+@pytest.mark.parametrize("new", [turned(-179.5), tuple(-v for v in turned(179.5))], ids=["across 180", "q and -q"])
+def test_yaw_is_the_smallest_turn_between_the_two_boards(memory, new):
+    for i in range(m.CONFIRMATIONS + 1):
+        add(memory, board(nth=i, quat=turned(179.5)))
+    record = add(memory, board(nth=90, quat=new))
+    assert record.rig_check.verdict == "pass" and record.rig_check.yaw_deg <= 1.0 + 1e-6
+
+
+@pytest.mark.parametrize("axis", ["x", "y"])
+def test_only_yaw_is_judged_not_tilt(memory, axis):
+    confirm(memory)
+    record = add(memory, board(nth=95, quat=turned(3.0, axis)))
+    assert record.rig_check.verdict == "pass" and record.rig_check.yaw_deg == pytest.approx(0.0, abs=1e-9)
 
 
 # ---------------------------------------------------------------- sightings are episodic

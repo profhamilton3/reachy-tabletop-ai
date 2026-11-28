@@ -32,16 +32,21 @@ In each rig, one live entry is the primary and any others are its competitors.
   supersedes the primary after K confirmations with none for the primary over the same span; both rows stay.
 - OD-8: under another PipelineIdentity (any field, the code commit included) an entry keeps its row and state,
   and its effective count, estimate and bound restart from the new observation. total_count keeps the audit.
-Orientation is not judged: the design gives no bound for it. The estimate keeps the mean of the quaternions.
+Agreement does not judge orientation: the design gives no bound for it. The estimate keeps the mean of the
+quaternions. The rig check below judges the yaw.
 
 Object sightings are episodic: each is an immutable observation, never confirmed into a fact.
 
 THE RIG CHECK (section 4.4)
-A new head-sweep pose is compared with the rig's confirmed board entry, and with the twin's grid when given. More
-than RIG_MOVED_THRESHOLD_M (10 mm, OD-7) on the board centre from either one fails: rig_epoch goes up, every entry
-of the older epochs is inactive, the failing pose starts a candidate in the new epoch, and the caller is given a
-message for the operator. A pass does not by itself edit an entry: counting then follows the rules above. With
-neither reference there is no check ("no_reference").
+A new head-sweep pose is compared with the rig's confirmed board entry, and with the twin's grid when given. From
+either one, more than RIG_MOVED_THRESHOLD_M (10 mm, OD-7) on the board centre, or more than RIG_TURNED_THRESHOLD_DEG
+(2 degrees, PROVISIONAL; owner, 2026-11-27) of board yaw, fails: rig_epoch goes up, every entry of the older epochs
+is inactive, the failing pose starts a candidate in the new epoch, and the caller is given a message for the
+operator. A pass does not by itself edit an entry: counting then follows the rules above. With neither reference
+there is no check ("no_reference").
+
+scene_builder does not measure the board's orientation yet: its poses carry the identity quaternion (BOARD_NOTE).
+So the yaw check cannot fail on a builder-made scene until the builder measures yaw.
 """
 from __future__ import annotations
 
@@ -65,6 +70,7 @@ LOG = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 BUSY_TIMEOUT_S = 10.0
 RIG_MOVED_THRESHOLD_M = 0.010  # OD-7, on the board centre; re-check after robot head-sweep bundles
+RIG_TURNED_THRESHOLD_DEG = 2.0  # PROVISIONAL (owner, 2026-11-27), on the board's yaw about the torso z axis
 CONFIRMATIONS = 3              # OD-6: K
 ALLOWED_SOURCES = ("sim",)     # robot-side memory waits for the robot head sweep
 PHYSICAL_RIG_FIELDS = ("source", "rig_layout_id", "mount_id")
@@ -196,6 +202,8 @@ class RigCheck:
     epoch_before: int
     epoch_after: int
     message: str                      # for the operator
+    yaw_deg: float | None = None      # turn from the confirmed board entry, 0 to 180
+    twin_yaw_deg: float | None = None  # turn from the twin's grid
 
 
 @dataclass(frozen=True)
@@ -257,6 +265,17 @@ def _when(utc: str) -> tuple[str, float]:
 
 def _distance(a, b) -> float:
     return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+
+
+def _yaw_deg(quat) -> float:
+    """The heading of the board's +x axis about the torso z axis, in degrees. The same for q and -q."""
+    w, x, y, z = quat
+    return math.degrees(math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
+
+
+def _turn_deg(a, b) -> float:
+    """The smallest yaw between two board orientations, 0 to 180."""
+    return abs((_yaw_deg(a) - _yaw_deg(b) + 180.0) % 360.0 - 180.0)
 
 
 def _mean_quat(kept, new, weight: int) -> tuple:
@@ -578,8 +597,10 @@ class SceneMemoryStore:
                 if check is not None:
                     self._observe(scene, rig_id, "rig_check", {
                         "verdict": check.verdict, "distance_m": check.distance_m,
-                        "twin_distance_m": check.twin_distance_m, "epoch_before": check.epoch_before,
+                        "twin_distance_m": check.twin_distance_m, "yaw_deg": check.yaw_deg,
+                        "twin_yaw_deg": check.twin_yaw_deg, "epoch_before": check.epoch_before,
                         "epoch_after": check.epoch_after, "threshold_m": RIG_MOVED_THRESHOLD_M,
+                        "yaw_threshold_deg": RIG_TURNED_THRESHOLD_DEG,
                         "message": check.message})
                 board = self._board(scene, rig_id, duplicate)
                 for seen in scene.objects:
@@ -619,21 +640,30 @@ class SceneMemoryStore:
 
     def _rig_check(self, board: sc.BoardPose, twin: sc.BoardPose | None, rig_id: int, epoch: int) -> RigCheck:
         rows = self._query("SELECT * FROM entries WHERE rig_id=? AND state='confirmed'", (rig_id,))
-        distance = None if not rows else _distance(board.position_m, self._numbers(rows[0])[0])
-        twin_distance = None if twin is None else _distance(board.position_m, twin.position_m)
-        measured = [(name, value) for name, value in (("the remembered board", distance),
-                                                      ("the twin's grid", twin_distance)) if value is not None]
+        distance = yaw = twin_distance = twin_yaw = None
+        if rows:
+            position, quat, _ = self._numbers(rows[0])
+            distance, yaw = _distance(board.position_m, position), _turn_deg(board.quat_wxyz, quat)
+        if twin is not None:
+            twin_distance = _distance(board.position_m, twin.position_m)
+            twin_yaw = _turn_deg(board.quat_wxyz, twin.quat_wxyz)
+        measured = [(name, moved, turned) for name, moved, turned in (
+            ("the remembered board", distance, yaw), ("the twin's grid", twin_distance, twin_yaw)) if moved is not None]
         if not measured:
             return RigCheck("no_reference", None, None, epoch, epoch,
                             "Rig not checked: no confirmed board pose is remembered and no twin grid was given.")
-        text = ", ".join(f"{value * 1000:.1f} mm from {name}" for name, value in measured)
-        limit = f"{RIG_MOVED_THRESHOLD_M * 1000:g} mm"
-        if all(value <= RIG_MOVED_THRESHOLD_M + 1e-12 for _, value in measured):
-            return RigCheck("pass", distance, twin_distance, epoch, epoch,
-                            f"Rig check passed: the board is {text} (limit {limit}).")
-        return RigCheck("fail", distance, twin_distance, epoch, epoch + 1,
-                        f"RIG CHECK FAILED: the board is {text} (limit {limit}). The rig has moved or does not match: "
-                        f"rig_epoch is now {epoch + 1}, and what was remembered before is inactive.")
+        text = "; ".join(f"{moved * 1000:.1f} mm and {turned:.1f} deg from {name}" for name, moved, turned in measured)
+        limit = (f"limits {RIG_MOVED_THRESHOLD_M * 1000:g} mm and {RIG_TURNED_THRESHOLD_DEG:g} deg of yaw, "
+                 "the angle provisional")
+        found = {"distance_m": distance, "twin_distance_m": twin_distance, "yaw_deg": yaw, "twin_yaw_deg": twin_yaw}
+        if all(moved <= RIG_MOVED_THRESHOLD_M + 1e-12 and turned <= RIG_TURNED_THRESHOLD_DEG + 1e-9
+               for _, moved, turned in measured):
+            return RigCheck("pass", epoch_before=epoch, epoch_after=epoch,
+                            message=f"Rig check passed: the board is {text} ({limit}).", **found)
+        return RigCheck("fail", epoch_before=epoch, epoch_after=epoch + 1,
+                        message=f"RIG CHECK FAILED: the board is {text} ({limit}). The rig has moved or does not "
+                                f"match: rig_epoch is now {epoch + 1}, and what was remembered before is inactive.",
+                        **found)
 
     def _board(self, scene: sc.PerceivedScene, rig_id: int, duplicate: int | None) -> BoardUpdate:
         board = scene.board
