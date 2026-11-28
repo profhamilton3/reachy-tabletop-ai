@@ -1,0 +1,10 @@
+{
+ "variant": "black",
+ "set": "empty",
+ "neck_deg": {
+  "neck_roll": -0.0,
+  "neck_pitch": 64.784,
+  "neck_yaw": -0.0
+ },
+ "mujoco": "3.11.0"
+}

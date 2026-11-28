@@ -47,6 +47,7 @@ from reachy_ai.perception.pair_detector import (
     PairDetector,
     draw_detections,
 )
+from reachy_ai.perception.part_viewer import install_part_routes
 from reachy_ai.perception.procedures import (
     HEALTH_RECORD_ONLY_KINDS,
     PROCEDURES,
@@ -541,9 +542,7 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
     def run_bundle():
         """Every pair (or audio clip) of the run, step labels, zoom per step and a SHA-256 manifest; in memory."""
         run = current_run()
-        with camera.lock:
-            versions = {"viewer": viewer_version(), "sdk": camera.diagnostics.get("sdk_version"),
-                        "neck_sign_check": camera.diagnostics.get("neck_sign_check")}
+        versions = bundle_versions()
         try:
             data = run.build_zip(versions)
         except RunLimit as exc:
@@ -709,11 +708,19 @@ def create_app(settings: StereoSettings, service: StereoService | None = None, d
                 raise HTTPException(404, "Run 3D analysis first")
             return Response(record["depth_image"], media_type="image/png", headers={"Cache-Control": "no-store"})
 
+    def bundle_versions():
+        with camera.lock:
+            return {"viewer": viewer_version(), "sdk": camera.diagnostics.get("sdk_version"),
+                    "neck_sign_check": camera.diagnostics.get("neck_sign_check")}
+
+    install_part_routes(app, current_run=current_run, run_lock=run_lock, versions=bundle_versions,
+                        profile_zoom=lambda: depth.status().get("profile", {}).get("zoom_level"))
     install_t3_routes(app, camera=camera, settings=settings, zoom_context=zoom_context, depth=depth,
                       capture_record=capture_record, analyze_pair=analyze_pair, make_pair_bundle=make_pair_bundle,
                       history_dir=settings.t3_history_dir, speak=lambda text: speech.speak(text, client=audio))
     disposition_panel.install_routes(
         app, settings=settings, health_report=health_report, make_pair_bundle=make_pair_bundle,
+        part_latest=app.state.part_latest,
         reasoner=reasoner_ai.build_reasoner() if reasoner is _FROM_ENVIRONMENT else reasoner,
         store_path=decision_store_path or DECISION_STORE_PATH,
         **({} if policy_dir is None else {"policy_dir": policy_dir}))

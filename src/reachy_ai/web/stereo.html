@@ -157,6 +157,24 @@
     <div id="capture-body" hidden>
       <p class="subtle" id="capture-summary"></p>
       <ol id="capture-instructions"></ol>
+      <fieldset id="part-box" hidden>
+        <legend>PART PRESENTATION · ground truth (for grading; the analysers never read it)</legend>
+        <div class="dp-form">
+          <label>Design (or the empty board)<select id="part-design"></select></label>
+          <label>Square<select id="part-spot"></select></label>
+          <label>Orientation<select id="part-orientation"></select></label>
+          <label>Top face visible?<select id="part-top"><option value="">choose…</option><option value="yes">yes</option><option value="no">no</option></select></label>
+          <label>Observation label<select id="part-label"></select></label>
+          <label>Instance (optional)<input id="part-instance" type="text" maxlength="200" placeholder="e.g. PART221-A"></label>
+          <label>Note (optional)<input id="part-note" type="text" maxlength="200"></label>
+        </div>
+        <div class="actions"><button id="part-record">Record ground truth</button>
+          <button id="part-reference">Keep this run as the empty-board reference</button>
+          <button id="part-analyze">Analyze part</button>
+          <a class="download" id="part-bundle" href="/api/stereo/part/analysis/bundle.zip" hidden>Save the analyzed bundle</a></div>
+        <p class="subtle" id="part-status" role="status" aria-live="polite"></p>
+        <pre id="part-result" hidden></pre>
+      </fieldset>
       <ul id="capture-steps"></ul>
       <div class="actions"><button id="run-download">Download capture bundle</button>
         <button id="run-discard">Discard run</button></div>
@@ -790,7 +808,78 @@
     });
     $('capture-steps').replaceChildren(...rows);
     $('run-download').disabled = !runState.can_download;
+    renderPart();
   }
+  // --- Part presentation (#84): ground truth, the empty-board reference and the analysis. No robot command. ---
+  let partState = null, partBusy = false;
+  const partOptions = (id, values, blank) => $(id).replaceChildren(...(blank ? [Object.assign(document.createElement('option'), {value: '', textContent: blank})] : []),
+    ...values.map(v => Object.assign(document.createElement('option'), {value: v, textContent: v})));
+  async function partApi(path, method = 'GET', body) {
+    const response = await fetch('/api/stereo/' + path, {method, signal: AbortSignal.timeout(180000),
+      ...(body ? {headers: {'content-type': 'application/json'}, body: JSON.stringify(body)} : {})});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw Error(typeof data.detail === 'string' ? data.detail : 'Request failed (' + response.status + ')');
+    return data;
+  }
+  const partNote = text => { $('part-status').textContent = text || ''; };
+  function renderPart() {
+    const isPart = runState?.procedure.kind === 'part';
+    $('part-box').hidden = !isPart;
+    if (!isPart) return;
+    if (!partState) { loadPart(); return; }
+    const truth = runState.ground_truth, empty = $('part-design').value === 'empty';
+    for (const id of ['part-orientation', 'part-top', 'part-label']) $(id).disabled = empty || runState.pairs > 0;
+    for (const id of ['part-design', 'part-spot', 'part-instance', 'part-note', 'part-record']) $(id).disabled = runState.pairs > 0 || partBusy;
+    $('part-reference').disabled = partBusy || truth?.design_id !== 'empty' || !runState.pairs;
+    $('part-analyze').disabled = partBusy || !truth || truth.design_id === 'empty' || !runState.pairs || !partState.reference;
+    $('part-bundle').hidden = !partState.analysis;
+    const lines = [truth ? `Recorded: ${truth.design_id}${truth.orientation ? ', ' + truth.orientation : ''}, ${truth.spot}` : 'No ground truth recorded yet: capture is refused until it is.',
+      partState.reference ? `Empty-board reference held (${partState.reference.sha256.slice(0, 12)}).` : 'No empty-board reference: run this procedure with the board empty first, then keep it.'];
+    $('part-result').hidden = !partState.analysis;
+    if (partState.analysis) {
+      const o = partState.analysis.observation, d = partState.analysis.details;
+      const size = m => m ? `${m.value.toFixed(1)} ± ${m.bound.toFixed(1)} mm` : 'not measured';
+      const flags = Object.entries(o.sufficiency).filter(([, v]) => v).map(([k]) => k);
+      $('part-result').textContent = [`kind: ${o.kind} · orientation: ${o.orientation} · measured at zoom ${d.measured_at ?? '?'}`,
+        `height: ${size(o.height_mm)} · width: ${size(o.width_mm)}`,
+        `top-face hole: ${o.hole.state}${o.hole.diameter_mm ? ' · diameter ' + size(o.hole.diameter_mm) : ''}`,
+        o.colour ? `colour: ${o.colour.name} (confidence ${o.colour.confidence}, ${o.colour.reliable ? 'reliable' : 'NOT reliable'})` : 'colour: not measured',
+        `sufficiency: ${flags.length ? flags.join(', ') : 'no flag raised'}`,
+        ...Object.entries(d.flag_reasons || {}).map(([k, v]) => `  ${k}: ${v.join('; ')}`),
+        partState.analysis.note].join('\n');
+    }
+    if (!partBusy) partNote(lines.join(' '));
+  }
+  let partLoading = false;
+  async function loadPart() {
+    if (partLoading) return;
+    partLoading = true;
+    try {
+      partState = await partApi('part');
+      partOptions('part-design', partState.designs, 'choose…'); partOptions('part-spot', partState.spots);
+      partOptions('part-orientation', partState.orientations, 'choose…'); partOptions('part-label', partState.labels, 'choose…');
+      $('part-spot').value = partState.default_spot;
+      renderPart();
+    } catch (error) { partNote(error.message); }
+    finally { partLoading = false; }
+  }
+  async function partRun(work, doing) {
+    if (partBusy || runBusy) return;
+    partBusy = true; partNote(doing); renderPart();
+    let failed = null;
+    try { await work(); } catch (error) { failed = error.message; }
+    partBusy = false; renderRun();
+    if (failed) partNote(failed);
+  }
+  $('part-design').onchange = () => renderPart();
+  $('part-record').onclick = () => partRun(async () => {
+    const empty = $('part-design').value === 'empty', top = $('part-top').value;
+    runState = await partApi('capture-run/ground-truth', 'POST', {design_id: $('part-design').value, spot: $('part-spot').value,
+      orientation: empty ? null : $('part-orientation').value || null, top_face_visible: empty || !top ? null : top === 'yes',
+      observation: empty ? null : $('part-label').value || null, instance: $('part-instance').value, note: $('part-note').value});
+  }, 'Recording…');
+  $('part-reference').onclick = () => partRun(async () => { partState = await partApi('part/reference', 'POST'); }, 'Checking the empty board…');
+  $('part-analyze').onclick = () => partRun(async () => { partState = await partApi('part/analysis', 'POST'); }, 'Analyzing (a few seconds)…');
   function gripperSummary(r) {
     const rb = r.readback || {};
     const pos = rb.position_deg == null ? '' : ` at ${rb.position_deg.toFixed(1)}°`;
@@ -1047,7 +1136,7 @@
 
   function buildForms() {
     fill('dp-split', st.splits, 'choose…'); fill('dp-expected', st.designs, 'not stated');
-    $('dp-mode').replaceChildren(option('pair', 'captured pair'), ...(st.source === 'sim' ? [option('sim_truth', 'sim truth (development)')] : []));
+    $('dp-mode').replaceChildren(option('pair', 'captured pair'), option('part', 'part analysis (measured, #84)'), ...(st.source === 'sim' ? [option('sim_truth', 'sim truth (development)')] : []));
     fill('dp-kind', st.kinds); fill('dp-orientation', st.orientations); fill('dp-hole', st.hole_states);
     $('dp-degradations').replaceChildren(...st.degradations.map(flag => {
       const label = document.createElement('label'); label.className = 'subtle';
@@ -1082,7 +1171,7 @@
       button.onclick = () => run(async () => show(await api('decisions/' + item.decision_id)));
       return [button, ' ']; }));
     $('dp-truth').hidden = $('dp-mode').value !== 'sim_truth';
-    $('dp-pair-note').textContent = $('dp-mode').value === 'pair' ? st.pair_note : 'input_source is sim_truth: the values are not perceived.';
+    $('dp-pair-note').textContent = $('dp-mode').value === 'pair' ? st.pair_note : $('dp-mode').value === 'part' ? st.part_note : 'input_source is sim_truth: the values are not perceived.';
     $('dp-decide').disabled = busy;
     $('dp-again').disabled = busy || !last;
   }
@@ -1145,6 +1234,7 @@
     if (!$('dp-split').value) throw Error('Choose the split.');
     const caseData = {case_id: $('dp-case').value, split: $('dp-split').value, instance_id: $('dp-instance').value,
       lot: $('dp-lot').value, expected_design_id: $('dp-expected').value || null};
+    if ($('dp-mode').value === 'part') return {case: caseData, input: {mode: 'part'}};
     if ($('dp-mode').value === 'pair') {
       const pairId = window.reachyCapturedPair();
       if (!pairId) throw Error('Capture a pair first (the Capture pair button above).');

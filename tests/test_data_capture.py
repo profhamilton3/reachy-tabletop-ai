@@ -293,7 +293,8 @@ def test_viewer_zoom_needs_confirm_then_is_dry_run_and_capture_and_download_work
     with http as client:
         listing = client.get("/api/stereo/procedures").json()
         assert [p["id"] for p in listing["procedures"]] == ["zoom_fov", "focus_check", "depth_ruler",
-                                                            "board_view_approach", "head_sweep", "sound_check",
+                                                            "board_view_approach", "head_sweep",
+                                                            "part_presentation", "sound_check",
                                                             "robot_inventory", "gripper_range"]
         assert listing["zoom_commands"] == "dry-run" and listing["head_motion"] == "dry-run"
         assert listing["head_presets"]["board_view"] == [0.0, 64.0, 0.0]
