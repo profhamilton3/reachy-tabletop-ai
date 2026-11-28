@@ -4,6 +4,7 @@ import dataclasses
 import hashlib
 import io
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -797,3 +798,25 @@ def test_the_store_does_not_import_the_sim_motion_or_network():
              if line.lstrip().startswith(("import ", "from "))]
     for banned in ("experience", "reachy_sdk", "motion", "anthropic", "grpc", "socket", "urllib", "requests"):
         assert not [line for line in lines if banned in line], banned
+
+
+def test_connections_opening_a_new_store_together_all_succeed(tmp_path):
+    failures = []
+    for attempt in range(40):
+        target = tmp_path / f"{attempt}.sqlite"
+        start = threading.Barrier(4)
+
+        def work():
+            start.wait()
+            try:
+                with s.DecisionStore.open(target) as opened:
+                    opened.refusals()
+            except Exception as exc:  # noqa: BLE001 - reported by the assert below
+                failures.append(exc)
+
+        threads = [threading.Thread(target=work) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert failures == []

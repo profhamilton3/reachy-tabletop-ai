@@ -16,12 +16,15 @@ dependencies = [
     "fastapi>=0.111",
     "uvicorn>=0.30",
     "h5py>=3.11",
-    "anthropic>=0.28",
     "Pillow>=10.3",
     "PyYAML>=6.0",  # config/disposition/ policy files (#81)
 ]
 
 [project.optional-dependencies]
+# The AI reasoner, configurations C, D and F (#83). reasoner/ai.py sends output_config, new in 1.0.
+ai = [
+    "anthropic>=1.0",
+]
 analysis = [
     "ai-edge-litert>=2.2,<3",
 ]
