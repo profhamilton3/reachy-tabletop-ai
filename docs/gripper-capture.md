@@ -110,7 +110,9 @@ Docker; the sim was only read). Its numbers are in every run record's `step0.sim
   settling, a sweep run reaches 1.26°: above the 1° stop rule read literally, below it as arm motion caused by the
   sweep. This was a judgement call, flagged in the PR.
 - **Visibility:** the gripper tip at REST is at (0.141, −0.397, −0.397) m in the torso frame. The sim's neck chain
-  applies yaw last, and `gaze.project` applies it first, so the aim was computed with the model's own cameras. Inside
+  applies yaw last, and `gaze.project` then applied it first (fixed in reachy-1-2-sim #208 and #221 (look_at now uses
+  gaze.neck_angles_for); the sim's SDK head IK stub is still uncorrected (sim #222)), so the aim was computed with the
+  model's own cameras. Inside
   the neck limits the best aim is roll 0, pitch +64°, yaw −38°: the tip is 7.5° off the optical axis, and all finger
   points are in both frames at every gripper angle (167 px margin). About half of the finger's surface is hidden by the
   hand's own palm when shut, 80 % is visible from 0° to −68°. `board_view` does not show the hand.

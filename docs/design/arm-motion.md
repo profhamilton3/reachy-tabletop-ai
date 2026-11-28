@@ -468,7 +468,8 @@ instead:
 - they are computed in `tools/route_clearance` with the **model's own cameras**, the method Part A used for
   `gripper_view`;
 - they come with whether the tip is in both frames;
-- **not with `gaze.project`**, whose yaw order is wrong away from yaw 0 (sim #208).
+- not with `gaze.project`, whose yaw order away from yaw 0 has since been fixed in reachy-1-2-sim #208 and #221
+  (look_at now uses gaze.neck_angles_for); the sim's SDK head IK stub is still uncorrected (sim #222).
 
 On the robot, a difference of more than 10° between the SDK IK and the record's angles is logged, not gated. Where
 the record says the hand can't be seen inside the neck limits (pitch ≤ 64°, yaw ±45°), the head holds its last pose.
